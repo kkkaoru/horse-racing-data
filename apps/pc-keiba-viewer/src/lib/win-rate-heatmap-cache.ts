@@ -56,6 +56,12 @@ export const WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS = [
 export type WinRateHeatmapCacheFragmentKind =
   (typeof WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS)[number];
 
+// Manifests stored before the weight-change column keep serving readers; the
+// warm probe treats them as misses so they are rebuilt in the background
+// instead of disappearing for every race at deploy time.
+const LEGACY_WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS: readonly WinRateHeatmapCacheFragmentKind[] =
+  WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.filter((kind) => kind !== "weightChange");
+
 export interface WinRateHeatmapCacheKeyInput {
   day: string;
   keibajoCode: string;
@@ -111,6 +117,7 @@ export interface WinRateHeatmapCacheManifest {
   mappingRevision?: string;
   producerDataRevision?: 1;
   hasPresentation?: boolean;
+  liveHorseWeights?: LiveHorseWeight[];
   fragmentKinds: readonly WinRateHeatmapCacheFragmentKind[];
   generation: string;
   runnerSignature: string;
@@ -195,6 +202,17 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isFragmentKind = (value: unknown): value is WinRateHeatmapCacheFragmentKind =>
   typeof value === "string" && WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.some((kind) => kind === value);
 
+const isNullableNumber = (value: unknown): boolean => value === null || typeof value === "number";
+
+const isLiveHorseWeight = (value: unknown): value is LiveHorseWeight =>
+  isRecord(value) &&
+  typeof value.horseNumber === "string" &&
+  isNullableNumber(value.weight) &&
+  (value.changeAmount === undefined || isNullableNumber(value.changeAmount)) &&
+  (value.changeSign === undefined ||
+    value.changeSign === null ||
+    typeof value.changeSign === "string");
+
 const isGeneration = (value: unknown): value is string =>
   typeof value === "string" && CACHE_GENERATION_PATTERN.test(value);
 
@@ -261,19 +279,39 @@ export const isWinRateHeatmapCacheManifest = (
       (value.arcCohort !== ARC_HEATMAP_COHORT || !isArcQualifiedStats(value.arcQualifiedStats))) ||
     (value.producerDataRevision !== undefined && value.producerDataRevision !== 1) ||
     (value.hasPresentation !== undefined && typeof value.hasPresentation !== "boolean") ||
+    (value.liveHorseWeights !== undefined &&
+      !(
+        Array.isArray(value.liveHorseWeights) && value.liveHorseWeights.every(isLiveHorseWeight)
+      )) ||
     !isGeneration(value.generation) ||
     typeof value.runnerSignature !== "string" ||
     value.runnerSignature.length === 0 ||
-    !Array.isArray(value.fragmentKinds) ||
-    value.fragmentKinds.length !== WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.length
+    !Array.isArray(value.fragmentKinds)
   ) {
     return false;
   }
   const fragmentKinds: unknown[] = value.fragmentKinds;
-  return WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS.every(
-    (kind) => fragmentKinds.filter((candidate) => candidate === kind).length === 1,
+  return [WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS, LEGACY_WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS].some(
+    (expected) =>
+      fragmentKinds.length === expected.length &&
+      expected.every(
+        (kind) => fragmentKinds.filter((candidate) => candidate === kind).length === 1,
+      ),
   );
 };
+
+const liveHorseWeightToken = (horse: LiveHorseWeight): string =>
+  [horse.horseNumber, horse.weight, horse.changeSign ?? null, horse.changeAmount ?? null].join(":");
+
+// Identifies the posted weights a presentation was warmed with. Runner cards
+// keep blank bataiju/zogen until results, so weights posted after the warm are
+// detected only by comparing this against the current live snapshot.
+export const buildLiveHorseWeightSignature = (horses: readonly LiveHorseWeight[]): string =>
+  horses
+    .filter((horse) => horse.weight !== null)
+    .map(liveHorseWeightToken)
+    .toSorted()
+    .join("|");
 
 export const isWinRateHeatmapCacheFragment = (
   value: unknown,

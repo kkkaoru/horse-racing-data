@@ -9,6 +9,7 @@ import {
   WIN_RATE_HEATMAP_CACHE_NAMESPACE,
   WIN_RATE_HEATMAP_CACHE_TTL_SECONDS,
   WIN_RATE_HEATMAP_CACHE_URL_BASE,
+  buildLiveHorseWeightSignature,
   buildWinRateHeatmapCacheFallbackKeys,
   buildWinRateHeatmapCacheKey,
   buildWinRateHeatmapFragmentCacheKey,
@@ -137,6 +138,74 @@ it("validates a complete manifest and rejects duplicate or malformed fragments",
     }),
   ).toBe(false);
   expect(isWinRateHeatmapCacheManifest(null)).toBe(false);
+});
+
+it("accepts legacy manifests without the weight-change fragment and validates live weights", () => {
+  const manifest = {
+    fragmentKinds: [...WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS],
+    generation: GENERATION,
+    runnerSignature: "runner-signature",
+    type: "win-rate-heatmap-manifest",
+  };
+  expect(
+    isWinRateHeatmapCacheManifest({
+      ...manifest,
+      fragmentKinds: manifest.fragmentKinds.filter((kind) => kind !== "weightChange"),
+    }),
+  ).toBe(true);
+  expect(
+    isWinRateHeatmapCacheManifest({
+      ...manifest,
+      fragmentKinds: manifest.fragmentKinds.filter((kind) => kind !== "weight"),
+    }),
+  ).toBe(false);
+  expect(
+    isWinRateHeatmapCacheManifest({
+      ...manifest,
+      liveHorseWeights: [
+        { changeAmount: 2, changeSign: "+", horseNumber: "01", weight: 480 },
+        { changeAmount: null, changeSign: null, horseNumber: "02", weight: null },
+        { horseNumber: "03", weight: 470 },
+      ],
+    }),
+  ).toBe(true);
+  expect(isWinRateHeatmapCacheManifest({ ...manifest, liveHorseWeights: {} })).toBe(false);
+  expect(
+    isWinRateHeatmapCacheManifest({
+      ...manifest,
+      liveHorseWeights: [{ horseNumber: 1, weight: 480 }],
+    }),
+  ).toBe(false);
+  expect(
+    isWinRateHeatmapCacheManifest({
+      ...manifest,
+      liveHorseWeights: [{ horseNumber: "01", weight: "480" }],
+    }),
+  ).toBe(false);
+  expect(
+    isWinRateHeatmapCacheManifest({
+      ...manifest,
+      liveHorseWeights: [{ changeAmount: "2", horseNumber: "01", weight: 480 }],
+    }),
+  ).toBe(false);
+  expect(
+    isWinRateHeatmapCacheManifest({
+      ...manifest,
+      liveHorseWeights: [{ changeSign: 1, horseNumber: "01", weight: 480 }],
+    }),
+  ).toBe(false);
+  expect(isWinRateHeatmapCacheManifest({ ...manifest, liveHorseWeights: [null] })).toBe(false);
+});
+
+it("signs posted live weights independently of order and ignores scratched entries", () => {
+  expect(
+    buildLiveHorseWeightSignature([
+      { changeAmount: 4, changeSign: "-", horseNumber: "2", weight: 470 },
+      { horseNumber: "1", weight: 480 },
+      { changeAmount: null, changeSign: null, horseNumber: "3", weight: null },
+    ]),
+  ).toBe("1:480::|2:470:-:4");
+  expect(buildLiveHorseWeightSignature([])).toBe("");
 });
 
 it("treats an explicitly available empty or zero-valued fragment as present", () => {

@@ -6,7 +6,7 @@ import { hasCurrentGateMappingRevision } from "./gate-mapping-revision.server";
 import "server-only";
 
 import { indexLiveHorseWeightChangeKg } from "./horse-weight-change-class";
-import { indexLiveHorseWeightKg } from "./horse-weight-class";
+import { indexLiveHorseWeightKg, type LiveHorseWeight } from "./horse-weight-class";
 import type {
   BloodlineStatsRow,
   FrameStatsRow,
@@ -25,6 +25,7 @@ import type { WinRateHeatmapHorseRateRow, WinRateHeatmapPartnershipRow } from ".
 import {
   WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS,
   WIN_RATE_HEATMAP_CACHE_TTL_SECONDS,
+  buildLiveHorseWeightSignature,
   buildWinRateHeatmapFragmentCacheKey,
   buildWinRateHeatmapRunnerSignature,
   createWinRateHeatmapCacheRequest,
@@ -397,10 +398,15 @@ const assemblePayload = (
     runners,
     similarRows: similarKinds.flatMap((kind) => restoreSimilarRows(fragments.get(kind)!, kind)),
     type: "win-rate-heatmap",
-    weightChangeClassStats: restoreWeightRows(fragments.get("weightChange")!),
+    ...restoreOptionalWeightRows(fragments.get("weightChange")),
     weightClassStats: restoreWeightRows(fragments.get("weight")!),
   };
 };
+
+const restoreOptionalWeightRows = (
+  fragment: WinRateHeatmapCacheFragment | undefined,
+): Pick<WinRateHeatmapSectionPayload, "weightChangeClassStats"> =>
+  fragment === undefined ? {} : { weightChangeClassStats: restoreWeightRows(fragment) };
 
 export const getCachedWinRateHeatmapPayload = async (
   cacheKey: string,
@@ -471,8 +477,43 @@ export const getCachedWinRateHeatmapPayload = async (
       ? {}
       : { mappingRevision: manifest.mappingRevision }),
     ...(manifest.producerDataRevision === 1 ? { producerDataRevision: 1 satisfies 1 } : {}),
+    ...(manifest.liveHorseWeights === undefined
+      ? {}
+      : { liveHorseWeights: manifest.liveHorseWeights }),
     ...(presentation === null ? {} : { presentation }),
   };
+};
+
+const countPostedLiveWeights = (horses: readonly LiveHorseWeight[]): number =>
+  horses.filter((horse) => horse.weight !== null).length;
+
+export interface RefreshWinRateHeatmapLiveWeightsInput {
+  cacheKey: string;
+  cached: WinRateHeatmapSectionPayload;
+  keibajoCode: string;
+  liveHorseWeights: LiveHorseWeight[];
+}
+
+// Re-renders a cached presentation when weights were posted (or corrected)
+// after it was warmed. The column fragments are reused, so no stats query runs.
+export const refreshWinRateHeatmapLiveWeights = async (
+  input: RefreshWinRateHeatmapLiveWeightsInput,
+): Promise<boolean> => {
+  const cachedWeights = input.cached.liveHorseWeights ?? [];
+  // Posted weights are never withdrawn, so a snapshot with fewer of them is a
+  // realtime outage and must not erase the weights already rendered.
+  if (
+    countPostedLiveWeights(input.liveHorseWeights) < countPostedLiveWeights(cachedWeights) ||
+    buildLiveHorseWeightSignature(input.liveHorseWeights) ===
+      buildLiveHorseWeightSignature(cachedWeights)
+  )
+    return false;
+  await putWinRateHeatmapCache({
+    cacheKey: input.cacheKey,
+    keibajoCode: input.keibajoCode,
+    payload: { ...input.cached, liveHorseWeights: input.liveHorseWeights },
+  });
+  return true;
 };
 
 const compactRateRow = (
@@ -644,6 +685,9 @@ export const putWinRateHeatmapCache = async ({
     // Only the producer can attest that every required source succeeded.
     ...(payload.producerDataRevision === 1 ? { producerDataRevision: 1 satisfies 1 } : {}),
     ...(keibajoCode === undefined ? {} : { hasPresentation: true }),
+    ...(payload.liveHorseWeights === undefined
+      ? {}
+      : { liveHorseWeights: payload.liveHorseWeights }),
     fragmentKinds: WIN_RATE_HEATMAP_CACHE_FRAGMENT_KINDS,
     generation,
     runnerSignature,

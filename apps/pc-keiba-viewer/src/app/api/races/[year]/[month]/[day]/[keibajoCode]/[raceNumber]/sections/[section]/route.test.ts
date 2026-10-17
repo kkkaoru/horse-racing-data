@@ -34,6 +34,8 @@ const mocks = vi.hoisted(() => ({
   putDetailSectionCacheMock: vi.fn<(...args: never[]) => unknown>(),
   putFinishPredictionInputsCacheMock: vi.fn<(...args: never[]) => unknown>(),
   putWinRateHeatmapCacheMock: vi.fn<(...args: never[]) => unknown>(),
+  refreshWinRateHeatmapLiveWeightsMock: vi.fn<(...args: never[]) => Promise<boolean>>(),
+  fetchHeatmapLiveWeightsMock: vi.fn<(...args: never[]) => Promise<unknown>>(),
   safeGetCloudflareExecutionContextMock: vi.fn<() => Promise<unknown>>(),
   serializeWinRateHeatmapCacheQueryMock: vi.fn<(...args: never[]) => unknown>(),
   stripDetailSectionCacheWarmParamsMock: vi.fn<(...args: never[]) => unknown>(),
@@ -79,6 +81,11 @@ vi.mock("../../../../../../../../../../lib/win-rate-heatmap-cache", async () => 
 vi.mock("../../../../../../../../../../lib/win-rate-heatmap-cache.server", () => ({
   getCachedWinRateHeatmapPayload: mocks.getCachedWinRateHeatmapPayloadMock,
   putWinRateHeatmapCache: mocks.putWinRateHeatmapCacheMock,
+  refreshWinRateHeatmapLiveWeights: mocks.refreshWinRateHeatmapLiveWeightsMock,
+}));
+
+vi.mock("../../../../../../../../../../lib/win-rate-heatmap-live-weights.server", () => ({
+  fetchHeatmapLiveWeights: mocks.fetchHeatmapLiveWeightsMock,
 }));
 
 vi.mock("../../../../../../../../../../lib/race-detail-section-cache.server", () => ({
@@ -109,6 +116,8 @@ const {
   isDefaultDetailSectionCacheRequestMock,
   putDetailSectionCacheMock,
   putWinRateHeatmapCacheMock,
+  fetchHeatmapLiveWeightsMock,
+  refreshWinRateHeatmapLiveWeightsMock,
   safeGetCloudflareExecutionContextMock,
   serializeWinRateHeatmapCacheQueryMock,
   stripDetailSectionCacheWarmParamsMock,
@@ -124,6 +133,8 @@ beforeEach(() => {
   mocks.ensure.mockResolvedValue("queued");
   mocks.claim.mockResolvedValue(true);
   mocks.settle.mockResolvedValue(true);
+  mocks.fetchHeatmapLiveWeightsMock.mockResolvedValue([]);
+  mocks.refreshWinRateHeatmapLiveWeightsMock.mockResolvedValue(false);
   mocks.safeGetCloudflareEnv.mockResolvedValue({
     HEATMAP_EXECUTION_OWNER: {
       getByName: () => ({ ensure: mocks.ensure, claim: mocks.claim, settle: mocks.settle }),
@@ -1181,6 +1192,7 @@ it("answers a heatmap cache probe hit with 204 and no body", async () => {
     similarRows: [],
     type: "win-rate-heatmap",
     presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
+    weightChangeClassStats: [],
     weightClassStats: [],
   });
   const response = await GET(
@@ -1204,6 +1216,149 @@ it("answers a heatmap cache probe hit with 204 and no body", async () => {
   const serialized: unknown = serializeWinRateHeatmapCacheQueryMock.mock.calls[0]?.[0];
   expect(serialized instanceof URLSearchParams ? serialized.toString() : null).toBe("");
   expect(getDetailSectionPayloadMock).not.toHaveBeenCalled();
+});
+
+it("re-renders a probe hit with the current live weights", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  const cached = {
+    bloodlineRows: [],
+    carriedWeightClassStats: [],
+    frameStats: [],
+    horseResults: [],
+    runners: [],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
+    weightChangeClassStats: [],
+    weightClassStats: [],
+  };
+  getCachedWinRateHeatmapPayloadMock.mockResolvedValue(cached);
+  fetchHeatmapLiveWeightsMock.mockResolvedValue([
+    { changeAmount: 4, changeSign: "+", horseNumber: "01", weight: 480 },
+  ]);
+  refreshWinRateHeatmapLiveWeightsMock.mockResolvedValue(true);
+  const response = await GET(
+    new Request(
+      "https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap?__cacheProbe=1",
+    ),
+    {
+      params: Promise.resolve({
+        day: "21",
+        keibajoCode: "05",
+        month: "08",
+        raceNumber: "01",
+        section: "win-rate-heatmap",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(204);
+  expect(fetchHeatmapLiveWeightsMock).toHaveBeenCalledWith({
+    day: "21",
+    keibajoCode: "05",
+    month: "08",
+    raceNumber: "01",
+    source: "jra",
+    year: "2026",
+  });
+  expect(refreshWinRateHeatmapLiveWeightsMock).toHaveBeenCalledWith({
+    cacheKey: "win-rate-heatmap-cache-key",
+    cached,
+    keibajoCode: "05",
+    liveHorseWeights: [{ changeAmount: 4, changeSign: "+", horseNumber: "01", weight: 480 }],
+  });
+});
+
+it("keeps a probe hit when reading live weights fails", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getCachedWinRateHeatmapPayloadMock.mockResolvedValue({
+    bloodlineRows: [],
+    horseResults: [],
+    runners: [],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
+    weightChangeClassStats: [],
+  });
+  fetchHeatmapLiveWeightsMock.mockRejectedValueOnce(new Error("realtime unavailable"));
+  const response = await GET(
+    new Request(
+      "https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap?__cacheProbe=1",
+    ),
+    {
+      params: Promise.resolve({
+        day: "21",
+        keibajoCode: "05",
+        month: "08",
+        raceNumber: "01",
+        section: "win-rate-heatmap",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(204);
+  expect(response.headers.get("X-Win-Rate-Heatmap-Cache")).toBe("HIT");
+});
+
+it("keeps a probe hit when re-rendering live weights fails", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getCachedWinRateHeatmapPayloadMock.mockResolvedValue({
+    bloodlineRows: [],
+    horseResults: [],
+    runners: [],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
+    weightChangeClassStats: [],
+  });
+  refreshWinRateHeatmapLiveWeightsMock.mockRejectedValueOnce(new Error("KV unavailable"));
+  const response = await GET(
+    new Request(
+      "https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap?__cacheProbe=1",
+    ),
+    {
+      params: Promise.resolve({
+        day: "21",
+        keibajoCode: "05",
+        month: "08",
+        raceNumber: "01",
+        section: "win-rate-heatmap",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(204);
+  expect(refreshWinRateHeatmapLiveWeightsMock).toHaveBeenCalledOnce();
+});
+
+it("reports a legacy heatmap without weight-change rows as a probe miss", async () => {
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getCachedWinRateHeatmapPayloadMock.mockResolvedValue({
+    bloodlineRows: [],
+    horseResults: [],
+    runners: [],
+    similarRows: [],
+    type: "win-rate-heatmap",
+    presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
+  });
+  const response = await GET(
+    new Request(
+      "https://example.com/api/races/2026/08/21/05/01/sections/win-rate-heatmap?__cacheProbe=1",
+    ),
+    {
+      params: Promise.resolve({
+        day: "21",
+        keibajoCode: "05",
+        month: "08",
+        raceNumber: "01",
+        section: "win-rate-heatmap",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(503);
+  expect(response.headers.get("X-Win-Rate-Heatmap-Cache")).toBe("MISS");
+  expect(refreshWinRateHeatmapLiveWeightsMock).not.toHaveBeenCalled();
 });
 
 it("rejects a cached heatmap with no bloodline rows for known-pedigree runners", async () => {
@@ -1254,6 +1409,7 @@ it("accepts a names-only pedigree presentation without invented rates", async ()
     },
     runners,
     type: "win-rate-heatmap",
+    weightChangeClassStats: [],
   });
   const response = await GET(
     new Request(
@@ -2105,6 +2261,7 @@ it.each([false, true])(
       runners: enriched ? current : raw,
       bloodlineRows: [{}],
       presentation: { version: 1, rows: [], combinedBloodlineRows: [], displays: {} },
+      weightChangeClassStats: [],
     });
     const response = await GET(
       new Request(

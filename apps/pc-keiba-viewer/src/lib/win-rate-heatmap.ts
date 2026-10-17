@@ -1495,7 +1495,8 @@ export interface WinRateHeatmapDisplayModel {
   rows: WinRateHeatmapDisplayRow[];
   showCarriedWeight: boolean;
   showWeight: boolean;
-  showWeightChange: boolean;
+  // Absent on presentations warmed before the weight-change column existed.
+  showWeightChange?: boolean;
   viewMode: WinRateHeatmapViewMode;
   visibleColumns: readonly WinRateHeatmapColumn[];
   visibleRateMetrics: readonly WinRateHeatmapRateMetric[];
@@ -1514,11 +1515,15 @@ export const buildWinRateHeatmapDisplay = (
     liveWeightKgByHorse: input.liveWeightKgByHorse,
     runners: input.runners,
   });
-  const showWeightChange = shouldShowWinRateHeatmapWeightChangeColumn({
-    keibajoCode: input.keibajoCode,
-    liveWeightChangeKgByHorse: input.liveWeightChangeKgByHorse,
-    runners: input.runners,
-  });
+  const rows = buildWinRateHeatmapRows(input);
+  // A change column with no past starts in any band (e.g. stats warmed before
+  // the column existed) would be entirely blank, so it stays hidden.
+  const showWeightChange =
+    shouldShowWinRateHeatmapWeightChangeColumn({
+      keibajoCode: input.keibajoCode,
+      liveWeightChangeKgByHorse: input.liveWeightChangeKgByHorse,
+      runners: input.runners,
+    }) && rows.some((row) => row.cells.weightChange.starts !== null);
   const showCarriedWeight = shouldShowWinRateHeatmapCarriedWeightColumn({
     keibajoCode: input.keibajoCode,
     runners: input.runners,
@@ -1530,7 +1535,6 @@ export const buildWinRateHeatmapDisplay = (
     showWeightChange,
   });
   const visibleRateMetrics = getVisibleWinRateHeatmapRateMetrics(input.viewMode);
-  const rows = buildWinRateHeatmapRows(input);
   const colorScales: WinRateHeatmapColorScales = {
     quinellaRate: resolveWinRateHeatmapColorScale({
       keibajoCode: input.keibajoCode,

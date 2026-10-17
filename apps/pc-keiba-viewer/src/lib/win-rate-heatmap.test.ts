@@ -5063,3 +5063,19 @@ it("shows the weight-change column right of the horse-weight column in the displ
   expect(swatch?.name).toBe("+10kg未満+5kg以上");
   expect(swatch?.valueLabel).toBe("10.0");
 });
+
+it("hides the weight-change column when no change band has past starts", () => {
+  const display = buildWinRateHeatmapDisplay({
+    bloodlineRows: [],
+    frameStats: [],
+    horseResults: [],
+    keibajoCode: "05",
+    liveWeightKgByHorse: new Map(),
+    runners: [{ ...runnerOne, bataiju: "480", zogenFugo: "+", zogenSa: "008" }],
+    showStarts: false,
+    similarRows: [],
+    viewMode: "winRate",
+  });
+  expect(display.showWeightChange).toBe(false);
+  expect(display.visibleColumns.find((column) => column.key === "weightChange")).toBeUndefined();
+});

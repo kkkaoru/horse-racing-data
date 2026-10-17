@@ -24,6 +24,7 @@ import {
 import {
   getCachedWinRateHeatmapPayload,
   putWinRateHeatmapCache,
+  refreshWinRateHeatmapLiveWeights,
 } from "./win-rate-heatmap-cache.server";
 
 type CacheMatchFn = (request: Request) => Promise<Response | undefined>;
@@ -406,6 +407,109 @@ it("restores an empty weight-change fragment for payloads produced without the r
   await storePayload(cache, kv);
   const hit = await getCachedWinRateHeatmapPayload("heatmap-key", [RUNNER]);
   expect(hit?.weightChangeClassStats).toStrictEqual([]);
+});
+
+it("re-renders a cached presentation only when the posted live weights changed", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  setDefaultCache(cache);
+  setRuntime(kv);
+  await putWinRateHeatmapCache({
+    cacheKey: "refresh-display",
+    keibajoCode: "06",
+    payload: {
+      ...HEATMAP_PAYLOAD,
+      weightChangeClassStats: [
+        {
+          key: "plus2",
+          quinellaCount: 2,
+          quinellaRate: 20,
+          showCount: 3,
+          showRate: 30,
+          starts: 10,
+          winCount: 1,
+          winRate: 10,
+        },
+      ],
+    },
+  });
+  cache.values.clear();
+  const before = await getCachedWinRateHeatmapPayload("refresh-display", [RUNNER]);
+  if (before === null) throw new Error("Expected a cached heatmap");
+  expect(before.liveHorseWeights).toBeUndefined();
+  expect(before.presentation?.rows[0]?.cells.weightChange.name).toBe(null);
+  const puts = kv.put.mock.calls.length;
+  expect(
+    await refreshWinRateHeatmapLiveWeights({
+      cacheKey: "refresh-display",
+      cached: before,
+      keibajoCode: "06",
+      liveHorseWeights: [],
+    }),
+  ).toBe(false);
+  expect(kv.put.mock.calls.length).toBe(puts);
+  expect(
+    await refreshWinRateHeatmapLiveWeights({
+      cacheKey: "refresh-display",
+      cached: before,
+      keibajoCode: "06",
+      liveHorseWeights: [{ changeAmount: 2, changeSign: "+", horseNumber: "01", weight: 488 }],
+    }),
+  ).toBe(true);
+  cache.values.clear();
+  const after = await getCachedWinRateHeatmapPayload("refresh-display", [RUNNER]);
+  expect(after?.liveHorseWeights).toStrictEqual([
+    { changeAmount: 2, changeSign: "+", horseNumber: "01", weight: 488 },
+  ]);
+  expect(after?.presentation?.rows[0]?.cells.weightChange.name).toBe("+5kg未満+2kg以上");
+  expect(after?.presentation?.rows[0]?.cells.weightChange.winRate).toBe(10);
+  if (after === null) throw new Error("Expected a refreshed heatmap");
+  expect(after.horseRateStats).toStrictEqual(before.horseRateStats);
+  expect(after.similarRows).toStrictEqual(before.similarRows);
+  expect(after.partnershipRows).toStrictEqual(before.partnershipRows);
+  expect(after.bloodlineRows).toStrictEqual(before.bloodlineRows);
+  expect(after.frameStats).toStrictEqual(before.frameStats);
+  expect(after.weightClassStats).toStrictEqual(before.weightClassStats);
+  expect(after.carriedWeightClassStats).toStrictEqual(before.carriedWeightClassStats);
+  expect(after.weightChangeClassStats).toStrictEqual(before.weightChangeClassStats);
+  const refreshedPuts = kv.put.mock.calls.length;
+  expect(
+    await refreshWinRateHeatmapLiveWeights({
+      cacheKey: "refresh-display",
+      cached: after,
+      keibajoCode: "06",
+      liveHorseWeights: [],
+    }),
+  ).toBe(false);
+  expect(kv.put.mock.calls.length).toBe(refreshedPuts);
+  expect(
+    await refreshWinRateHeatmapLiveWeights({
+      cacheKey: "refresh-display",
+      cached: after,
+      keibajoCode: "06",
+      liveHorseWeights: [{ changeAmount: 2, changeSign: "+", horseNumber: "01", weight: 488 }],
+    }),
+  ).toBe(false);
+});
+
+it("serves a legacy manifest stored before the weight-change fragment", async () => {
+  const cache = buildCacheStub();
+  const kv = buildKvStub();
+  await storePayload(cache, kv);
+  const manifest = parseRecord(kv.values.get("heatmap-key") ?? "null");
+  const fragmentKinds = manifest.fragmentKinds;
+  if (!Array.isArray(fragmentKinds)) throw new Error("Expected fragment kinds");
+  kv.values.set(
+    "heatmap-key",
+    JSON.stringify({
+      ...manifest,
+      fragmentKinds: fragmentKinds.filter((kind) => kind !== "weightChange"),
+    }),
+  );
+  cache.values.clear();
+  const hit = await getCachedWinRateHeatmapPayload("heatmap-key", [RUNNER]);
+  expect(hit?.type).toBe("win-rate-heatmap");
+  expect(hit).not.toHaveProperty("weightChangeClassStats");
 });
 
 it("publishes durable presentation despite an unavailable regional cache", async () => {

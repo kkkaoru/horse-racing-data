@@ -48,7 +48,9 @@ import {
 import {
   getCachedWinRateHeatmapPayload,
   putWinRateHeatmapCache,
+  refreshWinRateHeatmapLiveWeights,
 } from "../../../../../../../../../../lib/win-rate-heatmap-cache.server";
+import { fetchHeatmapLiveWeights } from "../../../../../../../../../../lib/win-rate-heatmap-live-weights.server";
 import {
   type DetailSection,
   getDetailSectionPayload,
@@ -389,9 +391,33 @@ export async function GET(request: Request, { params }: DetailSectionRouteProps)
     );
     const cachedHeatmap = await getCachedWinRateHeatmapPayload(heatmapCacheKey, currentRunners);
     if (isHeatmapCacheProbe) {
+      // Legacy entries without weight-change rows still serve readers but are
+      // reported as misses so the warm sweep rebuilds them.
       const hit =
         cachedHeatmap?.presentation !== undefined &&
+        cachedHeatmap.weightChangeClassStats !== undefined &&
         isHeatmapCacheReady(cachedHeatmap, currentRunners);
+      // The warm sweep probes every 15 minutes; it re-renders a hit whose
+      // presentation predates the posted weights so 馬体重/馬体重増減 appear.
+      if (hit) {
+        await fetchHeatmapLiveWeights({
+          day,
+          keibajoCode,
+          month,
+          raceNumber,
+          source: raceSource,
+          year,
+        })
+          .then((liveHorseWeights) =>
+            refreshWinRateHeatmapLiveWeights({
+              cacheKey: heatmapCacheKey,
+              cached: cachedHeatmap,
+              keibajoCode,
+              liveHorseWeights,
+            }),
+          )
+          .catch(() => false);
+      }
       return new Response(null, {
         headers: {
           "Cache-Control": "private, max-age=0, no-store",

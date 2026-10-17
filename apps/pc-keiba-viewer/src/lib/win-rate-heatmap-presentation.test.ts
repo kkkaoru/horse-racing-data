@@ -87,7 +87,7 @@ it("does not synthesize an unwarmed display variant", () => {
   ).toBe("winRate:0:1");
 });
 
-it("rejects a display warmed before the weight-change column existed", () => {
+it("keeps serving a display warmed before the weight-change column existed", () => {
   const presentation = buildHeatmapPresentation({
     bloodlineRows: [],
     frameStats: [],
@@ -101,5 +101,11 @@ it("rejects a display warmed before the weight-change column existed", () => {
   expect(showWeightChange).toBe(false);
   expect(
     isHeatmapPresentation({ ...presentation, displays: { "winRate:0:0": legacyDisplay } }),
+  ).toBe(true);
+  expect(
+    isHeatmapPresentation({
+      ...presentation,
+      displays: { "winRate:0:0": { ...legacyDisplay, showWeightChange: "yes" } },
+    }),
   ).toBe(false);
 });
