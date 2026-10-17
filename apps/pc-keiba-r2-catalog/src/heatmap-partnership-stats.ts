@@ -174,7 +174,7 @@ export const loadPartnershipStats = async (
     };
     const cohort = await input.cache.load({
       ...input.cohort,
-      query: { ...input.cohort.query, scope, horseIds },
+      query: { ...input.cohort.query, scope },
     });
     groups.push(cohort === null ? null : mappedRows({ entries, kind, values: cohort.values }));
   }

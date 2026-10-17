@@ -24,7 +24,6 @@ const makeRequest = (): PartnershipCohortRequest => ({
       R2_SQL_NAMESPACE: "ns",
       R2_SQL_TOKEN: "test",
     },
-    horseIds: [],
     scope: {
       surface: "芝",
       date: "20260913",
@@ -133,7 +132,7 @@ it("expires isolate entries and bounds large bodies without sacrificing durable 
   expect(request.execute).toHaveBeenCalledTimes(4);
 });
 
-it("bounds entry count and isolates horse cohorts by sorted target horse IDs", async () => {
+it("bounds entry count across many day cohorts", async () => {
   const request = makeRequest();
   const cache = createPartnershipCohortCache();
   await Promise.all(
@@ -142,8 +141,7 @@ it("bounds entry count and isolates horse cohorts by sorted target horse IDs", a
         ...request,
         query: {
           ...request.query,
-          horseIds: [String(2023100000 + index)],
-          scope: { ...request.query.scope, kind: "horseJockey" },
+          scope: { ...request.query.scope, revision: `snapshot-${String(index)}` },
         },
       }),
     ),
@@ -153,11 +151,27 @@ it("bounds entry count and isolates horse cohorts by sorted target horse IDs", a
     ...request,
     query: {
       ...request.query,
-      horseIds: ["2023100000"],
-      scope: { ...request.query.scope, kind: "horseJockey" },
+      scope: { ...request.query.scope, revision: "snapshot-0" },
     },
   });
   expect(request.execute).toHaveBeenCalledTimes(66);
+});
+
+it("shares one horse-jockey cohort across every race of the day", async () => {
+  const request = makeRequest();
+  const cache = createPartnershipCohortCache();
+  const horseJockey = {
+    ...request,
+    query: { ...request.query, scope: { ...request.query.scope, kind: "horseJockey" as const } },
+  };
+  await cache.load(horseJockey);
+  await cache.load({ ...horseJockey, warm: false });
+  expect(request.execute).toHaveBeenCalledTimes(1);
+  expect(request.kv.put).toHaveBeenCalledWith(
+    expect.stringMatching(/all-venues/u),
+    expect.any(String),
+    { expirationTtl: 129600 },
+  );
 });
 
 it("does not publish failures and permits retry after a failed singleflight", async () => {

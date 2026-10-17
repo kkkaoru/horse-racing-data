@@ -13,7 +13,6 @@ const input: PartnershipQueryInput = {
     R2_SQL_NAMESPACE: "pc_keiba",
     R2_SQL_TOKEN: "test",
   },
-  horseIds: [],
   scope: {
     surface: "芝",
     date: "20260913",
@@ -117,29 +116,26 @@ it("keeps ban-ei separate from flat and obstacle cohorts", () => {
   expect(sql).toMatch("FROM pc_keiba.nvd_ra ra");
 });
 
-it("limits lifetime horse-jockey scans to target horses across venues", () => {
+it("limits lifetime horse-jockey scans to the day's horses of the source across venues", () => {
   const sql = buildPartnershipCountsQuery({
     ...input,
-    horseIds: ["2023100002", "2023100001", "2023100001"],
     scope: { ...input.scope, kind: "horseJockey" },
   });
-  expect(sql).toMatch("IN ('2023100001', '2023100002')");
+  expect(sql).toMatch(
+    "AND btrim(se.ketto_toroku_bango) IN (\n    SELECT DISTINCT btrim(day.ketto_toroku_bango)\n    FROM pc_keiba.jvd_se day\n    WHERE day.kaisai_nen = '2026'\n      AND day.kaisai_tsukihi = '0913'\n      AND nullif(replace(btrim(day.ketto_toroku_bango), '0', ''), '') IS NOT NULL",
+  );
   expect(sql).toMatch("nullif(btrim(se.ketto_toroku_bango), '') AS partner_id");
   expect(sql).not.toMatch(/>=|se.keibajo_code =/u);
   expect(sql).toMatch("< '20260913'");
 });
 
-it("rejects unbounded horse scans and invalid IDs before querying", () => {
-  expect(() =>
-    buildPartnershipCountsQuery({ ...input, scope: { ...input.scope, kind: "horseJockey" } }),
-  ).toThrow("valid target horse IDs");
-  expect(() =>
+it("reads the NAR day's horses for a NAR horse-jockey cohort", () => {
+  expect(
     buildPartnershipCountsQuery({
       ...input,
-      horseIds: ["' OR TRUE"],
-      scope: { ...input.scope, kind: "horseJockey" },
+      scope: { ...input.scope, keibajoCode: "54", kind: "horseJockey", source: "nar" },
     }),
-  ).toThrow("valid target horse IDs");
+  ).toMatch("FROM pc_keiba.nvd_se day");
 });
 
 it("excludes zero-only person IDs from both history scans without changing the A8 thirty-year cohort", () => {
@@ -163,26 +159,6 @@ it("excludes zero-only person IDs from both history scans without changing the A
   expect(triple).toMatch("AND nullif(replace(btrim(se.banushi_code), '0', ''), '') IS NOT NULL");
 });
 
-it.each(["0", "0000000000"])("rejects unknown horse %s before querying", (id) => {
-  expect(() =>
-    buildPartnershipCountsQuery({
-      ...input,
-      horseIds: [id],
-      scope: { ...input.scope, kind: "horseJockey" },
-    }),
-  ).toThrow("valid target horse IDs");
-});
-
-it("preserves the original leading-zero horse identity", () => {
-  expect(
-    buildPartnershipCountsQuery({
-      ...input,
-      horseIds: ["000123"],
-      scope: { ...input.scope, kind: "horseJockey" },
-    }),
-  ).toMatch("IN ('000123')");
-});
-
 it.each([
   "horseJockey",
   "jockeyVenue",
@@ -194,7 +170,6 @@ it.each([
   (kind) => {
     const scoped: PartnershipQueryInput = {
       ...input,
-      horseIds: ["2020100001"],
       scope: {
         ...input.scope,
         date: "20261004",

@@ -78,7 +78,7 @@ it("executes all five partnership cohorts and their target races against the sam
           surface: "芝",
           eventScope: "arc-cohort-policy-v2",
         };
-        const input = { config, scope, horseIds: ["2020100001"] };
+        const input = { config, scope };
         const counts = (
           await c.runAndReadAll(buildPartnershipCountsQuery(input))
         ).getRowObjectsJson();

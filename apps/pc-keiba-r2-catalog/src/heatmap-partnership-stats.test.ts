@@ -37,7 +37,6 @@ const request = (): PartnershipStatsRequest => ({
         R2_SQL_NAMESPACE: "ns",
         R2_SQL_TOKEN: "test",
       },
-      horseIds: [],
       scope: {
         date: "20260913",
         keibajoCode: "06",
@@ -326,7 +325,9 @@ it.each(["", "  ", "000000", "0000000000"])(
     ]);
     expect(input.cache.load).toHaveBeenCalledWith(
       expect.objectContaining({
-        query: expect.objectContaining({ horseIds: ["000123"] }),
+        query: expect.objectContaining({
+          scope: expect.objectContaining({ kind: "horseJockey" }),
+        }),
       }),
     );
   },

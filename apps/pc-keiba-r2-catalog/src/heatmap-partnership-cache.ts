@@ -118,15 +118,14 @@ export const createPartnershipCohortCache = (): PartnershipCohortCache => {
   };
   return {
     load: async (request) => {
-      const horses: string =
-        request.query.scope.kind === "horseJockey"
-          ? [...new Set(request.query.horseIds)].toSorted().join(",")
-          : "";
+      // Horse-jockey cohorts are day-wide like the venue cohorts, so every
+      // kind keys on its scope alone (the trailing empty part keeps the keys
+      // of already-cached venue cohorts unchanged).
       const key: string = [
         request.query.config.R2_SQL_ACCOUNT_ID,
         request.query.config.R2_SQL_NAMESPACE,
         partnershipCacheKey(request.query.scope),
-        horses,
+        "",
       ]
         .map(encodeURIComponent)
         .join(":");

@@ -17,7 +17,6 @@ import {
 export interface PartnershipQueryInput {
   config: R2SqlCatalogConfig;
   scope: PartnershipScope;
-  horseIds: readonly string[];
 }
 
 export interface PartnershipEntriesQueryInput {
@@ -34,7 +33,6 @@ const PARTNER_COLUMNS: Record<PartnershipKind, string> = {
   ownerVenue: "banushi_code",
   jockeyTrainerOwner: "chokyoshi_code",
 };
-const HORSE_ID_PATTERN: RegExp = /^\d{1,20}$/u;
 
 // Ban-ei is a separate discipline, not flat dirt or a JRA obstacle race.
 const partnershipSurfaceSql = (column: string): string =>
@@ -60,19 +58,19 @@ export const buildPartnershipEntriesQuery = (input: PartnershipEntriesQueryInput
   ORDER BY se.umaban`;
 };
 
-const horsePredicate = (input: PartnershipQueryInput): string => {
-  if (input.scope.kind !== "horseJockey") return "";
-  if (
-    input.horseIds.length === 0 ||
-    !input.horseIds.every((id) => HORSE_ID_PATTERN.test(id) && !/^0+$/u.test(id))
-  ) {
-    throw new Error("Horse partnership queries require valid target horse IDs");
-  }
-  return `AND btrim(se.ketto_toroku_bango) IN (${[...new Set(input.horseIds)]
-    .toSorted()
-    .map((id) => `'${id}'`)
-    .join(", ")})`;
-};
+// Horse-jockey counts cover every horse running in the source on that date,
+// so one cohort serves all of the day's races instead of one per race (the
+// per-race scan of a horse list costs as much as the whole day's).
+const horsePredicate = (input: PartnershipQueryInput): string =>
+  input.scope.kind === "horseJockey"
+    ? `AND btrim(se.ketto_toroku_bango) IN (
+    SELECT DISTINCT btrim(day.ketto_toroku_bango)
+    FROM ${tableName(input.config, currentTables(input.scope.source).runnerTable)} day
+    WHERE day.kaisai_nen = '${input.scope.date.slice(0, 4)}'
+      AND day.kaisai_tsukihi = '${input.scope.date.slice(4)}'
+      AND nullif(replace(btrim(day.ketto_toroku_bango), '0', ''), '') IS NOT NULL
+  )`
+    : "";
 
 // Keep thirty-year cohorts bounded to today's actual owners/combinations.
 // The triple cache is shared across venues, so its target identities are too.
