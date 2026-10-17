@@ -13,7 +13,9 @@ import {
   normalizeBudget,
   planGroups,
   readClefBets,
+  readHiddenBetColumns,
   summarizePlanSet,
+  trimName,
 } from "./clef-bets";
 
 const widePlan = {
@@ -192,4 +194,18 @@ it("formats plan odds, stakes and payouts as ranges", () => {
 
 it("summarizes the plan set in one line", () => {
   expect(summarizePlanSet(payload.plans)).toBe("2種類 ／ 3点 ／ 合計 2,000円 ／ 期待払戻 2,200円");
+});
+
+it("restores hidden bet columns or falls back to the device default", () => {
+  expect(readHiddenBetColumns('["騎手","枠番",3]', true)).toStrictEqual(["騎手"]);
+  expect(readHiddenBetColumns("[]", true)).toStrictEqual([]);
+  expect(readHiddenBetColumns(null, true)).toStrictEqual(["調教師", "馬主"]);
+  expect(readHiddenBetColumns(null, false)).toStrictEqual([]);
+  expect(readHiddenBetColumns("{broken", false)).toStrictEqual([]);
+  expect(readHiddenBetColumns('{"a":1}', true)).toStrictEqual(["調教師", "馬主"]);
+});
+
+it("trims half- and full-width spaces at both ends only", () => {
+  expect(trimName("　 Ｇ１　レーシング　　 ")).toBe("Ｇ１　レーシング");
+  expect(trimName("")).toBe("");
 });

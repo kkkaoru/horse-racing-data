@@ -69,6 +69,10 @@ const payload = {
   },
 };
 
+const blocked = (): never => {
+  throw new Error("blocked");
+};
+
 const race = { year: "2026", month: "10", day: "18", keibajoCode: "08", raceNumber: "03" };
 
 afterEach(() => {
@@ -213,4 +217,72 @@ it("requests without an odds snapshot before realtime data arrives", async () =>
       ),
     { timeout: 2000 },
   );
+});
+
+it("hides 調教師 and 馬主 on phones by default and remembers toggles on the device", async () => {
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => store.set(key, value),
+  });
+  vi.stubGlobal("matchMedia", (query: string) => ({ matches: query === "(max-width: 760px)" }));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>().mockImplementation(async () => Response.json(payload)),
+  );
+  render(<ClefBetSection {...race} />);
+  await screen.findByText("騎手フォー", {}, { timeout: 2000 });
+  expect(screen.getAllByRole("columnheader").map((cell) => cell.textContent)).toStrictEqual([
+    "馬券",
+    "枠番",
+    "馬番",
+    "馬名",
+    "騎手",
+    "オッズ",
+    "購入金額",
+    "払戻額",
+  ]);
+  fireEvent.click(screen.getByRole("checkbox", { name: "馬主" }));
+  fireEvent.click(screen.getByRole("checkbox", { name: "馬名" }));
+  expect(store.get("pc-keiba:bet-hidden-columns")).toBe('["調教師","馬名"]');
+  cleanup();
+  render(<ClefBetSection {...race} />);
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  expect(screen.getByRole("checkbox", { name: "馬名" })).toHaveProperty("checked", false);
+  expect(screen.getByRole("checkbox", { name: "馬主" })).toHaveProperty("checked", true);
+});
+
+it("shows every column on desktop and survives blocked storage", async () => {
+  vi.stubGlobal("matchMedia", () => ({ matches: false }));
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload)));
+  vi.stubGlobal("localStorage", { getItem: blocked, setItem: blocked });
+  render(<ClefBetSection {...race} />);
+  await screen.findByText("調教師フォー", {}, { timeout: 2000 });
+  expect(screen.getAllByRole("columnheader").length).toBe(10);
+  fireEvent.click(screen.getByRole("checkbox", { name: "騎手" }));
+  expect(screen.getAllByRole("columnheader").length).toBe(9);
+});
+
+it("trims half- and full-width spaces from jockey, trainer and owner names", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({
+        ...payload,
+        runners: [
+          {
+            ...payload.runners[1],
+            jockey: "\u3000騎手イレブン ",
+            trainer: " 調教師イレブン\u3000\u3000",
+            owner: "馬主イレブン\u3000",
+          },
+          payload.runners[0],
+        ],
+      }),
+    ),
+  );
+  render(<ClefBetSection {...race} />);
+  expect(await screen.findAllByText("騎手イレブン", {}, { timeout: 2000 })).toHaveLength(2);
+  expect(screen.getAllByText("調教師イレブン")).toHaveLength(2);
+  expect(screen.getAllByText("馬主イレブン")).toHaveLength(2);
 });

@@ -10625,3 +10625,11 @@ fieldset.race-results-chart-view-toggle {
   text-align: right;
   white-space: nowrap;
 }
+
+.clef-bet-columns {
+  border: var(--number-0-2);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8px-28);
+  padding: var(--number-0-2);
+}

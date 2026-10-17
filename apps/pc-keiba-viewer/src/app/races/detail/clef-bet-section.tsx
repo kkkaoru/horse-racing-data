@@ -5,6 +5,8 @@ import { useEffect, useId, useState, type ChangeEvent, type KeyboardEvent } from
 
 import {
   BET_BUDGET_STEP,
+  BET_COLUMNS_STORAGE_KEY,
+  OPTIONAL_BET_COLUMNS,
   DEFAULT_BET_BUDGET,
   MAX_BET_BUDGET,
   MIN_BET_BUDGET,
@@ -19,7 +21,9 @@ import {
   normalizeBudget,
   planGroups,
   readClefBets,
+  readHiddenBetColumns,
   summarizePlanSet,
+  trimName,
   type ClefBetCard,
   type ClefBetRunner,
   type ClefBetSuggestion,
@@ -34,6 +38,12 @@ interface ClefBetState {
 
 interface BetBodyProps {
   state: ClefBetState | null;
+  hidden: readonly string[];
+}
+
+interface ColumnTogglesProps {
+  hidden: readonly string[];
+  onToggle: (label: string, visible: boolean) => void;
 }
 
 interface GroupCellProps {
@@ -56,13 +66,14 @@ const SLIDER_MAX_BUDGET: number = 20_000;
 const LARGE_STEP: number = 1000;
 const FETCH_DELAY_MS: number = 400;
 const MISSING: string = "-";
+const MOBILE_QUERY: string = "(max-width: 760px)";
 const PICK_COLUMNS: readonly PickColumn[] = [
   { label: "枠番", pick: (runner) => String(runner.frameNumber) },
   { label: "馬番", pick: (runner) => String(runner.horseNumber) },
-  { label: "馬名", pick: (runner) => runner.horseName },
-  { label: "騎手", pick: (runner) => runner.jockey },
-  { label: "調教師", pick: (runner) => runner.trainer },
-  { label: "馬主", pick: (runner) => runner.owner },
+  { label: "馬名", pick: (runner) => trimName(runner.horseName) },
+  { label: "騎手", pick: (runner) => trimName(runner.jockey) },
+  { label: "調教師", pick: (runner) => trimName(runner.trainer) },
+  { label: "馬主", pick: (runner) => trimName(runner.owner) },
 ];
 
 const loadCard = async (url: string, signal: AbortSignal): Promise<ClefBetCard | null> => {
@@ -92,11 +103,50 @@ function GroupCell({ plan, runners, pick }: GroupCellProps) {
   );
 }
 
-function BetBody({ state }: BetBodyProps) {
+// Same control as the 競走成績 filters; the choice is kept on this device for every race.
+function ColumnToggles({ hidden, onToggle }: ColumnTogglesProps) {
+  return (
+    <fieldset className="clef-bet-columns">
+      <legend>表示する列</legend>
+      {OPTIONAL_BET_COLUMNS.map((label) => (
+        <label className="race-results-checkbox-label" key={label}>
+          <span>{label}</span>
+          <span className="race-results-checkbox-control">
+            <input
+              aria-label={label}
+              checked={!hidden.includes(label)}
+              onChange={(event) => onToggle(label, event.currentTarget.checked)}
+              type="checkbox"
+            />
+          </span>
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+const readStoredColumns = (): string | null => {
+  try {
+    return window.localStorage.getItem(BET_COLUMNS_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const writeStoredColumns = (hidden: readonly string[]): void => {
+  try {
+    window.localStorage.setItem(BET_COLUMNS_STORAGE_KEY, JSON.stringify(hidden));
+  } catch {
+    // Private mode or blocked storage only loses the remembered choice.
+  }
+};
+
+function BetBody({ state, hidden }: BetBodyProps) {
   if (state === null) return <p>推奨馬券を計算しています…</p>;
   const card = state.card;
   if (card === null) return <p>オッズ発表後に推奨馬券を表示します。</p>;
   const runners = new Map(card.runners.map((runner) => [runner.horseNumber, runner]));
+  const columns = PICK_COLUMNS.filter((column) => !hidden.includes(column.label));
   return (
     <>
       <p>{summarizePlanSet(card.plans)}</p>
@@ -106,7 +156,7 @@ function BetBody({ state }: BetBodyProps) {
           <thead>
             <tr>
               <th scope="col">馬券</th>
-              {PICK_COLUMNS.map((column) => (
+              {columns.map((column) => (
                 <th key={column.label} scope="col">
                   {column.label}
                 </th>
@@ -124,7 +174,7 @@ function BetBody({ state }: BetBodyProps) {
                   <span className="clef-bet-style">{betStyleLabel(plan.style)}</span>
                   <span className="clef-bet-structure">{describePlan(plan)}</span>
                 </th>
-                {PICK_COLUMNS.map((column) => (
+                {columns.map((column) => (
                   <GroupCell key={column.label} pick={column.pick} plan={plan} runners={runners} />
                 ))}
                 <td className="clef-bet-number">{formatPlanOdds(plan)}</td>
@@ -232,6 +282,17 @@ function BudgetControl({ budget, onChange }: BudgetControlProps) {
 export function ClefBetSection(race: ClefRerankRaceAddress) {
   const [budget, setBudget] = useState<number>(DEFAULT_BET_BUDGET);
   const [state, setState] = useState<ClefBetState | null>(null);
+  const [hidden, setHidden] = useState<string[]>([]);
+  useEffect(() => {
+    const mobile =
+      typeof window.matchMedia === "function" && window.matchMedia(MOBILE_QUERY).matches;
+    setHidden(readHiddenBetColumns(readStoredColumns(), mobile));
+  }, []);
+  const onToggle = (label: string, visible: boolean): void => {
+    const next = visible ? hidden.filter((item) => item !== label) : [...hidden, label];
+    setHidden(next);
+    writeStoredColumns(next);
+  };
   const oddsFetchedAt = useRealtimeRaceSelector((store) => store.payload?.odds?.fetchedAt ?? "");
   const url = `${buildClefBetsUrl(race, budget)}&odds=${encodeURIComponent(oddsFetchedAt)}`;
   useEffect(() => {
@@ -252,7 +313,8 @@ export function ClefBetSection(race: ClefRerankRaceAddress) {
     <section aria-label="推奨馬券" className="clef-bet-section">
       <h3>推奨馬券</h3>
       <BudgetControl budget={budget} onChange={setBudget} />
-      <BetBody state={state} />
+      <ColumnToggles hidden={hidden} onToggle={onToggle} />
+      <BetBody hidden={hidden} state={state} />
     </section>
   );
 }

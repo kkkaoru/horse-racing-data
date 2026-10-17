@@ -235,3 +235,26 @@ export const summarizePlanSet = (set: ClefBetPlanSet): string =>
     `合計 ${formatYen(set.totalStake)}`,
     `期待払戻 ${formatYen(set.expectedReturn)}`,
   ].join(" ／ ");
+
+export const OPTIONAL_BET_COLUMNS: readonly string[] = ["馬名", "騎手", "調教師", "馬主"];
+export const BET_COLUMNS_STORAGE_KEY: string = "pc-keiba:bet-hidden-columns";
+const MOBILE_HIDDEN_BET_COLUMNS: readonly string[] = ["調教師", "馬主"];
+
+const isOptionalColumn = (value: unknown): value is string =>
+  typeof value === "string" && OPTIONAL_BET_COLUMNS.includes(value);
+
+// The last choice on this device wins; otherwise phones start without 調教師 and 馬主.
+export const readHiddenBetColumns = (stored: string | null, mobile: boolean): string[] => {
+  try {
+    const parsed: unknown = stored === null ? null : JSON.parse(stored);
+    if (Array.isArray(parsed)) return parsed.filter(isOptionalColumn);
+  } catch {
+    // Unreadable storage falls back to the device default below.
+  }
+  return mobile ? [...MOBILE_HIDDEN_BET_COLUMNS] : [];
+};
+
+const EDGE_SPACES: RegExp = /^[\s\u3000]+|[\s\u3000]+$/gu;
+
+// Source names are padded with half- and full-width spaces; only the edges are removed.
+export const trimName = (value: string): string => value.replace(EDGE_SPACES, "");
