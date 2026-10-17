@@ -175,10 +175,14 @@ const createConditionHarness = () => {
       return Response.json({
         result: {
           rows: [
-            { entity: "2019105219", kind: "horse", show_count: 10, starts: 10, win_count: 8 },
-            { entity: "ルメール", kind: "jockey", show_count: 600, starts: 1000, win_count: 300 },
-            { entity: "木村", kind: "trainer", show_count: 250, starts: 500, win_count: 100 },
-            { entity: "シルク", kind: "owner", show_count: 800, starts: 2000, win_count: 300 },
+            { horse_key: "2019105219", show_count: 10, starts: 10, win_count: 8 },
+            { jockey_key: "ルメール", show_count: 600, starts: 1000, win_count: 300 },
+            { trainer_key: "木村", show_count: 250, starts: 500, win_count: 100 },
+            { owner_key: "シルク", show_count: 800, starts: 2000, win_count: 300 },
+            { horse_key: "2019105219", show_count: null, starts: null, win_count: null },
+            { jockey_key: "ルメール", show_count: null, starts: null, win_count: null },
+            { trainer_key: "木村", show_count: null, starts: null, win_count: null },
+            { owner_key: "シルク", show_count: null, starts: null, win_count: null },
           ],
         },
         success: true,
@@ -431,12 +435,12 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weights"]);
   expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["finish", "race-time"]);
   expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual([
-    "correlation-target",
+    "correlation-entries",
     "target-races",
   ]);
   expect(harness.fetchCalls.slice(6).toSorted()).toStrictEqual([
     "correlation-career",
-    "correlation-entries",
+    "correlation-target",
   ]);
   expect(harness.inflight.max).toBe(2);
   const descriptor = conditionHistoryStatsDescriptor({
@@ -467,12 +471,12 @@ it("omits the carried-weight classes for Ban'ei venues", async () => {
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weights"]);
   expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["finish", "race-time"]);
   expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual([
-    "correlation-target",
+    "correlation-entries",
     "target-races",
   ]);
   expect(harness.fetchCalls.slice(6).toSorted()).toStrictEqual([
     "correlation-career",
-    "correlation-entries",
+    "correlation-target",
   ]);
   expect(harness.inflight.max).toBe(2);
   const payload: unknown = await response.json();
@@ -491,12 +495,12 @@ it("coalesces concurrent condition-history misses into one R2 SQL set", async ()
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["frame", "weights"]);
   expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual(["finish", "race-time"]);
   expect(harness.fetchCalls.slice(4, 6).toSorted()).toStrictEqual([
-    "correlation-target",
+    "correlation-entries",
     "target-races",
   ]);
   expect(harness.fetchCalls.slice(6).toSorted()).toStrictEqual([
     "correlation-career",
-    "correlation-entries",
+    "correlation-target",
   ]);
   expect(harness.inflight.max).toBe(2);
 });
@@ -565,3 +569,73 @@ it("rejects condition-history requests with invalid filters", async () => {
   expect(missingSource.status).toBe(400);
   expect(badFlag.status).toBe(400);
 });
+
+it("reuses one day of career rows for another race of the same source and date", async () => {
+  const harness = createConditionHarness();
+  await handleRequest(new Request(conditionUrl), harness.env, harness.dependencies);
+  harness.fetchCalls.length = 0;
+  const response = await handleRequest(
+    new Request(conditionUrl.replace("raceNumber=08", "raceNumber=09")),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(harness.fetchCalls.toSorted()).toStrictEqual([
+    "correlation-entries",
+    "correlation-target",
+    "finish",
+    "frame",
+    "race-time",
+    "target-races",
+    "weights",
+  ]);
+  expect(harness.kvEntries.has("condition-day-career:v1:jra:20260822")).toBe(true);
+});
+
+it("recomputes a cached day that predates one of the race's runners", async () => {
+  const harness = createConditionHarness();
+  harness.kvEntries.set(
+    "condition-day-career:v1:jra:20260822",
+    JSON.stringify({ requested: ["jockey\u0000別の騎手"], rows: [] }),
+  );
+  const response = await handleRequest(
+    new Request(conditionUrl),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(200);
+  expect(harness.fetchCalls.filter((kind) => kind === "correlation-career")).toStrictEqual([
+    "correlation-career",
+  ]);
+  const payload: unknown = await response.json();
+  if (!isRecord(payload) || !isRecord(payload.raceTimeStats))
+    throw new Error("expected race time stats");
+  const rows = payload.raceTimeStats.correlationRows;
+  if (!Array.isArray(rows) || !isRecord(rows[0])) throw new Error("expected correlation rows");
+  expect(rows[0].score).toBe(0.61);
+  expect(
+    JSON.parse(harness.kvEntries.get("condition-day-career:v1:jra:20260822") ?? "{}").requested,
+  ).toStrictEqual([
+    "horse\u00002019105219",
+    "jockey\u0000ルメール",
+    "trainer\u0000木村",
+    "owner\u0000シルク",
+  ]);
+});
+
+it.each(["not json", '{"requested":"x","rows":[]}', "null"])(
+  "recomputes a corrupt cached day: %s",
+  async (body) => {
+    const harness = createConditionHarness();
+    harness.kvEntries.set("condition-day-career:v1:jra:20260822", body);
+    const response = await handleRequest(
+      new Request(conditionUrl),
+      harness.env,
+      harness.dependencies,
+    );
+    expect(response.status).toBe(200);
+    expect(harness.fetchCalls.filter((kind) => kind === "correlation-career")).toStrictEqual([
+      "correlation-career",
+    ]);
+  },
+);

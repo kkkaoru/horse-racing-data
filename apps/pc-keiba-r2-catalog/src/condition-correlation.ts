@@ -32,6 +32,11 @@ export interface ConditionCorrelationInput {
   targetRows: ReadonlyArray<Record<string, unknown>>;
 }
 
+export interface DayCareer {
+  requested: string[];
+  rows: Record<string, unknown>[];
+}
+
 interface CareerStats {
   showCount: number;
   starts: number;
@@ -84,6 +89,18 @@ const ODDS_FLOOR = 10;
 const SCORE_DECIMALS = 100;
 const VALUE_DECIMALS = 10;
 const CAREER_KINDS: readonly CareerKind[] = ["horse", "jockey", "trainer", "owner"];
+const CAREER_KEY_COLUMNS: readonly string[] = [
+  "horse_key",
+  "jockey_key",
+  "trainer_key",
+  "owner_key",
+];
+const CAREER_ENTITY_TABLES: readonly string[] = [
+  "day_horses",
+  "day_jockeys",
+  "day_trainers",
+  "day_owners",
+];
 
 const round = (value: number, scale: number): number => Math.round(value * scale) / scale;
 
@@ -245,34 +262,43 @@ WHERE ${currentRaceIdentitySql(checked)}
   AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) IS NOT NULL`;
 };
 
-const careerArmSql = (kind: CareerKind, column: string, filter: string): string => `SELECT
-    '${kind}' AS kind,
-    ${column} AS entity,
-    count(*) AS starts,
-    sum(CASE WHEN finish_position = 1 THEN 1 ELSE 0 END) AS win_count,
-    sum(CASE WHEN finish_position <= 3 THEN 1 ELSE 0 END) AS show_count
-  FROM career_history
-  WHERE ${column} IN (${filter})
-  GROUP BY ${column}`;
+const careerKeysSql = (keys: readonly (string | null)[]): string =>
+  keys.map((key) => key ?? "CAST(NULL AS VARCHAR)").join(", ");
 
-// Career (all prior races, no window) starts / wins / top-3 counts for the
-// current runners, jockeys, trainers and owners, as in the PostgreSQL query.
-export const buildConditionCorrelationCareerQuery = (
+const requestedEntitySql = (index: number, table: string, column: string): string =>
+  `SELECT ${careerKeysSql(CAREER_KEY_COLUMNS.map((_, position) => (position === index ? column : null)))}, CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT) FROM ${table}`;
+
+// Career (all prior races, no window) starts / wins / top-3 counts are the
+// same in every race of a day, so one query serves every race of the source on
+// that date. Each prior start is matched against the day's horses, jockeys,
+// trainers and owners and aggregated per entity in a single GROUPING SETS scan
+// (a per-race UNION of four arms rescanned the whole history four times per
+// race). The day's entities are appended with NULL counts so a cached result
+// can tell a debut runner (no career rows) from an entrant added after it.
+export const buildConditionCorrelationDayCareerQuery = (
   env: R2SqlCatalogConfig,
   filters: WinRateHeatmapStatsFilters,
 ): string => {
   const checked = validateFilters(filters);
   const runnerTable = tableName(env, currentTables(checked.source).runnerTable);
   return `
-WITH current_entries AS (
-  SELECT
+WITH day_entries AS (
+  SELECT DISTINCT
     btrim(coalesce(ketto_toroku_bango, '')) AS ketto_toroku_bango,
     ${trimmedNameSql("kishumei_ryakusho")} AS jockey_name,
     ${trimmedNameSql("chokyoshimei_ryakusho")} AS trainer_name,
     ${trimmedNameSql("banushimei")} AS owner_name
   FROM ${runnerTable}
-  WHERE ${currentRaceIdentitySql(checked)}
+  WHERE kaisai_nen = '${checked.date.slice(0, 4)}'
+    AND kaisai_tsukihi = '${checked.date.slice(4)}'
 ),
+day_horses AS (
+  SELECT DISTINCT ketto_toroku_bango AS horse_key FROM day_entries
+  WHERE ketto_toroku_bango <> '' AND regexp_match(ketto_toroku_bango, '^0+$') IS NULL
+),
+day_jockeys AS (SELECT DISTINCT jockey_name AS jockey_key FROM day_entries),
+day_trainers AS (SELECT DISTINCT trainer_name AS trainer_key FROM day_entries),
+day_owners AS (SELECT DISTINCT owner_name AS owner_key FROM day_entries),
 career_history AS (
   SELECT
     btrim(coalesce(se.ketto_toroku_bango, '')) AS ketto_toroku_bango,
@@ -284,18 +310,81 @@ career_history AS (
   WHERE concat(se.kaisai_nen, se.kaisai_tsukihi) < '${checked.date}'
     AND se.kaisai_nen <= '${checked.date.slice(0, 4)}'
     AND ${finishPositionSql("se")} > 0
+),
+keyed AS (
+  SELECT h.horse_key, j.jockey_key, t.trainer_key, o.owner_key, ch.finish_position
+  FROM career_history ch
+  LEFT JOIN day_horses h ON h.horse_key = ch.ketto_toroku_bango
+  LEFT JOIN day_jockeys j ON j.jockey_key = ch.jockey_name
+  LEFT JOIN day_trainers t ON t.trainer_key = ch.trainer_name
+  LEFT JOIN day_owners o ON o.owner_key = ch.owner_name
+  WHERE h.horse_key IS NOT NULL OR j.jockey_key IS NOT NULL
+    OR t.trainer_key IS NOT NULL OR o.owner_key IS NOT NULL
 )
-${unionHistorySql([
-  careerArmSql(
-    "horse",
-    "ketto_toroku_bango",
-    `SELECT ketto_toroku_bango FROM current_entries
-      WHERE ketto_toroku_bango <> '' AND regexp_match(ketto_toroku_bango, '^0+$') IS NULL`,
+SELECT ${CAREER_KEY_COLUMNS.join(", ")},
+  count(*) AS starts,
+  sum(CASE WHEN finish_position = 1 THEN 1 ELSE 0 END) AS win_count,
+  sum(CASE WHEN finish_position <= 3 THEN 1 ELSE 0 END) AS show_count
+FROM keyed
+GROUP BY GROUPING SETS (${CAREER_KEY_COLUMNS.map((column) => `(${column})`).join(", ")})
+UNION ALL
+${unionHistorySql(
+  CAREER_ENTITY_TABLES.map((table, index) =>
+    requestedEntitySql(index, table, CAREER_KEY_COLUMNS[index]!),
   ),
-  careerArmSql("jockey", "jockey_name", "SELECT jockey_name FROM current_entries"),
-  careerArmSql("trainer", "trainer_name", "SELECT trainer_name FROM current_entries"),
-  careerArmSql("owner", "owner_name", "SELECT owner_name FROM current_entries"),
-])}`;
+)}`;
+};
+
+const entityKindOf = (row: Record<string, unknown>): [CareerKind, string] | null => {
+  const index = CAREER_KEY_COLUMNS.findIndex((column) => typeof row[column] === "string");
+  return index < 0 ? null : [CAREER_KINDS[index]!, textOf(row[CAREER_KEY_COLUMNS[index]!])];
+};
+
+// Splits the day query into the requested entity keys and per-entity career
+// rows shaped like the former per-race query ({kind, entity, counts}).
+export const normaliseDayCareerRows = (rows: ReadonlyArray<Record<string, unknown>>): DayCareer =>
+  rows.reduce<DayCareer>(
+    (career, row) => {
+      const entity = entityKindOf(row);
+      if (entity === null) return career;
+      const [kind, name] = entity;
+      return row.starts === null || row.starts === undefined
+        ? { ...career, requested: [...career.requested, careerKey(kind, name)] }
+        : {
+            ...career,
+            rows: [
+              ...career.rows,
+              {
+                entity: name,
+                kind,
+                show_count: row.show_count,
+                starts: row.starts,
+                win_count: row.win_count,
+              },
+            ],
+          };
+    },
+    { requested: [], rows: [] },
+  );
+
+const entryCareerKeys = (entry: Record<string, unknown>): string[] => {
+  const horse = textOf(entry.ketto_toroku_bango);
+  return [
+    ...(horse === "" || /^0+$/u.test(horse) ? [] : [careerKey("horse", horse)]),
+    careerKey("jockey", textOf(entry.jockey_name)),
+    careerKey("trainer", textOf(entry.trainer_name)),
+    careerKey("owner", textOf(entry.owner_name)),
+  ];
+};
+
+// A day result computed before an entrant (or a jockey change) was published
+// does not cover that runner and must be recomputed.
+export const dayCareerCoversEntries = (
+  career: DayCareer,
+  entryRows: ReadonlyArray<Record<string, unknown>>,
+): boolean => {
+  const requested = new Set(career.requested);
+  return entryRows.every((entry) => entryCareerKeys(entry).every((key) => requested.has(key)));
 };
 
 // ---- scoring ------------------------------------------------------------

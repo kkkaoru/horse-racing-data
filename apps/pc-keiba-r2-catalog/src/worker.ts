@@ -34,10 +34,13 @@ import {
   type CacheDescriptor,
 } from "./cache";
 import {
-  buildConditionCorrelationCareerQuery,
+  buildConditionCorrelationDayCareerQuery,
   buildConditionCorrelationEntriesQuery,
   buildConditionCorrelationTargetQuery,
   composeConditionCorrelationRows,
+  dayCareerCoversEntries,
+  normaliseDayCareerRows,
+  type DayCareer,
 } from "./condition-correlation";
 import { coalesce } from "./inflight";
 import { normaliseCatalogRaceKeyRow, normaliseDailyRaceEntryRows } from "./normalise";
@@ -1263,6 +1266,56 @@ const handleRaceEntityRecentResults = async (
   return jsonRowsResponse(body, catalogManifest === null ? "r2-sql" : "r2-catalog-parquet");
 };
 
+const DAY_CAREER_KV_PREFIX = "condition-day-career:v1";
+
+const EMPTY_DAY_CAREER: DayCareer = { requested: [], rows: [] };
+
+// A missing or corrupt cached day decodes to no requested entities, which
+// never covers a race with runners and so is recomputed.
+const decodeDayCareer = (body: string): DayCareer => {
+  try {
+    const value: unknown = JSON.parse(body);
+    return typeof value === "object" &&
+      value !== null &&
+      "requested" in value &&
+      "rows" in value &&
+      Array.isArray(value.requested) &&
+      Array.isArray(value.rows)
+      ? { requested: value.requested, rows: value.rows }
+      : EMPTY_DAY_CAREER;
+  } catch {
+    return EMPTY_DAY_CAREER;
+  }
+};
+
+// Career rows are shared by every race of the source on that date: read them
+// from KV and recompute (once per isolate at a time) only when absent or when
+// the cached day predates one of this race's runners.
+const loadDayCareerRows = async (input: {
+  dependencies: WorkerDependencies;
+  entryRows: ReadonlyArray<Record<string, unknown>>;
+  env: Env;
+  filters: WinRateHeatmapStatsFilters;
+}): Promise<Record<string, unknown>[]> => {
+  const key = `${DAY_CAREER_KV_PREFIX}:${input.filters.source}:${input.filters.date}`;
+  const cached = decodeDayCareer((await input.env.CATALOG_KV.get(key)) ?? "");
+  if (dayCareerCoversEntries(cached, input.entryRows)) return cached.rows;
+  const body = await coalesce(key, async () => {
+    const computed = JSON.stringify(
+      normaliseDayCareerRows(
+        await executeR2Sql(
+          input.env,
+          buildConditionCorrelationDayCareerQuery(input.env, input.filters),
+          input.dependencies.fetchImpl,
+        ),
+      ),
+    );
+    await input.env.CATALOG_KV.put(key, computed, { expirationTtl: HEATMAP_KV_TTL_SECONDS });
+    return computed;
+  });
+  return decodeDayCareer(body).rows;
+};
+
 const conditionHistoryStatsBody = async (
   env: Env,
   dependencies: WorkerDependencies,
@@ -1285,13 +1338,13 @@ const conditionHistoryStatsBody = async (
   ]);
   // Race-time correlation inputs; without them the viewer recomputed the
   // correlation rows with an 11-25s PostgreSQL query for every race.
-  const [targetRaceRows, correlationTargetRows] = await Promise.all([
+  const [targetRaceRows, correlationEntryRows] = await Promise.all([
     executeR2Sql(env, buildConditionTargetRacesQuery(env, filters), dependencies.fetchImpl),
-    executeR2Sql(env, buildConditionCorrelationTargetQuery(env, filters), dependencies.fetchImpl),
-  ]);
-  const [correlationEntryRows, correlationCareerRows] = await Promise.all([
     executeR2Sql(env, buildConditionCorrelationEntriesQuery(env, filters), dependencies.fetchImpl),
-    executeR2Sql(env, buildConditionCorrelationCareerQuery(env, filters), dependencies.fetchImpl),
+  ]);
+  const [correlationTargetRows, correlationCareerRows] = await Promise.all([
+    executeR2Sql(env, buildConditionCorrelationTargetQuery(env, filters), dependencies.fetchImpl),
+    loadDayCareerRows({ dependencies, entryRows: correlationEntryRows, env, filters }),
   ]);
   const { carriedRows, weightChangeRows, weightRows } =
     splitConditionWeightClassRows(weightClassRows);

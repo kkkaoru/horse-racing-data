@@ -2,10 +2,12 @@
 import { expect, it } from "vitest";
 
 import {
-  buildConditionCorrelationCareerQuery,
+  buildConditionCorrelationDayCareerQuery,
   buildConditionCorrelationEntriesQuery,
   buildConditionCorrelationTargetQuery,
   composeConditionCorrelationRows,
+  dayCareerCoversEntries,
+  normaliseDayCareerRows,
 } from "./condition-correlation";
 import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters } from "./types";
 
@@ -46,15 +48,76 @@ it("reads the current race runners with popularity and odds", () => {
   expect(sql.includes("/ 10.0 AS odds")).toBe(true);
 });
 
-it("reads career counts before the race date for horses, jockeys, trainers and owners", () => {
-  const sql = buildConditionCorrelationCareerQuery(env, filters);
-  expect(sql.includes("concat(se.kaisai_nen, se.kaisai_tsukihi) < '20260923'")).toBe(true);
-  expect(sql.includes("'horse' AS kind")).toBe(true);
-  expect(sql.includes("'jockey' AS kind")).toBe(true);
-  expect(sql.includes("'trainer' AS kind")).toBe(true);
-  expect(sql.includes("'owner' AS kind")).toBe(true);
-  expect(sql.includes("regexp_match(ketto_toroku_bango, '^0+$') IS NULL")).toBe(true);
-  expect(sql.split("UNION ALL").length).toBe(4);
+it("reads one day of career counts in a single grouped scan of the source history", () => {
+  const sql = buildConditionCorrelationDayCareerQuery(env, filters);
+  expect(sql).toMatch(
+    "FROM pc_keiba.nvd_se\n  WHERE kaisai_nen = '2026'\n    AND kaisai_tsukihi = '0923'",
+  );
+  expect(sql).toMatch("concat(se.kaisai_nen, se.kaisai_tsukihi) < '20260923'");
+  expect(sql).toMatch("regexp_match(ketto_toroku_bango, '^0+$') IS NULL");
+  expect(sql).toMatch("LEFT JOIN day_horses h ON h.horse_key = ch.ketto_toroku_bango");
+  expect(sql).toMatch("LEFT JOIN day_owners o ON o.owner_key = ch.owner_name");
+  expect(sql).toMatch(
+    "GROUP BY GROUPING SETS ((horse_key), (jockey_key), (trainer_key), (owner_key))",
+  );
+  expect(sql).toMatch(
+    "SELECT CAST(NULL AS VARCHAR), jockey_key, CAST(NULL AS VARCHAR), CAST(NULL AS VARCHAR), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT), CAST(NULL AS BIGINT) FROM day_jockeys",
+  );
+  expect(sql).not.toMatch("race_bango");
+  expect(sql.match(/FROM career_history/gu)).toStrictEqual(["FROM career_history"]);
+});
+
+it("splits day career rows into requested entities and per-entity counts", () => {
+  expect(
+    normaliseDayCareerRows([
+      { horse_key: "2020100001", show_count: 3, starts: 10, win_count: 1 },
+      { jockey_key: "騎手A", show_count: null, starts: null, win_count: null },
+      {
+        horse_key: null,
+        jockey_key: null,
+        owner_key: null,
+        show_count: 9,
+        starts: 99,
+        win_count: 2,
+      },
+      { owner_key: "馬主B", show_count: "4", starts: "8", win_count: "2" },
+      { horse_key: "2020100001", starts: undefined },
+    ]),
+  ).toStrictEqual({
+    requested: ["jockey\u0000騎手A", "horse\u00002020100001"],
+    rows: [
+      { entity: "2020100001", kind: "horse", show_count: 3, starts: 10, win_count: 1 },
+      { entity: "馬主B", kind: "owner", show_count: "4", starts: "8", win_count: "2" },
+    ],
+  });
+});
+
+it("covers a race only when every runner's horse, jockey, trainer and owner was requested", () => {
+  const career = {
+    requested: [
+      "horse\u00002020100001",
+      "jockey\u0000騎手A",
+      "trainer\u0000調教師A",
+      "owner\u0000馬主A",
+    ],
+    rows: [],
+  };
+  const entry = {
+    jockey_name: "騎手A",
+    ketto_toroku_bango: "2020100001",
+    owner_name: "馬主A",
+    trainer_name: "調教師A",
+  };
+  expect(dayCareerCoversEntries(career, [entry])).toBe(true);
+  expect(dayCareerCoversEntries(career, [{ ...entry, ketto_toroku_bango: "0000000000" }])).toBe(
+    true,
+  );
+  expect(dayCareerCoversEntries(career, [{ ...entry, ketto_toroku_bango: "" }])).toBe(true);
+  expect(dayCareerCoversEntries(career, [{ ...entry, jockey_name: "騎手B" }])).toBe(false);
+  expect(dayCareerCoversEntries(career, [{ ...entry, ketto_toroku_bango: "2021100002" }])).toBe(
+    false,
+  );
+  expect(dayCareerCoversEntries({ requested: [], rows: [] }, [])).toBe(true);
 });
 
 it("scores runners without targets or careers as neutral and orders ties by horse number", () => {
