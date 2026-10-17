@@ -99,6 +99,18 @@ const createHarness = (rows: unknown[] = []) => {
   };
 };
 
+// Keeps a heatmap test on the per-race pedigree count path: the cached day
+// says this race has no named pedigree, so no day query runs.
+const presetUnnamedDayPedigrees = (
+  harness: ReturnType<typeof createHarness>,
+  race: { date: string; keibajoCode: string; raceBango: string; source: "jra" | "nar" },
+): void => {
+  harness.kvEntries.set(
+    `heatmap-day-known-bloodline:v1:${race.source}:${race.date}`,
+    JSON.stringify({ [`${race.keibajoCode}:${race.raceBango}`]: 0 }),
+  );
+};
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -1865,6 +1877,12 @@ it("keeps heatmap race numbers numeric for overseas venues", async () => {
 
 it("queries R2 SQL for heatmap stats and maps empty details arrays", async () => {
   const harness = createHarness();
+  presetUnnamedDayPedigrees(harness, {
+    date: "20260715",
+    keibajoCode: "05",
+    raceBango: "01",
+    source: "jra",
+  });
   harness.dependencies.fetchImpl = async (input, init) => {
     harness.fetchCalls.push({ input: String(input), init });
     const query = String(init?.body);
@@ -1957,11 +1975,11 @@ it("queries R2 SQL for heatmap stats and maps empty details arrays", async () =>
       },
     ],
   });
-  // bloodline, known-pedigree count, similar
+  // bloodline, similar, then the known-pedigree count after the cached day read
   expect(harness.fetchCalls).toHaveLength(3);
   expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("ketto_joho_01b");
-  expect(String(harness.fetchCalls[1]?.init?.body)).toMatch("SELECT count(*) AS known");
-  expect(String(harness.fetchCalls[2]?.init?.body)).toMatch("'jockey' AS kind");
+  expect(String(harness.fetchCalls[1]?.init?.body)).toMatch("'jockey' AS kind");
+  expect(String(harness.fetchCalls[2]?.init?.body)).toMatch("SELECT count(*) AS known");
   expect(harness.cacheCalls.puts).toHaveLength(1);
   expect(harness.kvCalls.puts).toHaveLength(1);
 });
@@ -2020,6 +2038,12 @@ it("reads cached heatmap stats from Cache API and KV", async () => {
 
 it("queries NAR heatmap stats with optional filters off and ignores rows-shaped KV", async () => {
   const harness = createHarness([]);
+  presetUnnamedDayPedigrees(harness, {
+    date: "20260715",
+    keibajoCode: "03",
+    raceBango: "08",
+    source: "nar",
+  });
   const descriptor = heatmapStatsDescriptor({
     date: "20260715",
     includeDistance: false,
@@ -2067,6 +2091,12 @@ it.each(["cache-api", "kv"])(
         wins: 1,
       },
     ]);
+    presetUnnamedDayPedigrees(harness, {
+      date: "20261004",
+      keibajoCode: "08",
+      raceBango: "01",
+      source: "jra",
+    });
     const filters = {
       date: "20261004",
       includeDistance: true,
@@ -2106,8 +2136,8 @@ it.each(["cache-api", "kv"])(
       }),
     ).toStrictEqual([
       buildWinRateHeatmapBloodlineQuery(harness.env, filters),
-      buildWinRateHeatmapKnownBloodlineCountQuery(harness.env, filters),
       buildWinRateHeatmapSimilarQuery(harness.env, filters),
+      buildWinRateHeatmapKnownBloodlineCountQuery(harness.env, filters),
     ]);
     expect(harness.cacheCalls.puts).toHaveLength(1);
     expect(harness.kvCalls.puts).toHaveLength(1);
@@ -2118,6 +2148,12 @@ it.each(["cache-api", "kv", "miss"])(
   "does not cache a genuinely empty heatmap after a %s lookup",
   async (tier) => {
     const harness = createHarness();
+    presetUnnamedDayPedigrees(harness, {
+      date: "20261004",
+      keibajoCode: "08",
+      raceBango: "01",
+      source: "jra",
+    });
     const descriptor = heatmapStatsDescriptor({
       date: "20261004",
       includeDistance: true,
@@ -2158,6 +2194,12 @@ it.each(["cache-api", "kv"])(
   async (tier) => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const harness = createHarness();
+    presetUnnamedDayPedigrees(harness, {
+      date: "20261004",
+      keibajoCode: "08",
+      raceBango: "01",
+      source: "jra",
+    });
     const descriptor = heatmapStatsDescriptor({
       date: "20261004",
       includeDistance: true,

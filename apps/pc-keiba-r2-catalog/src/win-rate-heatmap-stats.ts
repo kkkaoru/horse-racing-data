@@ -704,6 +704,45 @@ SELECT count(${usesCurrentProfile(checked) ? "name" : "*"}) AS known
 FROM current_bloodlines`;
 };
 
+// Known pedigree name counts for every race of the source on one date, keyed
+// by venue and race. Pedigrees do not change during a day, so one master
+// lookup (the costly part of the per-race count) serves every race. Only
+// races without current-profile names use it.
+export const buildWinRateHeatmapDayKnownBloodlineQuery = (
+  env: R2SqlCatalogConfig,
+  filters: WinRateHeatmapStatsFilters,
+): string => {
+  const checked = validateFilters(filters);
+  const current = currentTables(checked.source);
+  return `
+WITH current_entries AS (
+  SELECT
+    se.keibajo_code,
+    se.race_bango,
+    ${currentBloodlineSelectSql(false)}
+  FROM ${tableName(env, current.runnerTable)} se
+  ${masterJoinsSql(env, current, false)}
+  WHERE se.kaisai_nen = '${checked.date.slice(0, 4)}'
+    AND se.kaisai_tsukihi = '${checked.date.slice(4)}'
+    AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) IS NOT NULL
+    AND ${trimmedSql("se.ketto_toroku_bango")} IS NOT NULL
+)
+SELECT
+  keibajo_code,
+  race_bango,
+  ${BLOODLINE_KETTO_COLUMNS.map(
+    (entry) => `sum(CASE WHEN ${entry.category} <> '${UNKNOWN_NAME}' THEN 1 ELSE 0 END)`,
+  ).join("\n    + ")} AS known
+FROM current_entries
+GROUP BY keibajo_code, race_bango`;
+};
+
+export const dayKnownBloodlineKey = (keibajoCode: unknown, raceBango: unknown): string =>
+  `${String(keibajoCode)}:${String(raceBango)}`;
+
+export const usesDayKnownBloodlineCount = (filters: WinRateHeatmapStatsFilters): boolean =>
+  !usesCurrentProfile(filters);
+
 // Presentation only: Arc identity and counts come from source profiles.
 export const buildArcBloodlineLabelsQuery = (
   env: R2SqlCatalogConfig,

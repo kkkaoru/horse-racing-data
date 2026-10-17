@@ -32,9 +32,13 @@ const similarSqlRow = {
 const heatmapUrl =
   "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=08&day=22&keibajoCode=07&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1";
 
+// A cached day that knows this race has no named pedigree keeps the per-race
+// count path these tests exercise; the day-level skip has its own tests.
+const DAY_KNOWN_KEY = "heatmap-day-known-bloodline:v1:jra:20260822";
+
 const createHeatmapHarness = () => {
   const cacheEntries = new Map<string, Response>();
-  const kvEntries = new Map<string, string>();
+  const kvEntries = new Map<string, string>([[DAY_KNOWN_KEY, '{"07:08":0}']]);
   const fetchCalls: string[] = [];
   const queryBodies: string[] = [];
   const cache: CacheStore = {
@@ -198,7 +202,7 @@ it("returns similar rows and flags bloodline when only the bloodline query fails
   ]);
   expect(isRecord(body) && Array.isArray(body.similarRows) ? body.similarRows.length : 0).toBe(1);
   expect(harness.cacheEntries.size).toBe(0);
-  expect(harness.kvEntries.size).toBe(0);
+  expect([...harness.kvEntries.keys()]).toStrictEqual([DAY_KNOWN_KEY]);
   consoleError.mockRestore();
 });
 
@@ -232,7 +236,7 @@ it("returns empty bloodline rows without waiting when no runner has a known pedi
     [],
   ]);
   expect(bloodlineSignals.map((signal) => signal?.aborted)).toStrictEqual([true]);
-  expect(harness.kvEntries.size).toBe(1);
+  expect(harness.kvEntries.size).toBe(2);
 });
 
 it("waits for the bloodline query when the known pedigree count fails", async () => {
@@ -839,4 +843,94 @@ it("holds the account-wide R2 SQL gate for heatmap queries but not for light rea
   acquire.mockClear();
   await handleRequest(new Request("https://catalog.test/health"), env, harness.dependencies);
   expect(acquire).not.toHaveBeenCalled();
+});
+
+it("skips the per-race pedigree count when the cached day already knows named runners", async () => {
+  const harness = createHeatmapHarness();
+  harness.kvEntries.set(DAY_KNOWN_KEY, '{"07:08":42}');
+  const response = await handleRequest(new Request(heatmapUrl), harness.env, harness.dependencies);
+  expect(response.status).toBe(200);
+  expect(harness.knownCountQueries).toStrictEqual([]);
+  expect(harness.fetchCalls.toSorted()).toStrictEqual(["bloodline", "similar"]);
+});
+
+it("computes the day's pedigree counts once on a miss and reuses them for later races", async () => {
+  const harness = createHeatmapHarness();
+  harness.kvEntries.delete(DAY_KNOWN_KEY);
+  const dayQueries: string[] = [];
+  const dependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async (input, init) => {
+      const text = typeof init?.body === "string" ? init.body : "";
+      if (text.includes("GROUP BY keibajo_code, race_bango")) {
+        dayQueries.push(text);
+        return Response.json({
+          result: {
+            rows: [
+              { keibajo_code: "07", known: 30, race_bango: "08" },
+              { keibajo_code: "07", known: 0, race_bango: "01" },
+            ],
+          },
+          success: true,
+        });
+      }
+      return harness.dependencies.fetchImpl(input, init);
+    },
+  };
+  const first = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
+  expect(first.status).toBe(200);
+  expect(dayQueries.length).toBe(1);
+  expect(harness.knownCountQueries).toStrictEqual([]);
+  expect(JSON.parse(harness.kvEntries.get(DAY_KNOWN_KEY) ?? "{}")).toStrictEqual({
+    "07:01": 0,
+    "07:08": 30,
+  });
+  const other = await handleRequest(
+    new Request(heatmapUrl.replace("raceNumber=08", "raceNumber=01")),
+    harness.env,
+    dependencies,
+  );
+  expect(other.status).toBe(200);
+  expect(dayQueries.length).toBe(1);
+  expect(harness.knownCountQueries.length).toBe(1);
+});
+
+it.each(["not json", "[1]", '{"07:01":3}'])(
+  "falls back to the per-race count when the cached day cannot answer for this race: %s",
+  async (body) => {
+    const harness = createHeatmapHarness();
+    harness.kvEntries.set(DAY_KNOWN_KEY, body);
+    const dependencies: WorkerDependencies = {
+      ...harness.dependencies,
+      fetchImpl: async (input, init) => {
+        const text = typeof init?.body === "string" ? init.body : "";
+        if (text.includes("GROUP BY keibajo_code, race_bango")) {
+          return Response.json({ result: { rows: [] }, success: true });
+        }
+        return harness.dependencies.fetchImpl(input, init);
+      },
+    };
+    const response = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
+    expect(response.status).toBe(200);
+    expect(harness.knownCountQueries.length).toBe(1);
+  },
+);
+
+it("falls back to the per-race count when the day computation fails", async () => {
+  const harness = createHeatmapHarness();
+  harness.kvEntries.delete(DAY_KNOWN_KEY);
+  const dependencies: WorkerDependencies = {
+    ...harness.dependencies,
+    fetchImpl: async (input, init) => {
+      const text = typeof init?.body === "string" ? init.body : "";
+      if (text.includes("GROUP BY keibajo_code, race_bango")) {
+        throw new Error("day query stalled");
+      }
+      return harness.dependencies.fetchImpl(input, init);
+    },
+  };
+  const response = await handleRequest(new Request(heatmapUrl), harness.env, dependencies);
+  expect(response.status).toBe(200);
+  expect(harness.knownCountQueries.length).toBe(1);
+  expect(harness.kvEntries.has(DAY_KNOWN_KEY)).toBe(false);
 });

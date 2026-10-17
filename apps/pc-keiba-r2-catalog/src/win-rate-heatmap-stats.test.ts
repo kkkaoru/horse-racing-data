@@ -6,7 +6,10 @@ import { DuckDBInstance } from "@duckdb/node-api";
 import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters } from "./types";
 import {
   buildWinRateHeatmapBloodlineQuery,
+  buildWinRateHeatmapDayKnownBloodlineQuery,
   buildWinRateHeatmapKnownBloodlineCountQuery,
+  dayKnownBloodlineKey,
+  usesDayKnownBloodlineCount,
   buildWinRateHeatmapSimilarQuery,
   cellRouterDistanceBandFilterSql,
   currentRaceIdentitySql,
@@ -703,6 +706,29 @@ it("counts the runners' known pedigree names without scanning race history", () 
   expect(sql.trimEnd().endsWith("SELECT count(*) AS known\nFROM current_bloodlines")).toBe(true);
   expect(/current_bloodlines AS \(/u.test(sql)).toBe(true);
   expect(/matched_history|current_race AS/u.test(sql)).toBe(false);
+});
+
+it("counts known pedigree names for every race of the source on one date", () => {
+  const sql = buildWinRateHeatmapDayKnownBloodlineQuery(config, { ...jraFilters, source: "nar" });
+  expect(sql).toMatch("FROM pc_keiba.nvd_se se");
+  expect(sql).toMatch("WHERE se.kaisai_nen = '2026'\n    AND se.kaisai_tsukihi = '0715'");
+  expect(sql).toMatch("sum(CASE WHEN sire <> '不明' THEN 1 ELSE 0 END)");
+  expect(sql).toMatch("sum(CASE WHEN damDamSire <> '不明' THEN 1 ELSE 0 END) AS known");
+  expect(sql).toMatch("GROUP BY keibajo_code, race_bango");
+  expect(/matched_history|current_race AS|race_bango = '01'/u.test(sql)).toBe(false);
+  expect(dayKnownBloodlineKey("05", "11")).toBe("05:11");
+});
+
+it("keeps current-profile (Arc) races on the per-race pedigree count", () => {
+  expect(usesDayKnownBloodlineCount(jraFilters)).toBe(true);
+  expect(
+    usesDayKnownBloodlineCount({
+      ...jraFilters,
+      date: "20261004",
+      keibajoCode: "A8",
+      raceBango: "05",
+    }),
+  ).toBe(false);
 });
 
 it("uses provider-qualified full gates for both current targets and eligible overseas history", () => {
