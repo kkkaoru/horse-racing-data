@@ -226,3 +226,12 @@ temp/*
 
 # Hand-written replay protocol, not an evaluation output.
 !/docs/finish-position-accuracy/experiments/20260912-local-pg/pandas-baseline-replay-plan.json
+
+# Root-level local R2 parquet caches and one-off audit reports (not source of truth)
+/feat-daybase/
+/feat-running-style-base/
+/arc-requirements-audit/
+/arc-stat-identity-audit/
+
+# Timesfm model checkpoints; the JSON reports beside them stay tracked
+apps/timesfm-finish-position/results/**/*.pt
