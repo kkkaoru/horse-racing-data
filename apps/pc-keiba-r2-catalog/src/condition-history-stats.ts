@@ -648,14 +648,47 @@ matched_history AS (
     coalesce(nullif(btrim(coalesce(se.tansho_ninkijun, '')), ''), '') AS popularity,
     coalesce(nullif(btrim(coalesce(se.tansho_odds, '')), ''), '') AS win_odds,
     ${integerSelect("se.tansho_ninkijun", "00")} AS popularity_number,
-    ${doubleSelect("se.tansho_odds")} / 10.0 AS odds`,
+    ${doubleSelect("se.tansho_odds")} / 10.0 AS odds,
+    ${trimmedNameSql("se.chokyoshimei_ryakusho")} AS trainer_name,
+    ${trimmedNameSql("se.banushimei")} AS owner_name,
+    ${doubleSelect("se.soha_time")} AS race_time,
+    ${doubleSelect("se.kohan_3f")} AS kohan_3f,
+    coalesce(nullif(btrim(coalesce(ra.kyori, '')), ''), '') AS kyori,
+    CASE WHEN ${finishPositionSql("se")} = 1
+      AND ${raceTimeTenthsSelect("se.soha_time")} IS NOT NULL
+      AND ${historyKyoriIntSql()} = cr.kyori_int
+      AND cr.kyori_int IS NOT NULL THEN 1 ELSE 0 END AS target_race`,
         tables,
       }),
     ),
   )}
+),
+position_stats AS (
+  SELECT
+    finish_position,
+    count(*) AS position_count,
+    avg(CASE WHEN odds > 0 THEN odds END) AS average_odds,
+    median(CASE WHEN odds > 0 THEN odds END) AS median_odds,
+    avg(CASE WHEN popularity_number > 0 THEN CAST(popularity_number AS DOUBLE) END) AS average_popularity,
+    median(CASE WHEN popularity_number > 0 THEN CAST(popularity_number AS DOUBLE) END) AS median_popularity
+  FROM matched_history
+  GROUP BY finish_position
+),
+ranked AS (
+  SELECT
+    matched_history.*,
+    row_number() OVER (
+      PARTITION BY finish_position
+      ORDER BY target_race_date DESC, race_bango ASC, umaban ASC
+    ) AS detail_rank,
+    row_number() OVER (
+      PARTITION BY target_race
+      ORDER BY target_race_date DESC, race_bango ASC, keibajo_code ASC, umaban ASC
+    ) AS target_rank
+  FROM matched_history
 )
 SELECT
-  finish_position,
+  ranked.finish_position,
   target_race_date,
   keibajo_code,
   race_bango,
@@ -668,11 +701,61 @@ SELECT
   soha_time,
   popularity,
   win_odds,
-  popularity_number,
-  odds
-FROM matched_history
-ORDER BY finish_position ASC, target_race_date DESC, race_bango ASC, umaban ASC`;
+  trainer_name,
+  owner_name,
+  race_time,
+  kohan_3f,
+  kyori,
+  target_race,
+  detail_rank,
+  position_stats.position_count,
+  position_stats.average_odds,
+  position_stats.median_odds,
+  position_stats.average_popularity,
+  position_stats.median_popularity
+FROM ranked
+INNER JOIN position_stats ON position_stats.finish_position = ranked.finish_position
+WHERE detail_rank <= ${String(FINISH_DETAIL_LIMIT)}
+  OR (target_race = 1 AND target_rank <= ${String(TARGET_RACE_LIMIT)})
+ORDER BY ranked.finish_position ASC, target_race_date DESC, race_bango ASC, umaban ASC`;
 };
+
+const TARGET_RACE_COLUMNS: readonly string[] = [
+  "target_race_date",
+  "keibajo_code",
+  "race_bango",
+  "race_name",
+  "umaban",
+  "bamei",
+  "jockey_name",
+  "trainer_name",
+  "owner_name",
+  "race_time",
+  "kohan_3f",
+  "kyori",
+  "popularity",
+];
+
+const compareTargetRaceRows = (
+  left: Record<string, unknown>,
+  right: Record<string, unknown>,
+): number =>
+  String(right.target_race_date).localeCompare(String(left.target_race_date)) ||
+  String(left.race_bango).localeCompare(String(right.race_bango)) ||
+  String(left.keibajo_code).localeCompare(String(right.keibajo_code)) ||
+  String(left.umaban).localeCompare(String(right.umaban));
+
+// Target races (winners with a time at the exact distance) are a subset of
+// the first-to-fifth rows, so they are flagged in that query instead of being
+// read by a second scan of the same history; newest first, as before.
+export const selectConditionTargetRaceRows = (
+  finishRows: ReadonlyArray<Record<string, unknown>>,
+): Record<string, unknown>[] =>
+  finishRows
+    .filter((row) => Number(row.target_race) === 1)
+    .toSorted(compareTargetRaceRows)
+    .slice(0, TARGET_RACE_LIMIT)
+    .map((row) => Object.fromEntries(TARGET_RACE_COLUMNS.map((column) => [column, row[column]])));
 
 export const buildConditionRaceTimeStatsQuery = (
   env: R2SqlCatalogConfig,
@@ -708,60 +791,6 @@ SELECT
   approx_percentile_cont(kohan_3f, 0.5) AS median_kohan_3f
 FROM matched_history
 WHERE race_time IS NOT NULL`;
-};
-
-export const buildConditionTargetRacesQuery = (
-  env: R2SqlCatalogConfig,
-  filters: WinRateHeatmapStatsFilters,
-): string => {
-  const checked = validateFilters(filters);
-  return `
-WITH ${currentRaceCteSql(env, checked)},
-matched_history AS (
-  ${unionHistorySql(
-    historyTables(checked).map((tables) =>
-      matchedHistoryArmSql({
-        env,
-        extraJoin: "",
-        extraWhere: `AND ${finishPositionSql("se")} = 1
-    AND ${raceTimeTenthsSelect("se.soha_time")} IS NOT NULL
-    ${exactHistoryKyoriFilterSql()}`,
-        filters: checked,
-        selectList: `concat(ra.kaisai_nen, ra.kaisai_tsukihi) AS target_race_date,
-    ${paddedCodeSql("ra.keibajo_code")} AS keibajo_code,
-    ${paddedCodeSql("ra.race_bango")} AS race_bango,
-    coalesce(nullif(btrim(coalesce(ra.kyosomei_hondai, '')), ''), '') AS race_name,
-    ${paddedCodeSql("se.umaban")} AS umaban,
-    ${trimmedNameSql("se.bamei")} AS bamei,
-    ${trimmedNameSql("se.kishumei_ryakusho")} AS jockey_name,
-    ${trimmedNameSql("se.chokyoshimei_ryakusho")} AS trainer_name,
-    ${trimmedNameSql("se.banushimei")} AS owner_name,
-    ${doubleSelect("se.soha_time")} AS race_time,
-    ${doubleSelect("se.kohan_3f")} AS kohan_3f,
-    coalesce(nullif(btrim(coalesce(ra.kyori, '')), ''), '') AS kyori,
-    coalesce(nullif(btrim(coalesce(se.tansho_ninkijun, '')), ''), '') AS popularity`,
-        tables,
-      }),
-    ),
-  )}
-)
-SELECT
-  target_race_date,
-  keibajo_code,
-  race_bango,
-  race_name,
-  umaban,
-  bamei,
-  jockey_name,
-  trainer_name,
-  owner_name,
-  race_time,
-  kohan_3f,
-  kyori,
-  popularity
-FROM matched_history
-ORDER BY target_race_date DESC, race_bango ASC
-LIMIT ${String(TARGET_RACE_LIMIT)}`;
 };
 
 const rawFrameScore = (averageFinish: number | null, medianFinish: number | null): number => {
@@ -827,40 +856,18 @@ const compareFinishDetailOrder = (
 
 const compareFinishPosition = (left: number, right: number): number => left - right;
 
-const averageOf = (values: readonly number[]): number | null => {
-  if (values.length === 0) return null;
-  const total = values.reduce((sum, value) => sum + value, 0);
-  return roundTo(total / values.length, RATE_SCALE);
-};
-
-const medianOf = (values: readonly number[]): number | null => {
-  if (values.length === 0) return null;
-  const sorted = [...values].toSorted((left, right) => left - right);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) {
-    const value = sorted[mid];
-    return value === undefined ? null : roundTo(value, RATE_SCALE);
-  }
-  const low = sorted[mid - 1];
-  const high = sorted[mid];
-  if (low === undefined || high === undefined) return null;
-  return roundTo((low + high) / 2, RATE_SCALE);
-};
-
-const parseFinishHorseRow = (
-  raw: Record<string, unknown>,
-): {
+interface FinishHorseRow {
   detail: ConditionFinishPositionDetail;
+  detailRank: number;
   finishPosition: number;
-  odds: number | null;
-  popularity: number | null;
-} | null => {
+  raw: Record<string, unknown>;
+}
+
+const parseFinishHorseRow = (raw: Record<string, unknown>): FinishHorseRow | null => {
   const finishPosition = optionalNumber(raw.finish_position);
   if (finishPosition === null || !Number.isInteger(finishPosition) || finishPosition <= 0) {
     return null;
   }
-  const popularityNumber = optionalNumber(raw.popularity_number);
-  const odds = optionalNumber(raw.odds);
   return {
     detail: {
       date: requiredString(raw.target_race_date, "target_race_date"),
@@ -876,53 +883,45 @@ const parseFinishHorseRow = (
       rank: textOrEmpty(raw.kakutei_chakujun),
       winOdds: textOrEmpty(raw.win_odds),
     },
+    detailRank: requiredInteger(raw.detail_rank, "detail_rank"),
     finishPosition,
-    odds: odds !== null && odds > 0 ? odds : null,
-    popularity: popularityNumber !== null && popularityNumber > 0 ? popularityNumber : null,
+    raw,
   };
 };
 
-const finishStatsFromHorses = (
-  horses: ReadonlyArray<NonNullable<ReturnType<typeof parseFinishHorseRow>>>,
+// Counts, averages and exact medians per position come from SQL; only the
+// newest details of each position (plus target-race rows) are returned.
+const finishStatsFromRows = (
+  horses: readonly FinishHorseRow[],
 ): ConditionFinishPositionStatsRow[] => {
-  const grouped = horses.reduce<
-    Map<number, Array<NonNullable<ReturnType<typeof parseFinishHorseRow>>>>
-  >((groups, horse) => {
-    const existing = groups.get(horse.finishPosition);
-    if (existing === undefined) {
-      return groups.set(horse.finishPosition, [horse]);
-    }
-    return groups.set(horse.finishPosition, [...existing, horse]);
-  }, new Map());
-  return [...grouped.keys()].toSorted(compareFinishPosition).flatMap((finishPosition) => {
-    const group = grouped.get(finishPosition);
-    if (group === undefined) return [];
-    const details = group
-      .map((horse) => horse.detail)
-      .toSorted(compareFinishDetailOrder)
-      .slice(0, FINISH_DETAIL_LIMIT);
-    return [
-      {
-        averageOdds: averageOf(group.flatMap((horse) => (horse.odds === null ? [] : [horse.odds]))),
-        averagePopularity: averageOf(
-          group.flatMap((horse) => (horse.popularity === null ? [] : [horse.popularity])),
-        ),
-        count: group.length,
-        details,
-        finishPosition,
-        medianOdds: medianOf(group.flatMap((horse) => (horse.odds === null ? [] : [horse.odds]))),
-        medianPopularity: medianOf(
-          group.flatMap((horse) => (horse.popularity === null ? [] : [horse.popularity])),
-        ),
-      },
-    ];
+  const grouped = horses.reduce<Map<number, FinishHorseRow[]>>(
+    (groups, horse) =>
+      groups.set(horse.finishPosition, [...(groups.get(horse.finishPosition) ?? []), horse]),
+    new Map(),
+  );
+  return [...grouped.keys()].toSorted(compareFinishPosition).map((finishPosition) => {
+    const group = grouped.get(finishPosition)!;
+    const stats = group[0]!.raw;
+    return {
+      averageOdds: roundedOrNull(stats.average_odds, RATE_SCALE),
+      averagePopularity: roundedOrNull(stats.average_popularity, RATE_SCALE),
+      count: requiredInteger(stats.position_count, "position_count"),
+      details: group
+        .filter((horse) => horse.detailRank <= FINISH_DETAIL_LIMIT)
+        .map((horse) => horse.detail)
+        .toSorted(compareFinishDetailOrder)
+        .slice(0, FINISH_DETAIL_LIMIT),
+      finishPosition,
+      medianOdds: roundedOrNull(stats.median_odds, RATE_SCALE),
+      medianPopularity: roundedOrNull(stats.median_popularity, RATE_SCALE),
+    };
   });
 };
 
 export const aggregateFinishPositionStats = (
   rawRows: ReadonlyArray<Record<string, unknown>>,
 ): ConditionFinishPositionStatsRow[] =>
-  finishStatsFromHorses(
+  finishStatsFromRows(
     rawRows.flatMap((raw) => {
       const parsed = parseFinishHorseRow(raw);
       return parsed === null ? [] : [parsed];

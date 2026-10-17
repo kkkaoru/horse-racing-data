@@ -173,7 +173,7 @@ it("keeps unique pretarget Arc bloodlines including current horses, with source-
       [2, "trainer", "Known trainer", 1, 0],
     ]);
     await c.run(
-      "ALTER TABLE pc_keiba.jvd_se ADD COLUMN soha_time VARCHAR DEFAULT '2300'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN bamei VARCHAR DEFAULT 'Horse'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN wakuban VARCHAR DEFAULT '00'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN tansho_ninkijun VARCHAR DEFAULT '01'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN tansho_odds VARCHAR DEFAULT '100'",
+      "ALTER TABLE pc_keiba.jvd_se ADD COLUMN soha_time VARCHAR DEFAULT '2300'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN bamei VARCHAR DEFAULT 'Horse'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN wakuban VARCHAR DEFAULT '00'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN tansho_ninkijun VARCHAR DEFAULT '01'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN tansho_odds VARCHAR DEFAULT '100'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN banushimei VARCHAR DEFAULT 'Owner'; ALTER TABLE pc_keiba.jvd_se ADD COLUMN kohan_3f VARCHAR DEFAULT '345'",
     );
     const targets = (
       await c.runAndReadAll(buildConditionFinishPositionStatsQuery(config, filters))

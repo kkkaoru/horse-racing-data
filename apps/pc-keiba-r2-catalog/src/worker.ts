@@ -89,10 +89,10 @@ import {
   buildConditionFinishPositionStatsQuery,
   buildConditionFrameStatsQuery,
   buildConditionRaceTimeStatsQuery,
-  buildConditionTargetRacesQuery,
   buildConditionCombinedStatsQuery,
   buildConditionWeightClassStatsQuery,
   splitConditionCombinedRows,
+  selectConditionTargetRaceRows,
   splitConditionWeightClassRows,
   usesCombinedConditionStats,
   type ConditionCombinedRowGroups,
@@ -1428,10 +1428,12 @@ const conditionHistoryStatsBody = async (
   const aggregates = await loadConditionAggregates(env, dependencies, filters);
   // Race-time correlation inputs; without them the viewer recomputed the
   // correlation rows with an 11-25s PostgreSQL query for every race.
-  const [targetRaceRows, correlationEntryRows] = await Promise.all([
-    executeR2Sql(env, buildConditionTargetRacesQuery(env, filters), dependencies.fetchImpl),
-    executeR2Sql(env, buildConditionCorrelationEntriesQuery(env, filters), dependencies.fetchImpl),
-  ]);
+  const correlationEntryRows = await executeR2Sql(
+    env,
+    buildConditionCorrelationEntriesQuery(env, filters),
+    dependencies.fetchImpl,
+  );
+  const targetRaceRows = selectConditionTargetRaceRows(aggregates.finishRows);
   const correlationCareerRows = await loadDayCareerRows({
     dependencies,
     entryRows: correlationEntryRows,
@@ -1757,7 +1759,6 @@ const handlePartnershipStats = async (
       warm: url.searchParams.get("warm") === "1",
       query: {
         config: env,
-        horseIds: [],
         scope: {
           date: filters.date,
           keibajoCode: filters.keibajoCode,

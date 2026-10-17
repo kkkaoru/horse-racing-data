@@ -197,12 +197,19 @@ const createConditionHarness = () => {
         result: {
           rows: [
             {
+              average_odds: 3.2,
+              average_popularity: 2,
               bamei: "イクイノックス",
+              detail_rank: 1,
               finish_position: 1,
               jockey_name: "ルメール",
               kakutei_chakujun: "01",
               keibajo_code: "05",
+              median_odds: 3.2,
+              median_popularity: 2,
               odds: 3.2,
+              position_count: 1,
+              target_race: 0,
               popularity: "02",
               popularity_number: 2,
               race_bango: "08",
@@ -212,6 +219,28 @@ const createConditionHarness = () => {
               umaban: "05",
               wakuban: "03",
               win_odds: "32",
+            },
+            {
+              average_odds: 3.2,
+              average_popularity: 2,
+              bamei: "イクイノックス",
+              detail_rank: 101,
+              finish_position: 1,
+              jockey_name: "ルメール",
+              keibajo_code: "05",
+              kohan_3f: 351,
+              median_odds: 3.2,
+              median_popularity: 2,
+              owner_name: "シルク",
+              popularity: "01",
+              position_count: 1,
+              race_bango: "08",
+              race_name: "天皇賞",
+              race_time: 1450,
+              target_race: 1,
+              target_race_date: "20241027",
+              trainer_name: "堀",
+              umaban: "05",
             },
           ],
         },
@@ -507,11 +536,7 @@ it("queries split condition-history aggregates and caches them for 36 hours", as
     ],
   });
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["combined", "finish"]);
-  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual([
-    "correlation-entries",
-    "target-races",
-  ]);
-  expect(harness.fetchCalls.slice(4)).toStrictEqual(["correlation-career"]);
+  expect(harness.fetchCalls.slice(2)).toStrictEqual(["correlation-entries", "correlation-career"]);
   expect(harness.inflight.max).toBe(2);
   const descriptor = conditionHistoryStatsDescriptor({
     date: "20260822",
@@ -539,11 +564,7 @@ it("omits the carried-weight classes for Ban'ei venues", async () => {
   );
   expect(response.status).toBe(200);
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["combined", "finish"]);
-  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual([
-    "correlation-entries",
-    "target-races",
-  ]);
-  expect(harness.fetchCalls.slice(4)).toStrictEqual(["correlation-career"]);
+  expect(harness.fetchCalls.slice(2)).toStrictEqual(["correlation-entries", "correlation-career"]);
   expect(harness.inflight.max).toBe(2);
   const payload: unknown = await response.json();
   if (!isRecord(payload)) throw new Error("expected object");
@@ -559,11 +580,7 @@ it("coalesces concurrent condition-history misses into one R2 SQL set", async ()
   expect(first.status).toBe(200);
   expect(second.status).toBe(200);
   expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["combined", "finish"]);
-  expect(harness.fetchCalls.slice(2, 4).toSorted()).toStrictEqual([
-    "correlation-entries",
-    "target-races",
-  ]);
-  expect(harness.fetchCalls.slice(4)).toStrictEqual(["correlation-career"]);
+  expect(harness.fetchCalls.slice(2)).toStrictEqual(["correlation-entries", "correlation-career"]);
   expect(harness.inflight.max).toBe(2);
 });
 
@@ -646,7 +663,6 @@ it("reuses one day of career rows for another race of the same source and date",
     "combined",
     "correlation-entries",
     "finish",
-    "target-races",
   ]);
   expect(harness.kvEntries.has("condition-day-career:v1:jra:20260822")).toBe(true);
 });
@@ -745,6 +761,5 @@ it("reruns only the failed query when a condition-history request is retried", a
     "correlation-career",
     "correlation-entries",
     "finish",
-    "target-races",
   ]);
 });

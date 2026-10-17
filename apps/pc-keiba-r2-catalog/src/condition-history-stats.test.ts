@@ -10,10 +10,10 @@ import {
   buildConditionFinishPositionStatsQuery,
   buildConditionFrameStatsQuery,
   buildConditionRaceTimeStatsQuery,
-  buildConditionTargetRacesQuery,
   buildConditionCombinedStatsQuery,
   buildConditionWeightClassStatsQuery,
   splitConditionCombinedRows,
+  selectConditionTargetRaceRows,
   splitConditionWeightClassRows,
   usesCombinedConditionStats,
   normaliseTargetRaceRow,
@@ -178,7 +178,9 @@ it("builds finish-position horse-level SQL and race-time aggregate SQL without j
   expect(finish).toMatch("AS win_odds");
   expect(finish).not.toMatch("THEN '芝'");
   expect(finish).not.toMatch("jsonb_agg");
-  expect(finish).not.toMatch("GROUP BY finish_position");
+  expect(finish).toMatch("median(CASE WHEN odds > 0 THEN odds END) AS median_odds");
+  expect(finish).toMatch("PARTITION BY finish_position");
+  expect(finish).toMatch("WHERE detail_rank <= 100\n  OR (target_race = 1 AND target_rank <= 500)");
   expect(finish).toMatch("WHEN cr.kyori_int < 1400 THEN 'sprint'");
   expect(finish).toMatch("WHEN cr.kyori_int <= 1500 THEN 'extended_sprint'");
   expect(time).toMatch("AS race_count");
@@ -190,22 +192,72 @@ it("builds finish-position horse-level SQL and race-time aggregate SQL without j
   expect(time).not.toMatch("jsonb_agg");
 });
 
-it("builds winner target-race list SQL without jsonb_agg", () => {
-  const sql = buildConditionTargetRacesQuery(config, jraFilters);
-  expect(sql).toMatch("AS target_race_date");
-  expect(sql).toMatch("AS INT) = 1");
-  expect(sql).toMatch("AS INT) = cr.kyori_int");
-  expect(sql).toMatch("LIMIT 500");
+it("flags winner target races with a time at the exact distance inside the finish query", () => {
+  const sql = buildConditionFinishPositionStatsQuery(config, jraFilters);
+  expect(sql).toMatch(
+    "CASE WHEN try_cast(nullif(btrim(coalesce(se.kakutei_chakujun, '')), '00') AS INT) = 1",
+  );
+  expect(sql).toMatch(
+    "AS INT) = cr.kyori_int\n      AND cr.kyori_int IS NOT NULL THEN 1 ELSE 0 END AS target_race",
+  );
+  expect(sql).toMatch("AS trainer_name");
+  expect(sql).toMatch("AS owner_name");
   expect(sql).toMatch("FROM pc_keiba.jvd_se se");
-  expect(sql).not.toMatch("jsonb_agg");
+});
+
+it("selects the newest 500 flagged target races in the former target-race shape", () => {
+  const row = (date: string, race: string, flag: number) => ({
+    bamei: "馬",
+    detail_rank: 1,
+    finish_position: 1,
+    jockey_name: "騎手",
+    keibajo_code: "05",
+    kohan_3f: 345,
+    kyori: "1600",
+    owner_name: "馬主",
+    popularity: "01",
+    race_bango: race,
+    race_name: "",
+    race_time: 1335,
+    target_race: flag,
+    target_race_date: date,
+    trainer_name: "調教師",
+    umaban: "03",
+  });
+  expect(
+    selectConditionTargetRaceRows([
+      row("20250101", "02", 1),
+      row("20260101", "05", 1),
+      row("20260101", "03", 1),
+      row("20260202", "01", 0),
+    ]).map((target) => [target.target_race_date, target.race_bango, Object.keys(target).length]),
+  ).toStrictEqual([
+    ["20260101", "03", 13],
+    ["20260101", "05", 13],
+    ["20250101", "02", 13],
+  ]);
+  expect(
+    selectConditionTargetRaceRows(
+      Array.from({ length: 501 }, (_, index) =>
+        row(`2026${String(1001 + index).slice(1)}`, "01", 1),
+      ),
+    ).length,
+  ).toBe(500);
+  expect(
+    selectConditionTargetRaceRows([
+      { ...row("20260101", "01", 1), keibajo_code: "06", umaban: "02" },
+      { ...row("20260101", "01", 1), keibajo_code: "05", umaban: "09" },
+      { ...row("20260101", "01", 1), keibajo_code: "05", umaban: "01" },
+    ]).map((target) => [target.keibajo_code, target.umaban]),
+  ).toStrictEqual([
+    ["05", "01"],
+    ["05", "09"],
+    ["06", "02"],
+  ]);
 });
 
 it("keeps exact kyori on race-time clocks when includeDistance is off", () => {
   const time = buildConditionRaceTimeStatsQuery(config, {
-    ...jraFilters,
-    includeDistance: false,
-  });
-  const targets = buildConditionTargetRacesQuery(config, {
     ...jraFilters,
     includeDistance: false,
   });
@@ -214,8 +266,13 @@ it("keeps exact kyori on race-time clocks when includeDistance is off", () => {
     includeDistance: false,
   });
   expect(time).toMatch("AS INT) = cr.kyori_int");
-  expect(targets).toMatch("AS INT) = cr.kyori_int");
-  expect(finish).not.toMatch("AS INT) = cr.kyori_int");
+  // The finish query keeps every distance; only its target-race flag is exact.
+  expect(finish).toMatch(
+    "AS INT) = cr.kyori_int\n      AND cr.kyori_int IS NOT NULL THEN 1 ELSE 0 END AS target_race",
+  );
+  expect(finish).not.toMatch(
+    "AND try_cast(nullif(btrim(coalesce(ra.kyori, '')), '') AS INT) = cr.kyori_int\n    AND",
+  );
   expect(finish).toMatch("WHEN cr.kyori_int < 1200 THEN 'sprint'");
 });
 
@@ -358,8 +415,14 @@ it("aggregates horse-level finish rows into counted stats with details", () => {
   expect(
     aggregateFinishPositionStats([
       {
+        average_odds: 6.44,
+        average_popularity: 3,
         bamei: "先行馬",
+        detail_rank: 1,
         finish_position: 1,
+        median_odds: 6.44,
+        median_popularity: 3,
+        position_count: 240,
         jockey_name: "武豊",
         kakutei_chakujun: "01",
         keibajo_code: "07",
@@ -376,6 +439,7 @@ it("aggregates horse-level finish rows into counted stats with details", () => {
       },
       {
         bamei: "後続馬",
+        detail_rank: 2,
         finish_position: 1,
         jockey_name: "ルメール",
         kakutei_chakujun: "01",
@@ -391,12 +455,24 @@ it("aggregates horse-level finish rows into counted stats with details", () => {
         wakuban: "03",
         win_odds: "87",
       },
+      {
+        // Returned only as a target race; not one of the newest details.
+        bamei: "古い勝ち馬",
+        detail_rank: 101,
+        finish_position: 1,
+        jockey_name: "騎手",
+        kakutei_chakujun: "01",
+        keibajo_code: "07",
+        race_bango: "03",
+        target_race_date: "20160101",
+        umaban: "01",
+      },
     ]),
   ).toStrictEqual([
     {
       averageOdds: 6.4,
       averagePopularity: 3,
-      count: 2,
+      count: 240,
       details: [
         {
           date: "20260726",
@@ -490,8 +566,14 @@ it("normalises the combined payload and min-max frame scores", () => {
       ],
       finishRows: [
         {
+          average_odds: 2,
+          average_popularity: 1,
           bamei: "テスト",
+          detail_rank: 1,
           finish_position: 1,
+          median_odds: 2,
+          median_popularity: 1,
+          position_count: 1,
           jockey_name: "武豊",
           kakutei_chakujun: "01",
           keibajo_code: "05",
@@ -856,7 +938,6 @@ it("keeps non-rate queries positive-only and domestic rate SQL unchanged", () =>
   };
   expect(buildConditionFinishPositionStatsQuery(config, filters)).not.toMatch("ijo_kubun_code");
   expect(buildConditionRaceTimeStatsQuery(config, filters)).not.toMatch("ijo_kubun_code");
-  expect(buildConditionTargetRacesQuery(config, filters)).not.toMatch("ijo_kubun_code");
   expect(buildConditionFrameStatsQuery(config, jraFilters)).not.toMatch("ijo_kubun_code");
   expect(buildConditionFrameStatsQuery(config, jraFilters)).toMatch("avg(finish_position)");
   expect(buildConditionWeightClassStatsQuery({ env: config, filters: jraFilters })).toMatch(
@@ -892,7 +973,7 @@ it("executes Arc native DNF/DSQ denominators without inventing placed horses or 
         '2020100001' AS ketto_toroku_bango, rank AS kakutei_chakujun, code AS ijo_kubun_code,
         'Known jockey' AS kishumei_ryakusho, 'Known trainer' AS chokyoshimei_ryakusho,
         '500' AS bataiju, '580' AS futan_juryo, '00' AS wakuban, '01' AS tansho_ninkijun,
-        '-' AS zogen_fugo, '006' AS zogen_sa, 'Horse' AS bamei, '2300' AS soha_time, '100' AS tansho_odds
+        '-' AS zogen_fugo, '006' AS zogen_sa, 'Horse' AS bamei, 'Owner' AS banushimei, '345' AS kohan_3f, '2300' AS soha_time, '100' AS tansho_odds
         FROM (VALUES ('01','01','0'), ('02','02','0'), ('03','00','4'), ('04','00','5'),
           ('05','01','1'), ('06','02','2'), ('07','00','0'), ('08',NULL,'9')) t(num,rank,code);
       INSERT INTO pc_keiba.jvd_se SELECT * REPLACE ('2026' AS kaisai_nen) FROM pc_keiba.jvd_se WHERE umaban='01';
