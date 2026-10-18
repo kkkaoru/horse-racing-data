@@ -190,8 +190,20 @@ const warmRaceDetailSsrIfInvalidated = async (
     source: params.source,
     year: params.year,
   };
-  const state = await readRaceCacheWarmGeneration({ kind: "race-detail-ssr", kv, race });
-  if (state?.valid) {
+  const cacheKey = buildRaceDetailSsrCacheKey({
+    day: params.day,
+    keibajoCode: params.keibajoCode,
+    month: params.month,
+    raceNumber: params.raceBango,
+    source: params.source,
+    year: params.year,
+  });
+  const [state, stored] = await Promise.all([
+    readRaceCacheWarmGeneration({ kind: "race-detail-ssr", kv, race }),
+    kv?.get(cacheKey),
+  ]);
+  // The marker outlives an expired snapshot, so a missing snapshot is re-warmed regardless.
+  if (state?.valid && stored) {
     return "valid";
   }
   const outcome = await warmRaceDetailSsr(params);

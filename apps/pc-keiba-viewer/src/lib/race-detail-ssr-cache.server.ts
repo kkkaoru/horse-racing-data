@@ -14,6 +14,15 @@ export interface RaceDetailSsrSnapshot {
   race: RaceDetail;
   runners: Runner[];
   sameVenueRaces: RaceListItem[];
+  // Epoch ms after which a reader refreshes the snapshot in the background; missing means stale.
+  refreshAt?: number;
+}
+
+interface RefreshRaceDetailSsrSnapshotParams {
+  cacheKey: string;
+  load: () => Promise<RaceDetailSsrSnapshot | null>;
+  params: RaceDetailSsrCacheKeyParams;
+  snapshot: RaceDetailSsrSnapshot;
 }
 
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/race-detail-ssr-cache/";
@@ -49,7 +58,9 @@ const getConfiguredAfterStartSeconds = (env: CloudflareEnv | null): number => {
     : DETAIL_SECTION_CACHE_AFTER_START_SECONDS;
 };
 
-export const getRaceDetailSsrCacheTtlSeconds = (
+// How long KV keeps the snapshot: until the configured window after the start, so a page view never
+// waits on the Hyperdrive fan-out while the warm generation still marks the race as valid.
+export const getRaceDetailSsrKvTtlSeconds = (
   params: RaceDetailSsrCacheKeyParams,
   snapshot: Pick<RaceDetailSsrSnapshot, "race">,
   env: CloudflareEnv | null,
@@ -59,11 +70,28 @@ export const getRaceDetailSsrCacheTtlSeconds = (
   const raceStartTime = getRaceStartTimeMs(params, snapshot.race);
   const expiresAt =
     (raceStartTime ?? getRaceDayFallbackBaseTimeMs(params)) + afterStartSeconds * 1000;
-  const ttlSeconds = Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
+  return Math.max(0, Math.floor((expiresAt - nowMs) / 1000));
+};
+
+// How long the snapshot counts as fresh: 60 seconds before the start so late runner changes show up
+// on the next view, and the whole KV window afterwards.
+export const getRaceDetailSsrCacheTtlSeconds = (
+  params: RaceDetailSsrCacheKeyParams,
+  snapshot: Pick<RaceDetailSsrSnapshot, "race">,
+  env: CloudflareEnv | null,
+  nowMs = Date.now(),
+): number => {
+  const ttlSeconds = getRaceDetailSsrKvTtlSeconds(params, snapshot, env, nowMs);
+  const raceStartTime = getRaceStartTimeMs(params, snapshot.race);
   return raceStartTime !== null && nowMs < raceStartTime
     ? Math.min(ttlSeconds, PRE_RACE_MAX_TTL_SECONDS)
     : ttlSeconds;
 };
+
+export const isRaceDetailSsrSnapshotStale = (
+  snapshot: Pick<RaceDetailSsrSnapshot, "refreshAt">,
+  nowMs = Date.now(),
+): boolean => (snapshot.refreshAt ?? 0) <= nowMs;
 
 export { buildRaceDetailSsrCacheKey };
 export type { RaceDetailSsrCacheKeyParams };
@@ -144,11 +172,13 @@ export const putRaceDetailSsrSnapshot = async ({
   snapshot,
 }: PutRaceDetailSsrSnapshotParams): Promise<void> => {
   const { env } = await safeGetCloudflareRuntime();
-  const ttlSeconds = getRaceDetailSsrCacheTtlSeconds(params, snapshot, env);
-  if (ttlSeconds < MIN_KV_TTL_SECONDS) {
+  const nowMs = Date.now();
+  const kvTtlSeconds = getRaceDetailSsrKvTtlSeconds(params, snapshot, env, nowMs);
+  if (kvTtlSeconds < MIN_KV_TTL_SECONDS) {
     return;
   }
-  const body = JSON.stringify(snapshot);
+  const ttlSeconds = getRaceDetailSsrCacheTtlSeconds(params, snapshot, env, nowMs);
+  const body = JSON.stringify({ ...snapshot, refreshAt: nowMs + ttlSeconds * 1000 });
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
   await Promise.all([
     getDefaultCache()?.put(
@@ -160,6 +190,29 @@ export const putRaceDetailSsrSnapshot = async ({
         },
       }),
     ),
-    env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: ttlSeconds }),
+    env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: kvTtlSeconds }),
   ]);
+};
+
+// Serve-stale: the reader already has a snapshot to render, so the fresh fan-out runs after the
+// response instead of holding the skeleton.
+export const refreshRaceDetailSsrSnapshotIfStale = async ({
+  cacheKey,
+  load,
+  params,
+  snapshot,
+}: RefreshRaceDetailSsrSnapshotParams): Promise<void> => {
+  if (!isRaceDetailSsrSnapshotStale(snapshot)) {
+    return;
+  }
+  const { ctx } = await safeGetCloudflareRuntime();
+  ctx?.waitUntil(
+    load()
+      .then((fresh) =>
+        fresh === null
+          ? undefined
+          : putRaceDetailSsrSnapshot({ cacheKey, params, snapshot: fresh }),
+      )
+      .catch(() => undefined),
+  );
 };

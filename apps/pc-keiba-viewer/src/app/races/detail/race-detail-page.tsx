@@ -46,6 +46,7 @@ import {
   buildRaceDetailSsrCacheKey,
   getCachedRaceDetailSsrSnapshot,
   putRaceDetailSsrSnapshot,
+  refreshRaceDetailSsrSnapshotIfStale,
   type RaceDetailSsrSnapshot,
 } from "../../../lib/race-detail-ssr-cache.server";
 import { buildRaceGlobalSummaryItems } from "../../../lib/race-global-summary";
@@ -263,6 +264,16 @@ const DetailLinkCell = ({
 const tryGetWaitUntilContext = (): Promise<PcKeibaExecutionContext | null> =>
   safeGetCloudflareExecutionContext();
 
+const SLOW_SSR_READ_MS: number = 1000;
+
+// Records how long one SSR read took so slow pages name the read that held the skeleton.
+const timed = <T,>(timings: Record<string, number>, name: string, read: Promise<T>): Promise<T> => {
+  const startedAt = Date.now();
+  return read.finally(() => {
+    timings[name] = Date.now() - startedAt;
+  });
+};
+
 const loadRaceDetailSnapshotFromDb = async (params: {
   day: string;
   initialRace: RaceDetail | null;
@@ -308,36 +319,97 @@ export async function RaceDetailView({
     source: raceSource,
     year,
   });
-  const cachedSnapshot = await getCachedRaceDetailSsrSnapshot(ssrCacheKey);
+  const realtimePayloadRequest = { day, keibajoCode, month, raceNumber, source: raceSource, year };
+  const timings: Record<string, number> = {};
+  // Every read below is independent, so they run together and the skeleton waits for the slowest
+  // one instead of their sum.
+  const [
+    cachedSnapshot,
+    officialCard,
+    initialRealtimePayload,
+    d1FinishPositions,
+    horseRaceResults,
+  ] = await Promise.all([
+    timed(timings, "snapshot", getCachedRaceDetailSsrSnapshot(ssrCacheKey)),
+    timed(
+      timings,
+      "officialCard",
+      loadOfficialCard({ source: raceSource, year, month, day, keibajoCode, raceNumber }),
+    ),
+    // safeGetCloudflareEnv() resolves the realtime Worker bindings (an actual Cloudflare API
+    // round-trip in local dev). Confirmed-past race dates skip it since the payload is unused.
+    isConfirmedPastRaceRequest(realtimePayloadRequest)
+      ? null
+      : timed(
+          timings,
+          "realtime",
+          safeGetCloudflareEnv()
+            .then((env) =>
+              loadInitialRealtimePayloadServer({ env, request: realtimePayloadRequest }),
+            )
+            .catch(() => null),
+        ),
+    // D1 (race_result_snapshots) seed for the 着順 column when the PostgreSQL mirror has not
+    // imported the finish yet. Precedence in RunnersTable: live realtime payload > this D1 seed
+    // > PG kakuteiChakujun.
+    timed(
+      timings,
+      "d1Finish",
+      getRaceFinishPositionsFromD1({
+        day,
+        keibajoCode,
+        month,
+        raceNumber,
+        source: raceSource,
+        year,
+      }).catch(() => []),
+    ),
+    // Per-horse blinker A-F pattern for the 出走馬 table, shared with the 競走成績 section through
+    // withDbQueryCache. A history failure never breaks the page.
+    timed(
+      timings,
+      "horseResults",
+      getHorseRaceResults(raceSource, year, month, day, keibajoCode, raceNumber).catch(() => []),
+    ),
+  ]);
   const snapshot =
     cachedSnapshot ??
-    (await loadRaceDetailSnapshotFromDb({
-      day,
-      initialRace: initialRace ?? null,
-      keibajoCode,
-      month,
-      raceNumber,
-      source: raceSource,
-      year,
-    }));
+    (await timed(
+      timings,
+      "snapshotDb",
+      loadRaceDetailSnapshotFromDb({
+        day,
+        initialRace: initialRace ?? null,
+        keibajoCode,
+        month,
+        raceNumber,
+        source: raceSource,
+        year,
+      }),
+    ));
   if (!snapshot) {
     notFound();
   }
-  if (!cachedSnapshot) {
+  const ssrParams = { day, keibajoCode, month, raceNumber, source: raceSource, year };
+  if (cachedSnapshot) {
+    await refreshRaceDetailSsrSnapshotIfStale({
+      cacheKey: ssrCacheKey,
+      load: async () =>
+        loadRaceDetailSnapshotFromDb({ ...ssrParams, initialRace: initialRace ?? null }),
+      params: ssrParams,
+      snapshot: cachedSnapshot,
+    });
+  } else {
     const waitUntilCtx = await tryGetWaitUntilContext();
     waitUntilCtx?.waitUntil(
-      putRaceDetailSsrSnapshot({
-        cacheKey: ssrCacheKey,
-        params: { day, keibajoCode, month, raceNumber, source: raceSource, year },
-        snapshot,
-      }),
+      putRaceDetailSsrSnapshot({ cacheKey: ssrCacheKey, params: ssrParams, snapshot }),
     );
   }
   const { courseInfo, race, runners: storedRunners, sameVenueRaces } = snapshot;
-  const runners = enrichOfficialRunners(
-    storedRunners,
-    await loadOfficialCard({ source: raceSource, year, month, day, keibajoCode, raceNumber }),
-  );
+  if (Math.max(...Object.values(timings)) >= SLOW_SSR_READ_MS) {
+    console.warn(JSON.stringify({ event: "slow_race_detail_ssr", path: ssrCacheKey, timings }));
+  }
+  const runners = enrichOfficialRunners(storedRunners, officialCard);
   const raceName = cleanText(race.kyosomeiHondai, "一般競走");
   const raceTags = getRaceTags(race);
   const currentRaceIndex = sameVenueRaces.findIndex((item) => item.raceBango === raceNumber);
@@ -365,40 +437,6 @@ export async function RaceDetailView({
     source: raceSource,
     year,
   } satisfies RealtimeRaceRequest;
-  // safeGetCloudflareEnv() resolves the realtime Worker bindings (an actual
-  // Cloudflare API round-trip in local dev, see cloudflare-context.server.ts).
-  // Skip it entirely for confirmed-past race dates since
-  // loadInitialRealtimePayloadServer would just discard the env unused.
-  const realtimePayloadRequest = { day, keibajoCode, month, raceNumber, source: raceSource, year };
-  const initialRealtimePayload = isConfirmedPastRaceRequest(realtimePayloadRequest)
-    ? null
-    : await loadInitialRealtimePayloadServer({
-        env: await safeGetCloudflareEnv(),
-        request: realtimePayloadRequest,
-      }).catch(() => null);
-  // D1 (race_result_snapshots) seed for the 着順 column when the PostgreSQL
-  // mirror has not imported the finish yet. Precedence in RunnersTable:
-  // live realtime payload > this D1 seed > PG kakuteiChakujun.
-  const d1FinishPositions = await getRaceFinishPositionsFromD1({
-    day,
-    keibajoCode,
-    month,
-    raceNumber,
-    source: raceSource,
-    year,
-  }).catch(() => []);
-  // Per-horse blinker A-F pattern for the 出走馬 table. getHorseRaceResults
-  // returns every entered horse's past races (most-recent-first) and is
-  // withDbQueryCache-cached, so it is shared with the 競走成績 section. The
-  // fetch is wrapped so a history failure never breaks the page.
-  const horseRaceResults = await getHorseRaceResults(
-    raceSource,
-    year,
-    month,
-    day,
-    keibajoCode,
-    raceNumber,
-  ).catch(() => []);
   const blinkerPatterns = buildBlinkerPatterns({ results: horseRaceResults, runners });
   const surfaceSwitches = buildSurfaceSwitches({
     raceTrackCode: race.trackCode,

@@ -1,16 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+interface TestRuntime {
+  ctx: { waitUntil: (promise: Promise<unknown>) => void } | null;
+  env: { DETAIL_SECTION_CACHE_KV: { put: (...args: unknown[]) => Promise<void> } } | null;
+}
+
+const runtime: TestRuntime = vi.hoisted((): TestRuntime => ({ ctx: null, env: null }));
 vi.mock("./cloudflare-context.server", () => ({
-  safeGetCloudflareRuntime: vi.fn<() => Promise<{ ctx: null; env: null }>>(async () => ({
-    ctx: null,
-    env: null,
-  })),
+  safeGetCloudflareRuntime: vi.fn<() => Promise<TestRuntime>>(async () => runtime),
 }));
 
 import {
   buildRaceDetailSsrCacheKey,
   getRaceDetailSsrCacheTtlSeconds,
+  getRaceDetailSsrKvTtlSeconds,
+  isRaceDetailSsrSnapshotStale,
+  putRaceDetailSsrSnapshot,
+  refreshRaceDetailSsrSnapshotIfStale,
+  type RaceDetailSsrSnapshot,
 } from "./race-detail-ssr-cache.server";
 import type { RaceDetail } from "./race-types";
 
@@ -74,5 +82,78 @@ describe("race detail SSR cache", () => {
     expect(getRaceDetailSsrCacheTtlSeconds(params, { race: buildRace(null) }, null, nowMs)).toBe(
       21_659,
     );
+  });
+
+  it("keeps pre-race snapshots in KV until the post-start window ends", () => {
+    const nowMs = Date.parse("2026-09-12T09:40:00+09:00");
+    expect(getRaceDetailSsrKvTtlSeconds(params, { race: buildRace("0945") }, null, nowMs)).toBe(
+      21_900,
+    );
+  });
+
+  it("treats snapshots without a refresh time as stale", () => {
+    expect(isRaceDetailSsrSnapshotStale({}, 1000)).toBe(true);
+    expect(isRaceDetailSsrSnapshotStale({ refreshAt: 1000 }, 999)).toBe(false);
+    expect(isRaceDetailSsrSnapshotStale({ refreshAt: 1000 }, 1000)).toBe(true);
+  });
+
+  it("writes the long KV window and the short refresh time", async () => {
+    vi.useFakeTimers({ now: Date.parse("2026-09-12T09:40:00+09:00") });
+    const put = vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined);
+    runtime.env = { DETAIL_SECTION_CACHE_KV: { put } };
+    await putRaceDetailSsrSnapshot({
+      cacheKey: "k",
+      params,
+      snapshot: { courseInfo: null, race: buildRace("0945"), runners: [], sameVenueRaces: [] },
+    });
+    vi.useRealTimers();
+    runtime.env = null;
+    expect(
+      put.mock.calls.map((call) => [call[0], JSON.parse(String(call[1])).refreshAt, call[2]]),
+    ).toStrictEqual([["k", 1_789_173_660_000, { expirationTtl: 21_900 }]]);
+  });
+
+  it("skips the KV write once the post-start window has passed", async () => {
+    vi.useFakeTimers({ now: Date.parse("2026-09-12T16:00:00+09:00") });
+    const put = vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined);
+    runtime.env = { DETAIL_SECTION_CACHE_KV: { put } };
+    await putRaceDetailSsrSnapshot({
+      cacheKey: "k",
+      params,
+      snapshot: { courseInfo: null, race: buildRace("0945"), runners: [], sameVenueRaces: [] },
+    });
+    vi.useRealTimers();
+    runtime.env = null;
+    expect(put.mock.calls.length).toBe(0);
+  });
+
+  it("refreshes a stale snapshot after the response and leaves fresh ones alone", async () => {
+    const pending: Promise<unknown>[] = [];
+    runtime.ctx = { waitUntil: (promise) => pending.push(promise) };
+    const snapshot = { courseInfo: null, race: buildRace("0945"), runners: [], sameVenueRaces: [] };
+    const load = vi.fn<() => Promise<RaceDetailSsrSnapshot | null>>(async () => null);
+    await refreshRaceDetailSsrSnapshotIfStale({
+      cacheKey: "k",
+      load,
+      params,
+      snapshot: { ...snapshot, refreshAt: Date.now() + 60_000 },
+    });
+    await refreshRaceDetailSsrSnapshotIfStale({ cacheKey: "k", load, params, snapshot });
+    await Promise.all(pending);
+    const failing = vi.fn<() => Promise<RaceDetailSsrSnapshot | null>>(async () => {
+      throw new Error("db down");
+    });
+    await refreshRaceDetailSsrSnapshotIfStale({ cacheKey: "k", load: failing, params, snapshot });
+    await Promise.all(pending);
+    const reload = vi.fn<() => Promise<RaceDetailSsrSnapshot | null>>(async () => snapshot);
+    await refreshRaceDetailSsrSnapshotIfStale({ cacheKey: "k", load: reload, params, snapshot });
+    await Promise.all(pending);
+    runtime.ctx = null;
+    expect([
+      load.mock.calls.length,
+      failing.mock.calls.length,
+      reload.mock.calls.length,
+      pending.length,
+    ]).toStrictEqual([1, 1, 1, 3]);
   });
 });

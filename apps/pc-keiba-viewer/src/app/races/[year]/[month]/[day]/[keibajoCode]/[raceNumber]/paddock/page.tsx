@@ -27,6 +27,7 @@ import {
   buildRaceDetailSsrCacheKey,
   getCachedRaceDetailSsrSnapshot,
   putRaceDetailSsrSnapshot,
+  refreshRaceDetailSsrSnapshotIfStale,
 } from "../../../../../../../../lib/race-detail-ssr-cache.server";
 import { buildRaceGlobalSummaryItems } from "../../../../../../../../lib/race-global-summary";
 import { isBanEiKeibajoCode } from "../../../../../../../../lib/runner-format";
@@ -253,7 +254,14 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
     currentRaceBango: raceNumber,
     sameVenueRaces,
   });
-  if (!cachedSnapshot) {
+  if (cachedSnapshot) {
+    await refreshRaceDetailSsrSnapshotIfStale({
+      cacheKey: ssrCacheKey,
+      load: loadSnapshotFromUpstream,
+      params: { day, keibajoCode, month, raceNumber, source, year },
+      snapshot: cachedSnapshot,
+    });
+  } else {
     const cloudflareCtx = await safeGetCloudflareExecutionContext();
     cloudflareCtx?.waitUntil(
       putRaceDetailSsrSnapshot({
