@@ -36,7 +36,7 @@ import {
   type ClefBetSuggestion,
 } from "../../../lib/clef-bets";
 import type { ClefRerankRaceAddress } from "../../../lib/clef-rerank";
-import { FrameNumberBadge, HorseNumberBadge } from "./frame-number-badge";
+import { FrameNumberBadge, PlainHorseNumberBadge } from "./frame-number-badge";
 import { useRealtimeRaceSelector } from "./realtime-client";
 
 interface ClefBetState {
@@ -85,12 +85,7 @@ const PICK_COLUMNS: readonly PickColumn[] = [
   { label: "枠番", pick: (runner) => <FrameNumberBadge value={String(runner.frameNumber)} /> },
   {
     label: "馬番",
-    pick: (runner) => (
-      <HorseNumberBadge
-        frameNumber={String(runner.frameNumber)}
-        horseNumber={String(runner.horseNumber)}
-      />
-    ),
+    pick: (runner) => <PlainHorseNumberBadge horseNumber={String(runner.horseNumber)} />,
   },
   { label: "馬名", pick: (runner) => trimName(runner.horseName) },
   { label: "騎手", pick: (runner) => trimName(runner.jockey) },

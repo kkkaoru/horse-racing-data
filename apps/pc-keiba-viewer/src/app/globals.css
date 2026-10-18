@@ -10671,3 +10671,8 @@ fieldset.race-results-chart-view-toggle {
     background: var(--surface-muted);
   }
 }
+
+/* Stacked horses inside one leg (軸 / 相手 / formation columns) need breathing room. */
+.clef-bet-leg > div + div {
+  margin-top: var(--space-4px-18);
+}

@@ -315,6 +315,12 @@ it("shows frame and horse numbers in the shared colored badges", async () => {
     [...container.querySelectorAll(".frame-number-badge")].map((node) => node.className),
   ).toStrictEqual(["frame-number-badge frame-8"]);
   expect(
-    [...container.querySelectorAll(".horse-number-badge")].map((node) => node.textContent),
-  ).toStrictEqual(["11", "4", "11"]);
+    [...container.querySelectorAll(".horse-number-badge")].map(
+      (node) => `${node.className}:${node.textContent ?? ""}:${node.getAttribute("style") ?? ""}`,
+    ),
+  ).toStrictEqual([
+    "horse-number-badge plain:11:",
+    "horse-number-badge plain:4:",
+    "horse-number-badge plain:11:",
+  ]);
 });
