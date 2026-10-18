@@ -10641,3 +10641,33 @@ fieldset.race-results-chart-view-toggle {
   gap: var(--space-8px-28);
   padding: var(--number-0-2);
 }
+
+/* Narrow screens: keep every 推奨馬券 value on one readable line and scroll sideways,
+   with the 馬券 column pinned on the left. */
+@media (max-width: 760px) {
+  .clef-bet-table {
+    min-width: max-content;
+    width: max-content;
+  }
+
+  .clef-bet-table th,
+  .clef-bet-table td {
+    font-size: var(--space-13px-92);
+    padding: var(--space-8px-28) var(--space-6px-32);
+    white-space: nowrap;
+  }
+
+  .clef-bet-table thead th:first-child,
+  .clef-bet-table tbody th {
+    background: var(--surface);
+    left: var(--number-0-2);
+    max-width: var(--space-160px-65);
+    position: sticky;
+    white-space: normal;
+    z-index: var(--number-1-7);
+  }
+
+  .clef-bet-table thead th:first-child {
+    background: var(--surface-muted);
+  }
+}
