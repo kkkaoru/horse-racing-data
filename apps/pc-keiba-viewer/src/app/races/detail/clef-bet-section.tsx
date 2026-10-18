@@ -1,7 +1,14 @@
 // Runs with Bun for tests and in the browser behind the existing Access origin.
 "use client";
 
-import { useEffect, useId, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 
 import {
   BET_BUDGET_STEP,
@@ -29,6 +36,7 @@ import {
   type ClefBetSuggestion,
 } from "../../../lib/clef-bets";
 import type { ClefRerankRaceAddress } from "../../../lib/clef-rerank";
+import { FrameNumberBadge, HorseNumberBadge } from "./frame-number-badge";
 import { useRealtimeRaceSelector } from "./realtime-client";
 
 interface ClefBetState {
@@ -49,7 +57,7 @@ interface ColumnTogglesProps {
 interface GroupCellProps {
   plan: ClefBetSuggestion;
   runners: ReadonlyMap<number, ClefBetRunner>;
-  pick: (runner: ClefBetRunner) => string;
+  pick: (runner: ClefBetRunner) => ReactNode;
 }
 
 interface BudgetControlProps {
@@ -59,7 +67,7 @@ interface BudgetControlProps {
 
 interface PickColumn {
   label: string;
-  pick: (runner: ClefBetRunner) => string;
+  pick: (runner: ClefBetRunner) => ReactNode;
 }
 
 const SLIDER_MAX_BUDGET: number = 20_000;
@@ -74,8 +82,16 @@ const FRAME_BET_TYPES: ReadonlySet<string> = new Set(["wakuren", "wakufuku", "wa
 const hidesFrame = (column: PickColumn, plan: ClefBetSuggestion): boolean =>
   column.label === FRAME_COLUMN && plan.style !== "single" && !FRAME_BET_TYPES.has(plan.betType);
 const PICK_COLUMNS: readonly PickColumn[] = [
-  { label: "枠番", pick: (runner) => String(runner.frameNumber) },
-  { label: "馬番", pick: (runner) => String(runner.horseNumber) },
+  { label: "枠番", pick: (runner) => <FrameNumberBadge value={String(runner.frameNumber)} /> },
+  {
+    label: "馬番",
+    pick: (runner) => (
+      <HorseNumberBadge
+        frameNumber={String(runner.frameNumber)}
+        horseNumber={String(runner.horseNumber)}
+      />
+    ),
+  },
   { label: "馬名", pick: (runner) => trimName(runner.horseName) },
   { label: "騎手", pick: (runner) => trimName(runner.jockey) },
   { label: "調教師", pick: (runner) => trimName(runner.trainer) },

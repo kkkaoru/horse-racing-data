@@ -306,3 +306,15 @@ it("keeps frame numbers for frame bets with a multi-horse structure", async () =
     "wakuren軸流し軸 11 → 相手 4・9軸8相手3-軸11相手4-軸イレブン相手フォー-軸騎手イレブン相手騎手フォー-軸調教師イレブン相手調教師フォー-軸馬主イレブン相手馬主フォー-2.4〜3.6各600円 × 2点 = 1,200円1,440円〜2,160円",
   );
 });
+
+it("shows frame and horse numbers in the shared colored badges", async () => {
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload)));
+  const { container } = render(<ClefBetSection {...race} />);
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  expect(
+    [...container.querySelectorAll(".frame-number-badge")].map((node) => node.className),
+  ).toStrictEqual(["frame-number-badge frame-8"]);
+  expect(
+    [...container.querySelectorAll(".horse-number-badge")].map((node) => node.textContent),
+  ).toStrictEqual(["11", "4", "11"]);
+});
