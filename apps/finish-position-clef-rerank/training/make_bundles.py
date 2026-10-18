@@ -9,6 +9,7 @@ con = duckdb.connect(f"{W}/keiba.duckdb", read_only=True)
 entries, index = [], []
 z = lambda s: (s - s.mean()) / (s.std() if s.std() > 0 else 1)
 shuka = pd.read_parquet(f"{W}/shuka_scored.parquet")[["race_id", "umaban", "spec"]]
+shuka = shuka.merge(pd.read_parquet(f"{W}/shuka_v4_scored.parquet"), on=["race_id", "umaban"], how="left")  # shuka_v5_final.py
 for cat in weights_cfg["categories"]:
     df = pd.read_parquet(f"{W}/{cat}_frame.parquet")
     df = df[df.race_id.str.startswith(ymd)].copy()
@@ -22,6 +23,7 @@ for cat in weights_cfg["categories"]:
     g = df.groupby("race_id")
     df["general"] = g["sfeat"].transform(z) + g["sfeat2"].transform(z)
     df["shuka"] = g["spec"].transform(z) + g["sfeat2"].transform(z)
+    df["shuka_v4"] = g["v4"].transform(z)
     df["frank"] = df.groupby("race_id")["general"].rank(ascending=False, method="first")
     df["career_raw"] = np.expm1(df["career_n"]).round()
     df["brank"] = None
