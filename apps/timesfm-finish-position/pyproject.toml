@@ -8,7 +8,7 @@ dependencies = [
   "numpy>=2.0.0",
   "pyarrow>=17.0.0",
   "rustuna==0.1.0",
-  "timesfm[torch]==3.0.0",
+  "timesfm[torch]==3.0.2",
 ]
 
 [dependency-groups]
