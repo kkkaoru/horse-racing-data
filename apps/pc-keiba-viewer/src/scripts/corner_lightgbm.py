@@ -9,6 +9,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+import sys
 from time import perf_counter
 from typing import NotRequired, TypedDict, cast
 
@@ -1166,7 +1167,6 @@ def train_model(train: pl.DataFrame, target_column: str) -> lgb.LGBMRegressor:
         learning_rate=0.035,
         num_leaves=31,
         min_child_samples=25,
-        subsample=0.9,
         colsample_bytree=0.9,
         reg_alpha=0.05,
         reg_lambda=0.2,
@@ -1188,7 +1188,6 @@ def train_ranker(train: pl.DataFrame, target_column: str) -> lgb.LGBMRanker:
         learning_rate=0.035,
         num_leaves=31,
         min_child_samples=18,
-        subsample=0.9,
         colsample_bytree=0.9,
         reg_alpha=0.05,
         reg_lambda=0.2,
@@ -1258,7 +1257,6 @@ def train_pairwise_model(train: pl.DataFrame, target_column: str) -> lgb.LGBMCla
         learning_rate=0.04,
         num_leaves=31,
         min_child_samples=30,
-        subsample=0.9,
         colsample_bytree=0.9,
         reg_alpha=0.05,
         reg_lambda=0.2,
@@ -1282,7 +1280,6 @@ def train_stacking_model(
         learning_rate=0.025,
         num_leaves=15,
         min_child_samples=45,
-        subsample=0.85,
         colsample_bytree=0.9,
         reg_alpha=0.15,
         reg_lambda=0.45,
@@ -1912,6 +1909,11 @@ def main() -> None:
     train_to_date = normalize_date(args.train_to_date)
     test_from_date = normalize_date(args.test_from_date)
     test_to_date = normalize_date(args.test_to_date)
+    if train_to_date >= test_from_date:
+        raise SystemExit(
+            f"--train-to-date {train_to_date} must be before --test-from-date {test_from_date} "
+            "(overlapping windows leak test races into training)"
+        )
     train_mask = df["race_date"] <= train_to_date
     test_mask = (df["race_date"] >= test_from_date) & (df["race_date"] <= test_to_date)
     train_positions = np.flatnonzero(train_mask.to_numpy())
@@ -2042,7 +2044,8 @@ def main() -> None:
         _transformer_col: str | None
         try:
             _lstm_model: object = train_lstm_model(train_sequences, train[target_column])
-        except (ImportError, OSError, RuntimeError, AttributeError):
+        except (ImportError, OSError, RuntimeError, AttributeError) as error:
+            print(f"corner_lightgbm: {target_column} LSTM companion skipped: {error!r}", file=sys.stderr)
             _lstm_model = None
         if _lstm_model is not None:
             test = test.with_columns(
@@ -2056,7 +2059,11 @@ def main() -> None:
             _lstm_col = None
         try:
             _transformer_model: object = train_transformer_model(train_sequences, train[target_column])
-        except (ImportError, OSError, RuntimeError, AttributeError):
+        except (ImportError, OSError, RuntimeError, AttributeError) as error:
+            print(
+                f"corner_lightgbm: {target_column} Transformer companion skipped: {error!r}",
+                file=sys.stderr,
+            )
             _transformer_model = None
         if _transformer_model is not None:
             test = test.with_columns(

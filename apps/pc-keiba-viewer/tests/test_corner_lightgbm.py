@@ -513,3 +513,71 @@ def test_train_neural_corner_model_raises_runtime_error_on_non_finite_loss() -> 
     target = pl.Series("target", [0.5] * 8)
     with pytest.raises(RuntimeError, match="neural corner model diverged at epoch 1"):
         _ = subject.train_neural_corner_model(subject.CornerLstmModel(2, 4), sequences, target, 1)
+
+
+def test_main_reports_skipped_neural_companions_on_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("PC_KEIBA_CORNER_FAST_GRID", "1")
+    monkeypatch.setattr(lgb, "LGBMRegressor", FakeRegressor)
+    monkeypatch.setattr(lgb, "LGBMRanker", FakeRanker)
+    monkeypatch.setattr(lgb, "LGBMClassifier", FakeClassifier)
+
+    def diverged_lstm(_seq: object, _target: object) -> object:
+        raise RuntimeError("neural corner model diverged at epoch 1")
+
+    def missing_transformer(_seq: object, _target: object) -> object:
+        raise ImportError("mlx.core")
+
+    monkeypatch.setattr(subject, "train_lstm_model", diverged_lstm)
+    monkeypatch.setattr(subject, "train_transformer_model", missing_transformer)
+    input_path = tmp_path / "dataset.csv"
+    make_model_frame().write_csv(input_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train-corner-lightgbm.py",
+            "--input", str(input_path),
+            "--train-to-date", "2025-12-31",
+            "--test-from-date", "2026-01-01",
+            "--test-to-date", "2026-12-31",
+            "--model-output", str(tmp_path / "models"),
+            "--predictions-output", str(tmp_path / "preds.csv"),
+            "--metrics-output", str(tmp_path / "metrics.json"),
+        ],
+    )
+
+    subject.main()
+
+    err_lines = capsys.readouterr().err.splitlines()
+    assert err_lines[:2] == [
+        "corner_lightgbm: corner1_norm LSTM companion skipped: "
+        "RuntimeError('neural corner model diverged at epoch 1')",
+        "corner_lightgbm: corner1_norm Transformer companion skipped: ImportError('mlx.core')",
+    ]
+
+
+def test_main_rejects_train_window_overlapping_test_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    input_path = tmp_path / "dataset.csv"
+    make_model_frame().write_csv(input_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train-corner-lightgbm.py",
+            "--input", str(input_path),
+            "--train-to-date", "2026-01-01",
+            "--test-from-date", "2026-01-01",
+            "--test-to-date", "2026-12-31",
+            "--model-output", str(tmp_path / "models"),
+            "--predictions-output", str(tmp_path / "preds.csv"),
+            "--metrics-output", str(tmp_path / "metrics.json"),
+        ],
+    )
+    with pytest.raises(SystemExit, match="--train-to-date 20260101 must be before --test-from-date 20260101"):
+        subject.main()
