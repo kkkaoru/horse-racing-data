@@ -14,7 +14,9 @@ COPY --from=uv /uv /uvx /bin/
 WORKDIR /app
 COPY apps/mlflow /app/mlflow
 
-RUN uv pip install --system --no-cache /app/mlflow "mlflow>=3.14"
+# Exact pin in lockstep with apps/mlflow + apps/mlflow-ui: an unpinned build pulled a newer
+# mlflow whose server migrated the shared Neon schema and broke every older client.
+RUN uv pip install --system --no-cache /app/mlflow "mlflow==3.17.1"
 
 WORKDIR /app/mlflow
 EXPOSE 8080

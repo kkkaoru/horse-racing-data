@@ -63,8 +63,10 @@ def test_upsert_timeline_point_end_time_is_not_the_historical_metric_date(
     )
     run = client.get_run(run_id)
     historical_end_time = int(dt.datetime(2020, 1, 1, 3, 0, 0, tzinfo=dt.UTC).timestamp() * 1000)
-    assert run.info.end_time != historical_end_time
-    assert run.info.end_time >= run.info.start_time
+    end_time = run.info.end_time
+    assert end_time is not None
+    assert end_time != historical_end_time
+    assert end_time >= run.info.start_time
 
 
 def test_upsert_timeline_point_reuses_same_run_across_dates(client: MlflowClient) -> None:

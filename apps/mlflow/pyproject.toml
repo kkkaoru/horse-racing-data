@@ -15,7 +15,10 @@ dependencies = [
   "alembic!=1.10.0,<2",
   "boto3>=1.35.0",
   "duckdb>=1.1.0",
-  "mlflow-skinny[db]>=3.14.0",
+  # Exact pin, kept in lockstep with apps/mlflow-ui and apps/mlflow-ui-proxy/Dockerfile:
+  # every client shares one Neon schema, and a newer `mlflow server` migrates it on
+  # startup, which locks older clients out ("Detected out-of-date database schema").
+  "mlflow-skinny[db]==3.17.1",
   "pandas>=2.2.0",
   # Pinned directly (not just via mlflow-skinny[db]) since the tracking store
   # now points at postgresql:// URIs (Neon) by default in most environments --
