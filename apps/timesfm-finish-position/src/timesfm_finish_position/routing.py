@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 
 import numpy as np
@@ -39,6 +40,9 @@ def _ridge_numpy(features: FloatArray, targets: FloatArray) -> FloatArray:
 
 
 def _ridge_mlx(features: FloatArray, targets: FloatArray) -> FloatArray:
+    # MLX >= 0.31 defaults float32 GPU matmuls to TF32 (~1e-3 rel. error), read once at
+    # the first matmul; keep the float32 fit comparable with the float64 NumPy path.
+    _ = os.environ.setdefault("MLX_ENABLE_TF32", "0")
     import mlx.core as mx
 
     design = mx.array(
