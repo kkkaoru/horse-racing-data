@@ -1657,3 +1657,16 @@ def test_regressor_is_informative_rejects_all_nan() -> None:
 def test_plackett_luce_imputes_missing_with_known_mean() -> None:
     probs = subject.plackett_luce_from_cost(np.array([2.0, np.nan]), temperature=2.0)
     assert [round(float(value), 6) for value in probs.tolist()] == [0.5, 0.5]
+
+
+def test_engineer_features_by_race_keeps_field_relative_features_within_each_race() -> None:
+    runners = [
+        {**_equal_trip_runner(umaban=1, kishu_code="0", chokyoshi_code="0", ketto_toroku_bango="0"), "weight_raw": "500", "_race_id": "A"},
+        {**_equal_trip_runner(umaban=1, kishu_code="0", chokyoshi_code="0", ketto_toroku_bango="0"), "weight_raw": "600", "_race_id": "B"},
+        {**_equal_trip_runner(umaban=2, kishu_code="0", chokyoshi_code="0", ketto_toroku_bango="0"), "weight_raw": "520", "_race_id": "A"},
+        {**_equal_trip_runner(umaban=2, kishu_code="0", chokyoshi_code="0", ketto_toroku_bango="0"), "weight_raw": "640", "_race_id": "B"},
+    ]
+    features = subject.engineer_features_by_race(pd.DataFrame(runners), "_race_id")
+    assert features.index.tolist() == [0, 1, 2, 3]
+    assert features["weight_vs_field"].tolist() == [-1.0, -2.0, 1.0, 2.0]
+    assert features["weight_rank"].tolist() == [1.0, 1.0, 2.0, 2.0]

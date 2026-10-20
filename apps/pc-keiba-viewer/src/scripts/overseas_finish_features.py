@@ -870,6 +870,18 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     return out[list(FEATURE_COLUMNS)]
 
 
+def engineer_features_by_race(df: pd.DataFrame, race_id_column: str) -> pd.DataFrame:
+    """engineer_features applied to each race separately, rows in input order.
+
+    Several features are relative to the field (weight/age vs field mean, ranks,
+    overround-normalised odds, and whether the market is complete). Serving scores
+    one race at a time, so training must compute them per race too; on a stacked
+    multi-race frame they were relative to every runner of every race.
+    """
+    per_race = [engineer_features(race) for _, race in df.groupby(race_id_column, sort=False)]
+    return pd.concat(per_race).loc[df.index]
+
+
 def identity_completeness_flags(df: pd.DataFrame) -> pd.DataFrame:
     """Legacy Japan-catalogue presence flags. Not used for scoring."""
     kishu = df["kishu_code"].astype(str).str.strip()

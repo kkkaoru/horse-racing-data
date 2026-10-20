@@ -61,7 +61,7 @@ from overseas_finish_features import (
     InvertedScoreModel,
     PersonSummary,
     attach_tansho_odds,
-    engineer_features,
+    engineer_features_by_race,
     score_overseas_card,
     summarize_netkeiba_form,
     summarize_netkeiba_person,
@@ -160,6 +160,7 @@ JOIN jvd_ra r
 WHERE s.data_kubun = 'B'
   AND trim(s.kakutei_chakujun) NOT IN ('', '00')
   AND trim(s.futan_juryo) NOT IN ('', '000')
+  AND s.kaisai_nen || s.kaisai_tsukihi < %(cutoff_date)s
 """
 
 NETKEIBA_SOURCE_ID_SQL = """\
@@ -380,11 +381,16 @@ def load_saved_models() -> (
 # ---------------------------------------------------------------------------
 # Steps
 # ---------------------------------------------------------------------------
-def step1_extract_training_data(pg_url: str) -> pd.DataFrame:
-    log("STEP 1: Extracting training data ...")
+def step1_extract_training_data(pg_url: str, cutoff_date: str) -> pd.DataFrame:
+    """Training rows from races strictly before ``cutoff_date`` (YYYYMMDD).
+
+    The card day itself is excluded: re-running a past card otherwise trained on
+    that race's own result.
+    """
+    log(f"STEP 1: Extracting training data before {cutoff_date} ...")
     with psycopg.connect(pg_url) as conn:
         with conn.cursor() as cur:
-            cur.execute(TRAINING_SQL)
+            cur.execute(TRAINING_SQL, {"cutoff_date": cutoff_date})
             description = cur.description
             columns = [column.name for column in description] if description else []
             rows = cur.fetchall()
@@ -956,7 +962,7 @@ def step2_engineer_features(
     log("STEP 2: Engineering features ...")
     race_id = _race_id_series(df)
     ordered = df.assign(_race_id=race_id).sort_values(["_race_id", "umaban"], kind="mergesort")
-    features = engineer_features(ordered)
+    features = engineer_features_by_race(ordered, "_race_id")
     target = ordered["finish_position"].astype(int)
     groups = ordered.groupby("_race_id", sort=False).size().tolist()
     log(f"  Features shape: {features.shape}")
@@ -1497,7 +1503,7 @@ def main() -> None:
     log(f"Model version: {args.model_version}")
     saved = load_saved_models() if args.predict_only else None
     if saved is None:
-        raw_df = step1_extract_training_data(pg_url)
+        raw_df = step1_extract_training_data(pg_url, f"{args.kaisai_nen}{args.kaisai_tsukihi}")
         features, target, race_ids, groups = step2_engineer_features(raw_df)
         regressor, clf_top1, clf_top3 = step3_train_models(features, target, race_ids, groups)
     else:
