@@ -367,13 +367,21 @@ def evaluate_cell(
     )
 
 
+def _evaluated_at(metrics: CellMetrics) -> datetime:
+    return metrics.evaluated_at
+
+
 def _find_baseline(
     metrics_list: Sequence[CellMetrics], baseline_hash: str
 ) -> CellMetrics | None:
-    for metrics in metrics_list:
-        if metrics.feature_set_hash == baseline_hash:
-            return metrics
-    return None
+    """The most recent baseline evaluation of the cell.
+
+    The query has no ORDER BY, so taking the first match picked an arbitrary row
+    whenever a cell had several baseline evaluations, and every adoption delta
+    depended on PG's row order.
+    """
+    baselines = [metrics for metrics in metrics_list if metrics.feature_set_hash == baseline_hash]
+    return max(baselines, key=_evaluated_at, default=None)
 
 
 def evaluate_category(

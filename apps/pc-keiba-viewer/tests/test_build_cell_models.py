@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -411,6 +411,15 @@ def test_evaluate_category_evaluates_candidates_against_baseline() -> None:
     results = evaluate_category(grouped, "BASE", now=_NOW)
     assert len(results) == 1
     assert results[0].candidate.feature_set_hash == "CAND"
+
+
+def test_evaluate_category_uses_the_most_recent_baseline_evaluation() -> None:
+    cell = _cell()
+    stale_baseline = _metrics("BASE", top1=0.30, evaluated_at=_FRESH - timedelta(days=2))
+    latest_baseline = _metrics("BASE", top1=0.45)
+    candidate = _metrics("CAND", top1=0.50)
+    results = evaluate_category({cell: [stale_baseline, latest_baseline, candidate]}, "BASE", now=_NOW)
+    assert [result.baseline.top1 for result in results] == [0.45]
 
 
 # ---------------------------------------------------------------------------
