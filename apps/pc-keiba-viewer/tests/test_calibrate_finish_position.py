@@ -557,7 +557,7 @@ def test_fit_curves_for_frame_raises_when_all_ranks_are_nan():
         subject.fit_curves_for_frame(frame, cat="jra", bucket_key="empty_bucket", now=FIXED_NOW)
 
 
-def test_fit_run_skips_bucket_when_all_ranks_are_nan(tmp_path: Path):
+def test_fit_run_skips_bucket_when_all_ranks_are_nan(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     """fit_run must skip buckets where all predicted_ranks are NaN, fall through
     to the global fallback, and not crash."""
     frame_valid = pl.DataFrame({
@@ -592,6 +592,9 @@ def test_fit_run_skips_bucket_when_all_ranks_are_nan(tmp_path: Path):
     }
     result = subject.fit_run(args, deps)
     assert result["buckets_written"] == 1  # bucket 001 only; bucket 002 skipped
+    assert capsys.readouterr().err == (
+        "calibrate_finish_position: bucket 002 skipped (1 races < min 5); no per-bucket curve written.\n"
+    )
 
 
 def test_fit_single_curve_returns_schema_v1_and_finite_brier():
@@ -642,7 +645,9 @@ def test_fit_run_writes_one_curve_pair_per_bucket_when_threshold_met(tmp_path: P
     assert json_writer.call_count == 2
 
 
-def test_fit_run_falls_back_to_cat_global_when_no_bucket_meets_threshold(tmp_path: Path):
+def test_fit_run_falls_back_to_cat_global_when_no_bucket_meets_threshold(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
     frame = _small_bucket_frame_300()
     parquet_reader: subject.ParquetDirReaderLike = cast(
         subject.ParquetDirReaderLike, MagicMock(return_value=frame),
@@ -671,6 +676,9 @@ def test_fit_run_falls_back_to_cat_global_when_no_bucket_meets_threshold(tmp_pat
     second_call_path: Path = cast(Path, json_writer.call_args_list[1].args[1])
     assert "bucket__cat_global" in first_call_path.as_posix()
     assert "bucket__cat_global" in second_call_path.as_posix()
+    assert capsys.readouterr().err == (
+        "calibrate_finish_position: bucket 005 skipped (30 races < min 500); no per-bucket curve written.\n"
+    )
 
 
 def test_fit_run_emits_warning_for_empty_parquet(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
@@ -1678,3 +1686,58 @@ def test_apply_run_clamps_uncalibrated_top3_to_unit_interval(tmp_path: Path):
     assert float(cast(float, top3_vals.max())) <= 1.0
     assert float(cast(float, top3_vals.min())) >= 0.0
     assert result["rows_written"] == 10
+
+
+def test_fit_run_reports_bucket_whose_curve_fit_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    frame_valid = pl.DataFrame({
+        "race_id": [f"r{i}" for i in range(60) for _ in range(10)],
+        "predicted_rank": [float(h + 1) for _ in range(60) for h in range(10)],
+        "actual_finish_position": [float(h + 1) for _ in range(60) for h in range(10)],
+        "kyoso_joken_code": ["001"] * 600,
+    })
+    frame_nanrank = pl.DataFrame({
+        "race_id": ["r_nan"] * 5,
+        "predicted_rank": [float("nan")] * 5,
+        "actual_finish_position": [1.0, 2.0, 3.0, 4.0, 5.0],
+        "kyoso_joken_code": ["002"] * 5,
+    })
+    parquet_reader: subject.ParquetDirReaderLike = cast(
+        subject.ParquetDirReaderLike,
+        MagicMock(return_value=pl.concat([frame_valid, frame_nanrank], how="vertical")),
+    )
+    deps: subject.FitDeps = {
+        "parquet_reader": parquet_reader,
+        "json_writer": cast(subject.JsonWriterLike, MagicMock()),
+        "now": _fixed_now,
+    }
+    args: subject.FitArguments = {
+        "mode": "fit",
+        "cat": "jra",
+        "predictions_root": tmp_path / "preds",
+        "output_dir": tmp_path / "out",
+        "min_bucket_samples": 1,
+        "bucket_dim": "kyoso_joken",
+    }
+    result = subject.fit_run(args, deps)
+    assert result["buckets_written"] == 1
+    assert capsys.readouterr().err == (
+        "calibrate_finish_position: bucket 002 fit failed (No valid rows for calibration fit "
+        "(bucket_key='002'); all rows have NaN predicted_rank and no direct probability column); "
+        "no per-bucket curve written.\n"
+    )
+
+
+def test_out_of_fold_brier_is_none_below_fold_count():
+    assert subject.out_of_fold_brier(np.array([0.1, 0.9]), np.array([0.0, 1.0])) is None
+
+
+def test_out_of_fold_brier_exceeds_in_sample_brier_on_noise():
+    rng = np.random.default_rng(3)
+    probs = rng.random(400)
+    targets = (rng.random(400) < 0.3).astype(float)
+    curve = subject.fit_single_curve(
+        probs, targets, cat="jra", bucket_key="999", target_name="top1", now=FIXED_NOW,
+    )
+    oof_brier = curve.get("brier_score_after_oof")
+    assert oof_brier is not None
+    assert oof_brier > curve["brier_score_after"]

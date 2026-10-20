@@ -31,11 +31,12 @@ import sys
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol, TypedDict, cast
+from typing import NotRequired, Protocol, TypedDict, cast
 
 import numpy as np
 import polars as pl
 from sklearn.isotonic import IsotonicRegression
+from sklearn.model_selection import KFold
 
 import mlflow_hook
 
@@ -110,7 +111,10 @@ class CalibrationCurve(TypedDict):
     iso_y: list[float]
     fit_at: str
     brier_score_before: float
+    # In-sample: isotonic is scored on its own fit data, so after <= before always.
     brier_score_after: float
+    # Out-of-fold estimate (None below OOF_BRIER_FOLDS samples): the honest read.
+    brier_score_after_oof: NotRequired[float | None]
 
 
 class CurvePair(TypedDict):
@@ -322,6 +326,23 @@ def normalize_bucket_key(value: object) -> str:
     return text
 
 
+OOF_BRIER_FOLDS = 5
+OOF_BRIER_SEED = 0
+
+
+def out_of_fold_brier(probs: np.ndarray, targets: np.ndarray) -> float | None:
+    """Brier score of isotonic predictions each made by a curve fit without that row."""
+    if probs.shape[0] < OOF_BRIER_FOLDS:
+        return None
+    calibrated = np.empty(probs.shape[0], dtype=np.float64)
+    folds = KFold(n_splits=OOF_BRIER_FOLDS, shuffle=True, random_state=OOF_BRIER_SEED)
+    for fit_index, eval_index in folds.split(probs):
+        iso = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+        iso.fit(probs[fit_index], targets[fit_index])
+        calibrated[eval_index] = iso.predict(probs[eval_index])
+    return float(np.mean((calibrated - targets) ** 2))
+
+
 def fit_single_curve(
     probs: np.ndarray,
     targets: np.ndarray,
@@ -349,6 +370,7 @@ def fit_single_curve(
         "fit_at": format_fit_timestamp(now),
         "brier_score_before": brier_before,
         "brier_score_after": brier_after,
+        "brier_score_after_oof": out_of_fold_brier(probs, targets),
     }
 
 
@@ -440,12 +462,20 @@ def fit_run(args: FitArguments, deps: FitDeps) -> dict[str, object]:
         bucket_frame = frame.filter(pl.col(column) == raw_value)
         bucket_races = race_count_from_frame(bucket_frame)
         if bucket_races < args["min_bucket_samples"]:
+            sys.stderr.write(
+                f"calibrate_finish_position: bucket {bucket_key} skipped "
+                f"({bucket_races} races < min {args['min_bucket_samples']}); no per-bucket curve written.\n",
+            )
             continue
         try:
             pair = fit_curves_for_frame(
                 bucket_frame, cat=args["cat"], bucket_key=bucket_key, now=now,
             )
-        except ValueError:
+        except ValueError as error:
+            sys.stderr.write(
+                f"calibrate_finish_position: bucket {bucket_key} fit failed ({error}); "
+                "no per-bucket curve written.\n",
+            )
             continue
         write_curve_pair(
             pair,
