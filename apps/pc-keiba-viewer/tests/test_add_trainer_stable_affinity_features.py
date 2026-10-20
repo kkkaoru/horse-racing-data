@@ -150,7 +150,7 @@ def test_stage_race_history_always_filters_to_input_trainers() -> None:
             return [("TRAINER01",)]
 
     conn = FakeConn()
-    subject.stage_race_history_with_trainer(conn, "20100101", "jra")
+    subject.stage_race_history_with_trainer(conn, "20100101", "jra", "null")
     joined = "\n".join(conn.sql)
     assert "from pg.jvd_se se" in joined
     assert "inner join pg.jvd_ra ra" in joined
@@ -243,7 +243,7 @@ def test_stage_race_history_nar_uses_raw_nar_tables() -> None:
             return [("TRAINER43",)]
 
     conn = FakeConn()
-    subject.stage_race_history_with_trainer(conn, "20200101", "nar")
+    subject.stage_race_history_with_trainer(conn, "20200101", "nar", "null")
     joined = "\n".join(conn.sql)
     assert "'nar' as source" in joined
     assert "from pg.nvd_se se" in joined
@@ -263,11 +263,11 @@ def test_stage_race_history_preserves_compatibility_view_row_validity() -> None:
         );
         create table pg.jvd_ra (
           kaisai_nen varchar, kaisai_tsukihi varchar, keibajo_code varchar,
-          race_bango varchar, grade_code varchar
+          race_bango varchar, grade_code varchar, kyosomei_hondai varchar, kyori varchar
         );
         create temp table target_trainers (chokyoshi_code varchar);
         insert into target_trainers values ('TRAINER01');
-        insert into pg.jvd_ra values ('2026', '0101', '05', '01', 'C');
+        insert into pg.jvd_ra values ('2026', '0101', '05', '01', 'C', 'テスト', '1600');
         insert into pg.jvd_se values
           ('2026', '0101', '05', '01', 'HORSE01', '01', '01', 'TRAINER01'),
           ('2026', '0101', '05', '01', 'HORSE02', '00', '02', 'TRAINER01'),
@@ -276,7 +276,7 @@ def test_stage_race_history_preserves_compatibility_view_row_validity() -> None:
         """
     )
 
-    subject.stage_race_history_with_trainer(conn, "20200101", "jra")
+    subject.stage_race_history_with_trainer(conn, "20200101", "jra", "null")
 
     assert conn.execute(
         """
@@ -319,4 +319,67 @@ def test_main_stages_target_trainers_for_whole_day_input(
     subject.main()
 
     stage_trainers.assert_called_once_with(connection, "nar")
-    stage_history.assert_called_once_with(connection, "20100101", "nar")
+    stage_history.assert_called_once_with(
+        connection, "20100101", "nar", subject.lineage_target_classify_sql("nar")
+    )
+
+
+def test_lineage_target_classify_sql_uses_the_lineage_layer_config() -> None:
+    sql = subject.lineage_target_classify_sql("jra")
+    assert sql.startswith("case when kyosomei_norm = 'フェブラリーステークス' and keibajo_code = '05'")
+    assert sql.endswith(" else null end")
+
+
+def test_trainer_target_race_features_count_past_editions_for_a_serving_card(tmp_path: Path) -> None:
+    """Serving input is today's card only; past editions must still be classified.
+
+    Regression: target_race_id used to come only from the input parquet's races, so a
+    single-day card classified no history and every trainer_target_race_* was NULL/0.
+    """
+    conn = duckdb.connect(":memory:")
+    conn.execute("create schema pg")
+    conn.execute(
+        """
+        create table pg.jvd_se (
+          kaisai_nen varchar, kaisai_tsukihi varchar, keibajo_code varchar,
+          race_bango varchar, ketto_toroku_bango varchar, kakutei_chakujun varchar,
+          umaban varchar, chokyoshi_code varchar
+        );
+        create table pg.jvd_ra (
+          kaisai_nen varchar, kaisai_tsukihi varchar, keibajo_code varchar,
+          race_bango varchar, grade_code varchar, kyosomei_hondai varchar, kyori varchar
+        );
+        insert into pg.jvd_ra values
+          ('2025', '0223', '05', '11', 'A', 'フェブラリーステークス', '1600'),
+          ('2025', '0301', '05', '11', 'A', '別のレース', '1600'),
+          ('2026', '0222', '05', '11', 'A', 'フェブラリーステークス', '1600');
+        insert into pg.jvd_se values
+          ('2025', '0223', '05', '11', 'PASTHORSE', '01', '03', 'TRAINER01'),
+          ('2025', '0301', '05', '11', 'PASTHORSE', '02', '03', 'TRAINER01'),
+          ('2026', '0222', '05', '11', 'CARDHORSE', '00', '05', 'TRAINER01');
+        create temp table target_trainers (chokyoshi_code varchar);
+        insert into target_trainers values ('TRAINER01');
+        """
+    )
+    race_year_dir = tmp_path / "race_year=2026"
+    race_year_dir.mkdir()
+    conn.execute(
+        f"""
+        copy (
+          select 'jra' as source, '2026' as kaisai_nen, '0222' as kaisai_tsukihi,
+                 '05' as keibajo_code, '11' as race_bango, 'CARDHORSE' as ketto_toroku_bango,
+                 '20260222' as race_date, 'A' as grade_code, 'february_s' as target_race_id
+        ) to '{(race_year_dir / "data.parquet").as_posix()}' (format parquet)
+        """
+    )
+    input_glob = f"{tmp_path.as_posix()}/race_year=*/*.parquet"
+    subject.stage_race_history_with_trainer(conn, "20200101", "jra", subject.lineage_target_classify_sql("jra"))
+    subject.stage_trainer_grade_cumul(conn)
+    subject.stage_trainer_target_race_cumul(conn)
+    row = conn.execute(
+        "select trainer_target_race_career_count, trainer_target_race_win_count, "
+        "trainer_target_race_top3_count, trainer_target_race_has_history "
+        f"from ({subject.append_features_sql(input_glob, 'jra')})"
+    ).fetchall()
+    conn.close()
+    assert row == [(1, 1, 1, 1)]

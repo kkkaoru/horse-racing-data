@@ -26,8 +26,10 @@ Data leakage 防止: race_date strictly less than current race_date のみを集
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import duckdb
@@ -38,6 +40,25 @@ RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 MAX_EXPLICIT_TARGET_RACES = 200
 """Above this many target races the per-race OR predicate is replaced by a date range."""
+LINEAGE_MODULE_PATH = Path(__file__).with_name("add-grade-race-lineage-features.py")
+LINEAGE_CONFIG_DIR = Path(__file__).with_name("lineage-races")
+
+
+def lineage_target_classify_sql(category: str) -> str:
+    """The lineage layer's target_race_id CASE expression for ``category``.
+
+    History races are classified from their own race metadata with the same rules
+    the lineage layer applies to the input card, so past editions of a target race
+    are recognised whether or not they appear in the input parquet.
+    """
+    spec = importlib.util.spec_from_file_location("add_grade_race_lineage_features", LINEAGE_MODULE_PATH)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load lineage layer from {LINEAGE_MODULE_PATH}")
+    lineage = importlib.util.module_from_spec(spec)
+    # Registered before exec: the lineage module's dataclasses resolve their own module.
+    sys.modules[spec.name] = lineage
+    spec.loader.exec_module(lineage)
+    return str(lineage.build_target_classify_sql(lineage.load_config(LINEAGE_CONFIG_DIR / f"{category}.json")))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -179,6 +200,7 @@ def stage_race_history_with_trainer(
     con: duckdb.DuckDBPyConnection,
     from_date: str,
     category: str,
+    classify_sql: str,
 ) -> None:
     """horse の過去レース成績 + trainer (chokyoshi_code) + grade_code を取得。
 
@@ -195,6 +217,9 @@ def stage_race_history_with_trainer(
     con.execute(
         f"""
         create or replace temp table race_history as
+        select * exclude (kyosomei_norm, kyori_int, month),
+          ({classify_sql}) as target_race_id
+        from (
         select
           {source_literal} as source,
           se.kaisai_nen || se.kaisai_tsukihi as race_date,
@@ -206,7 +231,10 @@ def stage_race_history_with_trainer(
           try_cast(nullif(trim(se.kakutei_chakujun), '00') as integer)
             as finish_position,
           ra.grade_code,
-          se.chokyoshi_code
+          se.chokyoshi_code,
+          replace(replace(coalesce(ra.kyosomei_hondai, ''), '　', ''), ' ', '') as kyosomei_norm,
+          try_cast(nullif(trim(ra.kyori), '') as int) as kyori_int,
+          cast(substring(se.kaisai_tsukihi, 1, 2) as int) as month
         from {se_table} se
         inner join {ra_table} ra
           using (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
@@ -218,6 +246,7 @@ def stage_race_history_with_trainer(
           and try_cast(nullif(trim(se.umaban), '') as integer) is not null
           and se.chokyoshi_code is not null and trim(se.chokyoshi_code) != ''
           and ({trainer_filter})
+        )
         """
     )
     con.execute(
@@ -262,34 +291,21 @@ def stage_trainer_grade_cumul(con: duckdb.DuckDBPyConnection) -> None:
 def stage_trainer_target_race_cumul(con: duckdb.DuckDBPyConnection) -> None:
     """trainer × target_race_id 別 cumul stats。
 
-    base parquet の target_race_id を joined して race_history × target_race の cross 集計。
+    race_history rows carry their own target_race_id (lineage classification of the
+    history race itself). It used to be inherited from the input parquet's races, so a
+    serving input (today's card only) classified no history and every
+    trainer_target_race_* feature was NULL/0, while training inputs covering many
+    years did classify past editions.
     """
-    # First derive target_race_id per race from input base (since base has target_race_id from lineage step)
-    con.execute(
-        """
-        create or replace temp table target_classification as
-        select distinct source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, target_race_id
-        from base_input
-        where target_race_id is not null
-        """
-    )
-    con.execute(
-        "create index target_classification_idx on target_classification (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)"
-    )
     con.execute(
         """
         create or replace temp table trainer_target_daily as
-        select rh.source, rh.chokyoshi_code, tc.target_race_id, rh.race_date,
+        select source, chokyoshi_code, target_race_id, race_date,
           count(*) as starts_on_day,
-          sum(case when rh.finish_position = 1 then 1 else 0 end) as wins_on_day,
-          sum(case when rh.finish_position <= 3 then 1 else 0 end) as top3_on_day
-        from race_history rh
-        join target_classification tc
-          on tc.source = rh.source
-          and tc.kaisai_nen = rh.kaisai_nen
-          and tc.kaisai_tsukihi = rh.kaisai_tsukihi
-          and tc.keibajo_code = rh.keibajo_code
-          and tc.race_bango = rh.race_bango
+          sum(case when finish_position = 1 then 1 else 0 end) as wins_on_day,
+          sum(case when finish_position <= 3 then 1 else 0 end) as top3_on_day
+        from race_history
+        where target_race_id is not null
         group by all
         """
     )
@@ -394,7 +410,9 @@ def main() -> None:
     install_and_attach_pg(con, args.pg_url)
     stage_base_input(con, input_glob)
     stage_target_trainers(con, args.category)
-    stage_race_history_with_trainer(con, args.from_date, args.category)
+    stage_race_history_with_trainer(
+        con, args.from_date, args.category, lineage_target_classify_sql(args.category)
+    )
     stage_trainer_grade_cumul(con)
     stage_trainer_target_race_cumul(con)
     write_partitioned(
