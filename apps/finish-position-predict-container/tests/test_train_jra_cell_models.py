@@ -590,6 +590,7 @@ def test_train_cell_uses_date_block_validation_and_best_iteration(
     )
     assert metadata["independent_training_roster_attested"] is False
     assert metadata["validation_metrics"]["race_count"] == 10
+    assert metadata["validation_metrics_scope"] == "early-stopping-rows-in-sample"
     assert json.loads((artifact / "predictions.json").read_text(encoding="utf-8")) == [
         {
             "race_id": "target",

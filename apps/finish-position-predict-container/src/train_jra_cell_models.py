@@ -39,6 +39,7 @@ from predict_lib.training_labels import outcome_rank_gains
 
 ROSTER_TRAINING_CONTRACT: Final[str] = "supplied-roster-evidence-explicit-status-gains-v1"
 TRAINING_FINISH_CONTRACT: Final[str] = "positive-integer-classified-only-no-row-removal-v1"
+VALIDATION_METRICS_SCOPE: Final[str] = "early-stopping-rows-in-sample"
 
 IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
     {
@@ -476,6 +477,9 @@ def train_cell(
             "target_day_outcomes_allowed": False,
         },
         "validation_metrics": validation_metrics,
+        # The tuning model early-stopped on these same rows (and they are folded into the
+        # final fit), so these metrics are optimistic: not an out-of-sample estimate.
+        "validation_metrics_scope": VALIDATION_METRICS_SCOPE,
         "training_finish_contract": ROSTER_TRAINING_CONTRACT,
         "teacher_evidence": asdict(teacher_catalog.references),
         "training_feature_withdrawn_runner_count": len(admitted.withdrawn),
