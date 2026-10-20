@@ -46,6 +46,8 @@ DEFAULT_VALIDATION_YEARS: Final[list[int]] = [2023, 2024]
 VALIDATION_YEAR_POOL: Final[list[int]] = [2021, 2022, 2023, 2024, 2025]
 DEFAULT_VALIDATION_YEARS_PER_ROUND: Final[int] = 2
 MIN_FEATURES: Final[int] = 5
+# Fold trainers need >= 1 race to fit after holding out the early-stopping tail.
+MIN_TRAIN_RACES_PER_FOLD: Final[int] = 2
 # Random startup trials before TPE begins modelling. With a tiny per-round trial
 # budget a large startup count would degenerate the search to pure random sampling,
 # so it is kept small and capped below the round's n_trials at study-build time.
@@ -210,7 +212,7 @@ def compute_feature_importance(
     count = 0
     for year in validation_years:
         fold = split_walk_forward(df, train_start, year)
-        if fold["train_df"].is_empty() or fold["valid_df"].is_empty():
+        if not _fold_is_trainable(fold):
             continue
         for backend in backends:
             fold_importances = _extract_fold_importance(fold, feature_names, backend)
@@ -222,6 +224,22 @@ def compute_feature_importance(
         for feat in importances:
             importances[feat] /= count
     return importances
+
+
+def _fold_is_trainable(fold: FoldSplit) -> bool:
+    """A fold needs a fold year to score and >= 2 training races.
+
+    Fold trainers early-stop on the latest training races
+    (walk_forward_common.split_early_stopping_tail), which needs at least one race
+    left to fit, so a one-race (e.g. tiny cell-filtered) window is skipped like an
+    empty one instead of aborting the whole evaluation.
+    """
+    train_df = fold["train_df"]
+    return (
+        not fold["valid_df"].is_empty()
+        and not train_df.is_empty()
+        and train_df["race_id"].n_unique() >= MIN_TRAIN_RACES_PER_FOLD
+    )
 
 
 def _extract_fold_importance(
@@ -767,7 +785,7 @@ def evaluate_feature_set(
     ndcg_scores: list[float] = []
     for year in validation_years:
         fold = split_walk_forward(subset_df, train_start, year)
-        if fold["train_df"].is_empty() or fold["valid_df"].is_empty():
+        if not _fold_is_trainable(fold):
             continue
         for backend in backends:
             score = run_fold_with_backend(fold, backend, params)
@@ -911,7 +929,7 @@ def build_objective(
     fold_plans: list[_FoldPlan] = []
     for year in validation_years:
         fold = split_walk_forward(df, train_start, year)
-        if not fold["train_df"].is_empty() and not fold["valid_df"].is_empty():
+        if _fold_is_trainable(fold):
             fold_plans.append(_FoldPlan(fold))
 
     deferred_trials: list[DeferredTrial] = []

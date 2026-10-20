@@ -3491,3 +3491,14 @@ def test_run_combined_exploration_forwards_kwargs_to_run_exploration() -> None:
                 warm_start=False,
             )
     assert mock_explore.call_args.kwargs["warm_start"] is False
+
+
+def test_fold_is_trainable_requires_two_training_races_and_a_fold_year() -> None:
+    two_races = pl.DataFrame({"race_id": ["r1", "r1", "r2"]})
+    one_race = pl.DataFrame({"race_id": ["r1", "r1"]})
+    fold_year = pl.DataFrame({"race_id": ["v1"]})
+    empty = pl.DataFrame({"race_id": []}, schema={"race_id": pl.Utf8})
+    assert subject._fold_is_trainable({"train_df": two_races, "valid_df": fold_year, "valid_year": 2024}) is True
+    assert subject._fold_is_trainable({"train_df": one_race, "valid_df": fold_year, "valid_year": 2024}) is False
+    assert subject._fold_is_trainable({"train_df": empty, "valid_df": fold_year, "valid_year": 2024}) is False
+    assert subject._fold_is_trainable({"train_df": two_races, "valid_df": empty, "valid_year": 2024}) is False
