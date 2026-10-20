@@ -15,6 +15,7 @@
     "demo": "./scripts/run.sh",
     "demo:native": "./scripts/run-native-macos.sh",
     "test": "uv run pytest",
+    "format": "uv run ruff format src tests",
     "format:check": "uv run ruff format --check src tests",
     "lint": "uv run ruff check src tests"
   }

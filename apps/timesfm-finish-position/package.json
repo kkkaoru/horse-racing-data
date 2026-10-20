@@ -6,6 +6,9 @@
     "evaluate:prophet-cell-weights": "PYTHONPATH=../finish-position-predict-container/src:src uv run --group lab python scripts/optimize_prophet_cell_policy.py",
     "evaluate:prophet-served-branches": "PROPHET_SCORE_ADJUSTMENT_ENABLED=off PYTHONPATH=../finish-position-predict-container/src:src uv run --group lab python scripts/optimize_prophet_served_branch_policy.py",
     "evaluate:prophet-maximum-branches": "PROPHET_SCORE_ADJUSTMENT_ENABLED=off PYTHONPATH=../finish-position-predict-container/src:src uv run --group lab python scripts/optimize_prophet_maximum_branch_policy.py",
-    "experiment": "uv run timesfm-finish-position"
+    "experiment": "uv run timesfm-finish-position",
+    "format": "bunx oxfmt",
+    "format:check": "bunx oxfmt --check",
+    "lint": "bunx oxlint --no-error-on-unmatched-pattern"
   }
 }
