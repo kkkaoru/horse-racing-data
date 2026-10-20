@@ -41,6 +41,7 @@ RANDOM_SEED_BASE: Final[int] = 42
 DEFAULT_TRAIN_START_DATE: Final[str] = "20060101"
 METADATA_STATUS_COMPLETED: Final[str] = "completed"
 METADATA_STATUS_SKIPPED: Final[str] = "skipped"
+MODEL_FILENAME: Final[str] = "model.txt"
 DEFAULT_NUM_ITERATIONS: Final[int] = 500
 DEFAULT_NUM_LEAVES: Final[int] = 63
 DEFAULT_MIN_CHILD_SAMPLES: Final[int] = 20
@@ -100,6 +101,10 @@ class FoldTrainerLike(Protocol):
         feature_cols: list[str],
         args: argparse.Namespace,
     ) -> dict[str, object]: ...
+
+
+class SaveModelLike(Protocol):
+    def save_model(self, filename: str) -> object: ...
 
 
 class BucketMembershipReaderLike(Protocol):
@@ -479,6 +484,10 @@ def train_fold(
     weighted_train = attach_sample_weights(train_with_buckets, args["alpha_bucket_weight"])
     ns = build_fold_namespace(args, fold_year, fold_years)
     fold_result = deps["fold_trainer"](weighted_train, valid_df, feature_cols, ns)
+    # Persist the booster before marking the fold completed: a resumed run skips
+    # completed folds, so a metadata-only fold left no loadable model behind.
+    model_dir.mkdir(parents=True, exist_ok=True)
+    cast(SaveModelLike, fold_result["booster"]).save_model(str(model_dir / MODEL_FILENAME))
     valid_predictions = cast(pl.DataFrame, fold_result["valid_predictions"])
     metadata = {
         "fold_year": fold_year,

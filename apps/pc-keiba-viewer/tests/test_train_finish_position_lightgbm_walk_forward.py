@@ -385,6 +385,10 @@ def test_train_fold_completes_and_writes_metadata(
     assert parsed["objective"] == "lambdarank"
     assert parsed["lambdarank_truncation_level"] == 5
     assert parsed["random_seed"] == subject.RANDOM_SEED_BASE + 2024
+    booster = cast(MagicMock, deps["fold_trainer"]).return_value["booster"]
+    booster.save_model.assert_called_once_with(
+        str(subject.build_per_fold_model_dir(args, 2024) / "model.txt")
+    )
 
 
 def test_train_fold_passes_bucket_df_through(
