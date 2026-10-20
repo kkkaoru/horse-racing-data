@@ -29,6 +29,7 @@ import pyarrow.parquet as pq
 import xgboost as xgb
 
 import walk_forward_common
+from learning.feature_selection_policy import is_banned_market_feature
 
 __all__ = [
     "compute_fold_metrics",
@@ -147,7 +148,12 @@ def resolve_projection_columns(schema_names: list[str]) -> list[str]:
 
 def resolve_feature_columns(df: pl.DataFrame) -> list[str]:
     excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
-    return [c for c in df.columns if c not in excluded and df.schema[c].is_numeric()]
+    # Same win-odds/popularity ban as finish_position_lightgbm: these trainers run the
+    # learner's production retrain, so banned columns must never reach them.
+    return [
+        c for c in df.columns
+        if c not in excluded and df.schema[c].is_numeric() and not is_banned_market_feature(c)
+    ]
 
 
 def make_to_relevance(rank1: int, rank2: int, rank3: int):

@@ -30,6 +30,7 @@ import pyarrow.parquet as pq
 from catboost import CatBoost, Pool  # pyright: ignore[reportMissingTypeStubs]
 
 import walk_forward_common
+from learning.feature_selection_policy import is_banned_market_feature
 
 META_COLUMNS = (
     "race_id", "race_date", "race_year", "source", "kaisai_nen", "kaisai_tsukihi",
@@ -134,11 +135,14 @@ def resolve_feature_columns(df: pl.DataFrame, use_cat_features: bool = True) -> 
     excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
     if not use_cat_features:
         excluded |= set(CATEGORICAL_FEATURE_NAMES)
+    # Same win-odds/popularity ban as finish_position_lightgbm: these trainers run the
+    # learner's production retrain, so banned columns must never reach them.
     numeric = [
         c for c in df.columns
         if c not in excluded
         and c not in CATEGORICAL_FEATURE_NAMES
         and df.schema[c].is_numeric()
+        and not is_banned_market_feature(c)
     ]
     cats = (
         [c for c in CATEGORICAL_FEATURE_NAMES if c in df.columns]

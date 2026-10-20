@@ -23,7 +23,7 @@ import numpy as np
 import polars as pl
 import pyarrow.parquet as pq
 
-from learning.feature_selection_policy import SHARED_LABEL_COLUMNS
+from learning.feature_selection_policy import SHARED_LABEL_COLUMNS, is_banned_market_feature
 import walk_forward_common as wfc_common
 
 if TYPE_CHECKING:
@@ -250,9 +250,11 @@ def resolve_fold_learning_rate(
 
 def resolve_feature_columns(df: pl.DataFrame) -> list[str]:
     excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
+    # Same win-odds/popularity ban as finish_position_lightgbm: these trainers run the
+    # learner's production retrain, so banned columns must never reach them.
     return [
         c for c in df.columns
-        if c not in excluded and df.schema[c].is_numeric()
+        if c not in excluded and df.schema[c].is_numeric() and not is_banned_market_feature(c)
     ]
 
 

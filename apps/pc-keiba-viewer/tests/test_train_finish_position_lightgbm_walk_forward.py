@@ -857,3 +857,19 @@ def test_default_fold_trainer_supports_train_without_sample_weight(
     )
     out = subject.default_fold_trainer(train_df, valid_df, ["feature_a"], ns)
     assert "valid_predictions" in out
+
+
+def test_resolve_feature_columns_drops_banned_win_odds_but_keeps_exotic_deviation():
+    df = pl.DataFrame(
+        {
+            "race_id": ["r1"],
+            "speed_index_avg_5": [1.0],
+            "tansho_odds": [3.5],
+            "form_market_edge": [0.2],
+            "exotic_umaren_p2_rank_residual": [0.1],
+        }
+    )
+    assert subject.resolve_feature_columns(df) == [
+        "speed_index_avg_5",
+        "exotic_umaren_p2_rank_residual",
+    ]

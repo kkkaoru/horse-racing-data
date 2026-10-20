@@ -26,6 +26,7 @@ import lightgbm as lgb
 import numpy as np
 import polars as pl
 
+from learning.feature_selection_policy import is_banned_market_feature
 from walk_forward_common import split_early_stopping_tail
 
 META_COLUMNS: tuple[str, ...] = (
@@ -122,7 +123,11 @@ def default_training_params() -> TrainingParams:
 
 def resolve_feature_columns(df_columns: list[str]) -> list[str]:
     excluded = set(META_COLUMNS) | set(LABEL_COLUMNS)
-    return [column for column in df_columns if column not in excluded]
+    # Win odds / popularity are banned for every target (feature_selection_policy).
+    return [
+        column for column in df_columns
+        if column not in excluded and not is_banned_market_feature(column)
+    ]
 
 
 def detect_categorical_features(feature_columns: list[str]) -> list[str]:

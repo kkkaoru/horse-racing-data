@@ -269,3 +269,9 @@ def test_train_head_early_stops_on_train_tail_then_refits_whole_train(monkeypatc
     assert (calls[0]["train_rows"], calls[0]["valid_rows"]) == (135, [15])
     assert (calls[1]["train_rows"], calls[1]["valid_rows"]) == (150, [])
     assert calls[1]["num_boost_round"] == calls[0]["best_iteration"]
+
+
+def test_resolve_feature_columns_drops_banned_win_odds():
+    assert subject.resolve_feature_columns(
+        ["race_id", "speed_index_avg_5", "odds_score", "tansho_ninkijun", "exotic_umaren_p2_rank_residual"]
+    ) == ["speed_index_avg_5", "exotic_umaren_p2_rank_residual"]

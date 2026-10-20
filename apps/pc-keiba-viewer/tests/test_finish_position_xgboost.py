@@ -1290,3 +1290,19 @@ def test_main_calls_run_walk_forward(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     )
     subject.main()
     fake_run.assert_called_once()
+
+
+def test_resolve_feature_columns_drops_banned_win_odds_but_keeps_exotic_deviation():
+    df = pl.DataFrame(
+        {
+            "race_id": ["r1"],
+            "speed_index_avg_5": [1.0],
+            "odds_score": [0.4],
+            "popularity_score": [0.2],
+            "exotic_sanrenpuku_p3_rank_residual": [0.1],
+        }
+    )
+    assert subject.resolve_feature_columns(df) == [
+        "speed_index_avg_5",
+        "exotic_sanrenpuku_p3_rank_residual",
+    ]

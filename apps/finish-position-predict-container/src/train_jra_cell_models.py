@@ -21,6 +21,7 @@ import pyarrow.dataset as ds
 from catboost import CatBoostRanker, Pool
 
 from predict_lib.jra_cell_scope import MINIMUM_DIVERSE_TRAINING_RACES
+from predict_lib.market_feature_policy import is_banned_market_feature
 from predict_lib.rank_relevance import (
     DEFAULT_RELEVANCE_MODE,
     RELEVANCE_MODES,
@@ -123,6 +124,9 @@ def numeric_feature_names(schema: Iterable[SchemaFieldLike]) -> list[str]:
         field.name
         for field in schema
         if field.name not in excluded
+        # Final win odds / popularity must not reach finish models: training sees
+        # settled odds while serving sees live ones, and the ranking would follow the market.
+        and not is_banned_market_feature(field.name)
         and (
             pa.types.is_integer(field.type)
             or pa.types.is_floating(field.type)
