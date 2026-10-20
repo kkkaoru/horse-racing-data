@@ -40,6 +40,8 @@ from finish_position_transformer.dataset import (
     resolve_transformer_feature_columns,
 )
 from finish_position_transformer.dataset import FeatureColumns
+from finish_position_transformer.model import DeterministicEmbedding
+from finish_position_transformer.training import global_grad_norm, raise_if_parameters_non_finite
 from running_style_lightgbm import (
     CLASS_LABELS,
     LABEL_COLUMNS as RUNNING_STYLE_LABEL_COLUMNS,
@@ -188,13 +190,13 @@ class RunningStyleTransformer(nn.Module):
         super().__init__()
         self.numeric_projection = nn.Linear(num_numeric_features, embedding_dim)
         self.categorical_embeddings = [
-            nn.Embedding(num_embeddings=vocab, dims=embedding_dim) for vocab in categorical_vocab_sizes
+            DeterministicEmbedding(num_embeddings=vocab, dims=embedding_dim) for vocab in categorical_vocab_sizes
         ]
         self.race_categorical_embeddings = [
-            nn.Embedding(num_embeddings=vocab, dims=embedding_dim)
+            DeterministicEmbedding(num_embeddings=vocab, dims=embedding_dim)
             for vocab in race_categorical_vocab_sizes
         ]
-        self.umaban_embedding = nn.Embedding(num_embeddings=UMABAN_VOCAB_SIZE, dims=embedding_dim)
+        self.umaban_embedding = DeterministicEmbedding(num_embeddings=UMABAN_VOCAB_SIZE, dims=embedding_dim)
         self.input_layer_norm = nn.LayerNorm(dims=embedding_dim)
         self.encoder = nn.TransformerEncoder(
             num_layers=num_layers,
@@ -237,10 +239,6 @@ def to_mx_batch(arrays: dict[str, np.ndarray], targets: np.ndarray) -> dict[str,
         "mask": mx.array(arrays["mask"]),
         "targets": mx.array(targets),
     }
-
-
-def slice_arrays(arrays: dict[str, np.ndarray], indices: np.ndarray) -> dict[str, np.ndarray]:
-    return {key: value[indices] for key, value in arrays.items() if hasattr(value, "shape")}
 
 
 def cross_entropy_with_mask(
@@ -372,8 +370,12 @@ def train_one_fold(
                 batch["mask"],
                 batch["targets"],
             )
+            # Same divergence gate as the finish-position trainer: never apply a non-finite step.
+            if not (np.isfinite(float(loss_value)) and np.isfinite(float(global_grad_norm(grads)))):
+                continue
             optimizer.update(model, grads)
             mx.eval(model.parameters(), optimizer.state, loss_value)
+        raise_if_parameters_non_finite(model, epoch)
         model.eval()
         valid_batches = iterate_batches(valid_batched, params["batch_size"], shuffle=False, rng=rng)
         valid_loss = evaluate_validation_loss(model, valid_batches)
@@ -593,9 +595,8 @@ def run_walk_forward(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-    if args.command == "walk-forward":
-        run_walk_forward(args)
+    # walk-forward is the only (required) subcommand.
+    run_walk_forward(parse_args(argv))
 
 
 if __name__ == "__main__":

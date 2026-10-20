@@ -76,6 +76,11 @@ class EpochMetrics(TypedDict):
     epoch: int
     train_loss: float
     valid_ndcg_at_3: float
+    skipped_steps: int
+
+
+class TrainingDivergedError(RuntimeError):
+    """Parameters went non-finite; the model must not be scored or exported."""
 
 
 class TrainingResult(TypedDict):
@@ -354,13 +359,23 @@ def train_transformer(
     history: list[EpochMetrics] = []
     no_improve = 0
     for epoch in range(1, config["max_epochs"] + 1):
-        train_loss = _run_epoch(model, optimizer, loss_and_grad, train_arrays, config["batch_size"], rng)
+        train_loss, skipped_steps = _run_epoch(
+            model, optimizer, loss_and_grad, train_arrays, config["batch_size"], rng
+        )
+        raise_if_parameters_non_finite(model, epoch)
         valid_score = (
             evaluate_ndcg(model, valid_arrays, config["batch_size"])
             if valid_arrays is not None and has_valid
             else 0.0
         )
-        history.append({"epoch": epoch, "train_loss": train_loss, "valid_ndcg_at_3": valid_score})
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "valid_ndcg_at_3": valid_score,
+                "skipped_steps": skipped_steps,
+            }
+        )
         if has_valid:
             if valid_score > best_score and np.isfinite(valid_score):
                 best_score = valid_score
@@ -410,13 +425,15 @@ def _make_loss_fn(weights: LossWeights):
 GRADIENT_CLIP_NORM = 1.0
 
 
-def _clip_grad_norm(grads: dict[str, object], max_norm: float) -> dict[str, object]:
-    flat = list(mlx.utils.tree_flatten(grads))
+def global_grad_norm(grads: dict[str, object]) -> mx.array:
     squared_sum = mx.array(0.0)
-    for _name, value in flat:
+    for _name, value in mlx.utils.tree_flatten(grads):
         value_arr = cast(mx.array, value)
         squared_sum = squared_sum + (value_arr * value_arr).sum()
-    total_norm = mx.sqrt(squared_sum)
+    return mx.sqrt(squared_sum)
+
+
+def _clip_grad_norm(grads: dict[str, object], total_norm: mx.array, max_norm: float) -> dict[str, object]:
     scale = mx.minimum(mx.array(1.0), mx.array(max_norm) / (total_norm + mx.array(1e-8)))
     scaled = mlx.utils.tree_map(lambda value: value * scale, grads)
     return scaled
@@ -429,21 +446,36 @@ def _run_epoch(
     arrays: RaceBatchArrays,
     batch_size: int,
     rng: np.random.Generator,
-) -> float:
+) -> tuple[float, int]:
     total_loss = 0.0
     num_batches = 0
+    skipped = 0
     for batch in iter_race_batches(arrays, batch_size=batch_size, shuffle=True, rng=rng):
         mx_batch = _to_mx_batch(batch)
         loss, grads = loss_and_grad(model, mx_batch)
+        total_norm = global_grad_norm(grads)
         loss_value = float(loss)
-        if not np.isfinite(loss_value):
+        # A finite loss can still carry an inf gradient; clipping then yields inf * 0 = NaN
+        # and poisons every parameter, so gate the update on the gradient norm too.
+        if not (np.isfinite(loss_value) and np.isfinite(float(total_norm))):
+            skipped += 1
             continue
-        grads = _clip_grad_norm(grads, GRADIENT_CLIP_NORM)
+        grads = _clip_grad_norm(grads, total_norm, GRADIENT_CLIP_NORM)
         optimizer.update(model, grads)
         mx.eval(model.parameters(), optimizer.state)
         total_loss += loss_value
         num_batches += 1
-    return total_loss / max(num_batches, 1)
+    return total_loss / max(num_batches, 1), skipped
+
+
+def raise_if_parameters_non_finite(model: nn.Module, epoch: int) -> None:
+    bad = [
+        name
+        for name, value in mlx.utils.tree_flatten(model.parameters())
+        if not bool(mx.all(mx.isfinite(cast(mx.array, value))))
+    ]
+    if bad:
+        raise TrainingDivergedError(f"non-finite parameters after epoch {epoch}: {bad[:5]}")
 
 
 __all__ = (
@@ -457,10 +489,13 @@ __all__ = (
     "EpochMetrics",
     "LossWeights",
     "TrainingConfig",
+    "TrainingDivergedError",
     "TrainingResult",
     "default_training_config",
     "evaluate_ndcg",
+    "global_grad_norm",
     "multitask_loss",
     "predict_rank_scores",
+    "raise_if_parameters_non_finite",
     "train_transformer",
 )

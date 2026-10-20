@@ -75,6 +75,22 @@ def build_padding_mask(mask: mx.array, num_heads: int) -> mx.array:
     return additive[:, None, None, :]
 
 
+class DeterministicEmbedding(nn.Embedding):
+    """nn.Embedding whose lookup is a one-hot matmul.
+
+    nn.Embedding's backward is a GPU scatter-add whose atomic accumulation order
+    varies run to run, so same-seed training diverged. A one-hot matmul gives the
+    bitwise-same forward and a deterministic backward, with the same parameter key.
+    shortcut: memory is O(tokens x vocab); fine for the small vocabularies here
+    (umaban, track/grade, keibajo, month), switch to a sorted segment-sum for a
+    high-cardinality categorical.
+    """
+
+    def __call__(self, x: mx.array) -> mx.array:
+        one_hot = mx.equal(x[..., None], mx.arange(self.weight.shape[0])).astype(self.weight.dtype)
+        return one_hot @ self.weight
+
+
 @final
 class RaceSetTransformer(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
@@ -83,14 +99,14 @@ class RaceSetTransformer(nn.Module):
         self.config = config
         self.numeric_projection = nn.Linear(config["num_numeric_features"], dims)
         self.categorical_embeddings = [
-            nn.Embedding(num_embeddings=vocab, dims=dims)
+            DeterministicEmbedding(num_embeddings=vocab, dims=dims)
             for vocab in config["categorical_vocab_sizes"]
         ]
         self.race_categorical_embeddings = [
-            nn.Embedding(num_embeddings=vocab, dims=dims)
+            DeterministicEmbedding(num_embeddings=vocab, dims=dims)
             for vocab in config["race_categorical_vocab_sizes"]
         ]
-        self.umaban_embedding = nn.Embedding(num_embeddings=UMABAN_VOCAB_SIZE, dims=dims)
+        self.umaban_embedding = DeterministicEmbedding(num_embeddings=UMABAN_VOCAB_SIZE, dims=dims)
         self.input_layer_norm = nn.LayerNorm(dims=dims)
         self.encoder = nn.TransformerEncoder(
             num_layers=config["num_layers"],
@@ -184,6 +200,7 @@ __all__ = (
     "DEFAULT_FFN_DIM_MULTIPLIER",
     "DEFAULT_DROPOUT",
     "UMABAN_VOCAB_SIZE",
+    "DeterministicEmbedding",
     "ModelConfig",
     "ModelOutput",
     "RaceSetTransformer",

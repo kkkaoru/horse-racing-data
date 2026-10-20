@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -13,8 +15,10 @@ except (ImportError, OSError):
 
 import numpy as np
 import polars as pl
+from mlx.utils import tree_map
 
 import mlflow_hook
+import finish_position_transformer
 from finish_position_transformer import cli as cli_module
 from finish_position_transformer.dataset import (
     MAX_RUNNERS,
@@ -27,11 +31,13 @@ from finish_position_transformer.dataset import (
 from finish_position_transformer.model import (
     DEFAULT_EMBEDDING_DIM,
     DEFAULT_NUM_HEADS,
+    DeterministicEmbedding,
     RaceSetTransformer,
     build_padding_mask,
     default_model_config,
 )
 from finish_position_transformer.training import (
+    TrainingDivergedError,
     default_training_config,
     evaluate_ndcg,
     multitask_loss,
@@ -886,3 +892,92 @@ def test_run_train_command_succeeds_when_mlflow_hook_reports_failure(
     )
     cli_module.run_train_command(args)
     assert (tmp_path / "ckpt" / "model.safetensors").exists()
+
+
+def test_package_import_defaults_mlx_tf32_off(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("MLX_ENABLE_TF32", raising=False)
+    importlib.reload(finish_position_transformer)
+    assert os.environ["MLX_ENABLE_TF32"] == "0"
+
+
+def test_package_import_keeps_explicit_mlx_tf32_opt_in(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("MLX_ENABLE_TF32", "1")
+    importlib.reload(finish_position_transformer)
+    assert os.environ["MLX_ENABLE_TF32"] == "1"
+
+
+def test_deterministic_embedding_forward_matches_row_lookup():
+    mx.random.seed(3)
+    embedding = DeterministicEmbedding(num_embeddings=5, dims=4)
+    indices = mx.array([[0, 4, 2], [1, 1, 3]])
+    looked_up = np.array(embedding(indices))
+    expected = np.array(embedding.weight)[np.array([[0, 4, 2], [1, 1, 3]])]
+    assert np.array_equal(looked_up, expected) is True
+
+
+def test_deterministic_embedding_backward_is_bitwise_repeatable_under_index_collisions():
+    mx.random.seed(5)
+    embedding = DeterministicEmbedding(num_embeddings=4, dims=32)
+    indices = mx.array(np.random.default_rng(0).integers(0, 4, size=(400, 250)))
+    cotangent = mx.array(np.random.default_rng(1).standard_normal((400, 250, 32)).astype(np.float32))
+
+    def loss_fn(weight: mx.array) -> mx.array:
+        embedding.weight = weight
+        return (embedding(indices) * cotangent).sum()
+
+    weight = embedding.weight
+    grad_a = np.array(mx.grad(loss_fn)(weight))
+    grad_b = np.array(mx.grad(loss_fn)(weight))
+    grad_c = np.array(mx.grad(loss_fn)(weight))
+    assert np.array_equal(grad_a, grad_b) is True
+    assert np.array_equal(grad_a, grad_c) is True
+
+
+def test_train_transformer_skips_steps_whose_finite_loss_has_non_finite_gradient(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    df = _make_synthetic_frame()
+    model, _config, stats = cli_module._build_model_for_dataframe(df, seed=1)
+    arrays = build_race_batches(df, stats)
+    before = np.array(model.numeric_projection.weight)
+
+    def nan_value_and_grad(model_arg: RaceSetTransformer, _loss_fn: object):
+        def loss_and_grad(_model: RaceSetTransformer, _batch: dict[str, mx.array]):
+            grads = tree_map(lambda value: value * mx.array(float("nan")), model_arg.trainable_parameters())
+            return mx.array(0.5), grads
+
+        return loss_and_grad
+
+    monkeypatch.setattr("mlx.nn.value_and_grad", nan_value_and_grad)
+    train_cfg = default_training_config()
+    train_cfg["max_epochs"] = 1
+    train_cfg["batch_size"] = 4
+    result = train_transformer(model, arrays, None, train_cfg)
+    assert result["history"][0]["skipped_steps"] == 2
+    assert result["history"][0]["train_loss"] == 0.0
+    assert np.array_equal(np.array(model.numeric_projection.weight), before) is True
+
+
+def test_train_transformer_records_zero_skipped_steps_on_healthy_run():
+    df = _make_synthetic_frame()
+    model, _config, stats = cli_module._build_model_for_dataframe(df, seed=1)
+    arrays = build_race_batches(df, stats)
+    train_cfg = default_training_config()
+    train_cfg["max_epochs"] = 1
+    train_cfg["batch_size"] = 4
+    result = train_transformer(model, arrays, None, train_cfg)
+    assert result["history"][0]["skipped_steps"] == 0
+
+
+def test_train_transformer_raises_when_parameters_are_non_finite():
+    df = _make_synthetic_frame()
+    model, _config, stats = cli_module._build_model_for_dataframe(df, seed=1)
+    model.update(
+        tree_map(lambda value: value * mx.array(float("nan")), model.parameters())
+    )
+    arrays = build_race_batches(df, stats)
+    train_cfg = default_training_config()
+    train_cfg["max_epochs"] = 3
+    train_cfg["batch_size"] = 4
+    with pytest.raises(TrainingDivergedError, match="non-finite parameters after epoch 1"):
+        _ = train_transformer(model, arrays, arrays, train_cfg)
