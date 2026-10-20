@@ -32,12 +32,18 @@ for cat in weights_cfg["categories"]:
         key = f"{kj}:{rb}"
         cfg = weights_cfg.get(f"{cat}:{ymd}:{key}") or weights_cfg[cat]
         if cfg.get("skip"): continue
+        scores = g[cfg["featureColumn"]].astype(float)
+        if not np.isfinite(scores).all():
+            # A NaN featureScore (runner missing from frame2 / shuka_v4) made an invalid
+            # bundle the worker silently 404'd; skip the race visibly instead.
+            print(f"skip {cat}:{ymd}:{key}: non-finite {cfg['featureColumn']} for umaban {g.umaban[~np.isfinite(scores)].tolist()}", file=sys.stderr)
+            continue
         r0 = g.iloc[0]
         req = build_request_v5({"surface": r0.surface, "dist": r0.dist, "going": r0.going, "field": len(g), "grade_c": r0.grade_c, "joken": r0.joken}, g.to_dict("records"))
         bundle = {"modelVersion": cfg["modelVersion"], "label": cfg["label"], "baseModels": cfg.get("baseModels", approved), "raceKey": f"{cat}:{ymd[:4]}:{ymd[4:]}:{kj}:{rb}",
                   "weights": cfg["weights"], "runners": [{"horseNumber": int(u), "featureScore": float(s)} for u, s in zip(g.umaban, g[cfg["featureColumn"]])],
                   "request": {"state": req["state"], "questions": req["questions"]}}
-        entries.append({"key": f"clefrr:v1:bundle:{ymd}:{kj}:{rb}", "value": json.dumps(bundle, ensure_ascii=False, default=lambda o: None if o != o else (int(o) if float(o).is_integer() else float(o))), "expiration_ttl": 259200})
+        entries.append({"key": f"clefrr:v1:bundle:{ymd}:{kj}:{rb}", "value": json.dumps(bundle, ensure_ascii=False, allow_nan=False, default=lambda o: None if o != o else (int(o) if float(o).is_integer() else float(o))), "expiration_ttl": 259200})
         index.append(key)
 entries.append({"key": f"clefrr:v1:index:{ymd}", "value": json.dumps(sorted(index)), "expiration_ttl": 259200})
 json.dump(entries, open(out, "w"), ensure_ascii=False)
