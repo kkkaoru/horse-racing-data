@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 from dataclasses import asdict
 from pathlib import Path
@@ -28,6 +29,12 @@ from timesfm_finish_position.tabular_evaluation import (
     fit_temperature,
     write_prediction_frame,
 )
+
+# MLX >= 0.31 runs float32 GPU matmuls as TF32 by default (~1e-3 relative error);
+# read once at the first matmul, so set before any model work. Export =1 to opt in.
+_ = os.environ.setdefault("MLX_ENABLE_TF32", "0")
+TRAINING_SEED = 20260902
+GRADIENT_CLIP_NORM = 1.0
 
 HISTORY_COLUMNS = (
     "performance_rating",
@@ -152,6 +159,8 @@ def run(args: argparse.Namespace) -> TreeFoldResult:
     values, _, _ = standardize(batch.values, batch.mask, train)
     targets = metadata["performance_rating"][batch.target_indices].astype(np.float32)
     config = HistoryTransformerConfig(input_features=values.shape[2])
+    # numpy seeding does not reach MLX weight init / dropout.
+    mx.random.seed(TRAINING_SEED)
     model = HorseHistoryTransformer(config)
     mx.eval(model.parameters())
     optimizer = optim.AdamW(learning_rate=3e-4, weight_decay=1e-4)
@@ -169,7 +178,7 @@ def run(args: argparse.Namespace) -> TreeFoldResult:
 
     loss_and_grad = nn.value_and_grad(model, loss_function)
     train_indices = np.flatnonzero(train)
-    rng = np.random.default_rng(20260902)
+    rng = np.random.default_rng(TRAINING_SEED)
     model.train()
     for epoch in range(args.epochs):
         shuffled = rng.permutation(train_indices)
@@ -183,9 +192,15 @@ def run(args: argparse.Namespace) -> TreeFoldResult:
                 mx.array(batch.target_days_since_last[indices].astype(np.float32) / 365.0),
                 mx.array(targets[indices]),
             )
+            loss_value = float(loss.item())
+            if not np.isfinite(loss_value):
+                raise ValueError(f"Nonfinite training loss at epoch {epoch + 1}")
+            gradients, gradient_norm = optim.clip_grad_norm(gradients, GRADIENT_CLIP_NORM)
+            if not np.isfinite(float(gradient_norm)):
+                raise ValueError(f"Nonfinite gradient norm at epoch {epoch + 1}")
             optimizer.update(model, gradients)
             mx.eval(model.parameters(), optimizer.state, loss)
-            losses.append(float(loss.item()))
+            losses.append(loss_value)
         print(json.dumps({"epoch": epoch + 1, "loss": float(np.mean(losses))}), flush=True)
     calibration_indices = np.flatnonzero(calibration)
     calibration_scores = predict(

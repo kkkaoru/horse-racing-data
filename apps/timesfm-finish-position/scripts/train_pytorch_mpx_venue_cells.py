@@ -142,9 +142,7 @@ def load_frame(features_root: Path, venues: list[str]) -> tuple[pd.DataFrame, li
 
 
 def _numeric_frame(frame: pd.DataFrame, names: list[str]) -> pd.DataFrame:
-    return pd.DataFrame(
-        {name: pd.to_numeric(frame[name], errors="coerce") for name in names}
-    )
+    return pd.DataFrame({name: pd.to_numeric(frame[name], errors="coerce") for name in names})
 
 
 def _normalise(frame: pd.DataFrame, names: list[str]) -> tuple[np.ndarray, np.ndarray]:
@@ -203,6 +201,9 @@ def train_model(
     model: RaceSetTransformer | None = None,
     epochs: int | None = None,
 ) -> RaceSetTransformer:
+    # Seed per call: venue fine-tunes otherwise inherit the dropout RNG stream left by the
+    # previous venue, so each venue's result depended on venue iteration order.
+    torch.manual_seed(args.seed)
     if model is None:
         model = RaceSetTransformer(
             width,
@@ -231,6 +232,8 @@ def train_model(
             )
             logits = model(padded.to(device), mask.to(device))
             loss = listnet_loss(logits, relevance.to(device), mask.to(device))
+            if not torch.isfinite(loss):
+                raise ValueError(f"Nonfinite training loss at epoch {epoch + 1}")
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -408,7 +411,6 @@ def main(argv: list[str] | None = None) -> int:
         mean, scale = _normalise(train_frame, names)
         train_x, train_y, _train_pos, _train_rows = _samples(train_frame, names, mean, scale)
         print(f"  year {eval_year} train_races={len(train_x)}", flush=True)
-        torch.manual_seed(args.seed)
         model = train_model(train_x, train_y, width=len(names), args=args, device=device)
         pretrained = {
             key: value.detach().cpu().clone() for key, value in model.state_dict().items()
@@ -447,9 +449,7 @@ def main(argv: list[str] | None = None) -> int:
                 venue_train = frame.loc[
                     (frame["keibajo_code"] == venue) & (years < eval_year)
                 ].reset_index(drop=True)
-                fine_x, fine_y, _fine_pos, _fine_rows = _samples(
-                    venue_train, names, mean, scale
-                )
+                fine_x, fine_y, _fine_pos, _fine_rows = _samples(venue_train, names, mean, scale)
                 print(
                     f"    finetune {VENUES.get(venue, venue)} races={len(fine_x)}",
                     flush=True,
@@ -475,7 +475,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise TypeError("venue stats must keep race counts")
             for key, value in year_hits.items():
                 hits[key] += value
-            bucket["races"] = int(bucket["races"]) + len(scores)
+            races = bucket["races"]
+            if not isinstance(races, int):
+                raise TypeError("venue stats must keep race counts")
+            bucket["races"] = races + len(scores)
             print(
                 f"    {VENUES.get(venue, venue)} {eval_year} eval={len(scores)} "
                 + " ".join(f"{key}={value / len(scores):.4%}" for key, value in year_hits.items()),
@@ -495,7 +498,9 @@ def main(argv: list[str] | None = None) -> int:
         hits = bucket["hits"]
         cell_hits = bucket["cell_hits"]
         cell_races = bucket["cell_races"]
-        overall_races = int(bucket["races"])
+        overall_races = bucket["races"]
+        if not isinstance(overall_races, int):
+            raise TypeError("venue stats must keep race counts")
         if not isinstance(hits, dict) or not isinstance(cell_hits, dict):
             raise TypeError("venue stats must keep hit maps")
         if not isinstance(cell_races, dict):
