@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Final, Literal
 
@@ -107,6 +108,16 @@ def stage_prophet_lookup(
     ).fetchone()
     if duplicate_count is None or int(duplicate_count[0]) != 0:
         raise ValueError("Prophet lookup contains duplicate entity forecasts")
+    row_count = connection.execute("select count(*) from prophet_lookup").fetchone()
+    if row_count is None or int(row_count[0]) == 0:
+        # Not raised: the served adjustment already disables itself on low coverage.
+        # The lookup is built per year, so this fires when e.g. the 2026 lookup is
+        # still deployed in 2027 — previously every yhat went NULL with no trace.
+        print(
+            f"add-prophet-entity-trend-features: no {category} forecasts for {target_date} "
+            f"in {lookup_path.name}; prophet_*_yhat will be NULL (lookup out of date?)",
+            file=sys.stderr,
+        )
     connection.execute(
         "create index prophet_lookup_idx on prophet_lookup (entity_type, entity_code)"
     )

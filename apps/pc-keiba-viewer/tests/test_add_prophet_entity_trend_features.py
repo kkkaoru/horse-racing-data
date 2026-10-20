@@ -206,3 +206,51 @@ def test_stage_lookup_rejects_missing_and_duplicate_artifacts(tmp_path: Path) ->
     with pytest.raises(ValueError, match="duplicate entity forecasts"):
         subject.stage_prophet_lookup(connection, duplicate_path, "nar", "20260903")
     connection.close()
+
+
+def test_stage_lookup_warns_when_the_lookup_has_no_forecasts_for_the_target_day(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lookup_path = tmp_path / "prophet-entity-trends-all-categories-2026.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "category": ["nar"],
+                "forecast_date": ["20261231"],
+                "entity_type": ["venue"],
+                "entity_code": ["30"],
+                "yhat": [0.5],
+            }
+        ),
+        lookup_path,
+    )
+    connection = duckdb.connect(":memory:")
+    subject.stage_prophet_lookup(connection, lookup_path, "nar", "20270105")
+    connection.close()
+    assert capsys.readouterr().err == (
+        "add-prophet-entity-trend-features: no nar forecasts for 20270105 in "
+        "prophet-entity-trends-all-categories-2026.parquet; prophet_*_yhat will be NULL "
+        "(lookup out of date?)\n"
+    )
+
+
+def test_stage_lookup_is_silent_when_the_target_day_has_forecasts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lookup_path = tmp_path / "lookup.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "category": ["nar"],
+                "forecast_date": ["20260903"],
+                "entity_type": ["venue"],
+                "entity_code": ["30"],
+                "yhat": [0.5],
+            }
+        ),
+        lookup_path,
+    )
+    connection = duckdb.connect(":memory:")
+    subject.stage_prophet_lookup(connection, lookup_path, "nar", "20260903")
+    connection.close()
+    assert capsys.readouterr().err == ""
