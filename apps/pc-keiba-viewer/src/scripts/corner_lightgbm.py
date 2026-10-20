@@ -383,6 +383,7 @@ NEURAL_SEQUENCE_STATIC_COLUMNS = [
     "outer_closer_bias",
 ]
 NEURAL_HISTORY_LAGS = 6
+NEURAL_CORNER_SEED = 20260514
 NEURAL_HISTORY_COLUMNS = [
     "corner1_norm",
     "corner2_norm",
@@ -754,7 +755,15 @@ def build_vector_neighbor_frame(df: pl.DataFrame, output: dict[str, FloatArray])
 
 
 def import_mlx_core() -> object:
+    # MLX >= 0.31 defaults float32 GPU matmuls to TF32 (~1e-3 relative error); MLX reads
+    # this once at the first matmul. Export MLX_ENABLE_TF32=1 to opt back in.
+    _ = os.environ.setdefault("MLX_ENABLE_TF32", "0")
     return importlib.import_module("mlx.core")
+
+
+def seed_mlx(seed: int) -> None:
+    """Seed MLX's global RNG (weight init, dropout); numpy seeding does not reach it."""
+    getattr(getattr(import_mlx_core(), "random"), "seed")(seed)
 
 
 def import_mlx_nn() -> object:
@@ -1388,12 +1397,17 @@ def train_neural_corner_model(
 
     loss_and_grad = nn.value_and_grad(model, loss_fn)  # ty: ignore[unresolved-attribute]
     for epoch in range(epochs):
-        rng = np.random.default_rng(20260514 + epoch)
+        # One permutation per epoch: drawing a fresh one per batch sampled rows with
+        # replacement across batches, so an "epoch" skipped some rows and repeated others.
+        order = np.random.default_rng(NEURAL_CORNER_SEED + epoch).permutation(len(train_sequences))
         for start in range(0, len(train_sequences), batch_size):
-            batch_index = rng.permutation(len(train_sequences))[start : start + batch_size]
+            batch_index = order[start : start + batch_size]
             batch_x = mx.array(train_sequences[batch_index])  # ty: ignore[unresolved-attribute]
             batch_y = mx.array(target_values[batch_index])  # ty: ignore[unresolved-attribute]
             loss, gradients = loss_and_grad(model, batch_x, batch_y)
+            if not np.isfinite(float(loss)):
+                # RuntimeError: the caller drops this companion model instead of blending NaNs.
+                raise RuntimeError(f"neural corner model diverged at epoch {epoch + 1}")
             optimizer.update(model, gradients)
             mx.eval(model.parameters(), optimizer.state, loss)  # ty: ignore[unresolved-attribute]
     return model
@@ -1409,10 +1423,12 @@ def predict_neural_corner_model(model, sequences: FloatArray) -> pl.Series:  # p
 
 
 def train_lstm_model(train_sequences: FloatArray, target: pl.Series) -> object:  # pragma: no cover
+    seed_mlx(NEURAL_CORNER_SEED)
     return train_neural_corner_model(CornerLstmModel(train_sequences.shape[2], 32), train_sequences, target, 2)
 
 
 def train_transformer_model(train_sequences: FloatArray, target: pl.Series) -> object:  # pragma: no cover
+    seed_mlx(NEURAL_CORNER_SEED)
     return train_neural_corner_model(CornerTransformerModel(train_sequences.shape[2], 32), train_sequences, target, 2)
 
 

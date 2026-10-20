@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import cast, override
@@ -478,3 +479,37 @@ def test_stacker_training_uses_pairwise_model_not_regression_values(
     regression_col = [c for c in sf.columns if c.startswith("regression")][0]
     # In-sample pairwise predictions from apply_pairwise_model differ from plain regression output
     assert not sf[pairwise_col].equals(sf[regression_col])
+
+
+def test_import_mlx_core_defaults_tf32_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("MLX_ENABLE_TF32", raising=False)
+    monkeypatch.setattr(importlib, "import_module", lambda name: name)
+    assert subject.import_mlx_core() == "mlx.core"
+    assert os.environ["MLX_ENABLE_TF32"] == "0"
+
+
+def test_import_mlx_core_keeps_explicit_tf32_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MLX_ENABLE_TF32", "1")
+    monkeypatch.setattr(importlib, "import_module", lambda name: name)
+    assert subject.import_mlx_core() == "mlx.core"
+    assert os.environ["MLX_ENABLE_TF32"] == "1"
+
+
+def test_seed_mlx_makes_mlx_random_draws_repeatable() -> None:
+    mx = pytest.importorskip("mlx.core")
+    subject.seed_mlx(17)
+    first = np.array(mx.random.uniform(shape=(4,)))
+    subject.seed_mlx(17)
+    second = np.array(mx.random.uniform(shape=(4,)))
+    subject.seed_mlx(18)
+    third = np.array(mx.random.uniform(shape=(4,)))
+    assert np.array_equal(first, second) is True
+    assert np.array_equal(first, third) is False
+
+
+def test_train_neural_corner_model_raises_runtime_error_on_non_finite_loss() -> None:
+    _ = pytest.importorskip("mlx.core")
+    sequences = np.full((8, 3, 2), np.nan, dtype=np.float64)
+    target = pl.Series("target", [0.5] * 8)
+    with pytest.raises(RuntimeError, match="neural corner model diverged at epoch 1"):
+        _ = subject.train_neural_corner_model(subject.CornerLstmModel(2, 4), sequences, target, 1)
