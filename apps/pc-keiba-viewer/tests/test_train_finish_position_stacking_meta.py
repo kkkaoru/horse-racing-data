@@ -1006,3 +1006,72 @@ def test_default_regressor_factory_imports_lightgbm() -> None:
 def test_default_early_stopping_factory_returns_callback() -> None:
     cb = subject.default_early_stopping_factory(5)
     assert cb is not None
+
+
+@final
+class _LabelRecordingRegressor:
+    feature_importances_: np.ndarray
+    best_iteration_: int | None
+    fit_labels: list[np.ndarray]
+    eval_labels: list[np.ndarray]
+
+    def __init__(self, *, n_features: int) -> None:
+        self.feature_importances_ = np.ones(n_features, dtype=np.int64)
+        self.best_iteration_ = 5
+        self.fit_labels = []
+        self.eval_labels = []
+
+    def fit(
+        self,
+        X: np.ndarray,
+        y: np.ndarray,
+        *,
+        eval_set: list[tuple[np.ndarray, np.ndarray]] | None,
+        callbacks: list[object] | None,
+    ) -> None:
+        _ = (X, callbacks)
+        self.fit_labels.append(y)
+        self.eval_labels.extend(labels for _x, labels in eval_set or [])
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.arange(X.shape[0], dtype=float)
+
+
+def test_train_one_fold_drops_rows_without_finish_position_instead_of_filling_99() -> None:
+    frame = subject.assemble_feature_frame(_build_dataset_frame((0, 1, 2)))
+    frame = frame.with_columns(
+        pl.when(pl.col("umaban") == 1)
+        .then(None)
+        .otherwise(pl.col(subject.ACTUAL_FINISH_POSITION_COLUMN))
+        .alias(subject.ACTUAL_FINISH_POSITION_COLUMN)
+    )
+    regressor = _LabelRecordingRegressor(n_features=len(subject.feature_columns(frame)))
+
+    def recording_factory(**_kwargs: object) -> subject.LightGBMRegressorLike:
+        return cast(subject.LightGBMRegressorLike, regressor)
+
+    _preds, meta = subject.train_one_fold(
+        frame,
+        cat="jra",
+        fold_year=2012,
+        model_version="iter11-jra-cb+meta-v8",
+        num_leaves=31,
+        n_estimators=200,
+        learning_rate=0.05,
+        min_child_samples=100,
+        lambda_l2=1.0,
+        early_stopping_rounds=20,
+        random_state=44,
+        val_fraction=0.2,
+        regressor_factory=cast(subject.RegressorFactoryLike, recording_factory),
+        early_stopping_factory=cast(
+            subject.EarlyStoppingFactoryLike, lambda stopping_rounds: object()
+        ),
+        now=FIXED_NOW,
+    )
+    fit_labels = np.concatenate(regressor.fit_labels)
+    eval_labels = np.concatenate(regressor.eval_labels)
+    assert meta["skipped"] is False
+    assert bool(np.isin(99.0, fit_labels)) is False
+    assert bool(np.isin(99.0, eval_labels)) is False
+    assert bool(np.isnan(fit_labels).any()) is False

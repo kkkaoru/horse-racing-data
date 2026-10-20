@@ -504,21 +504,17 @@ def train_one_fold(
         }
         return (pl.DataFrame(), meta_skip)
     inner_train, inner_val = split_train_val(train_frame, val_fraction)
+    # Unlabeled rows (no finish position) are dropped, not filled: a 99.0 regression
+    # target sits far outside any real field size and skews both the fit and the
+    # RMSE early stopping.
+    has_label = pl.col(ACTUAL_FINISH_POSITION_COLUMN).cast(pl.Float64, strict=False).is_not_null()
+    inner_train = inner_train.filter(has_label)
+    inner_val = inner_val.filter(has_label)
     feat_cols = feature_columns(inner_train)
     x_train = inner_train.select(feat_cols).cast(pl.Float64).to_numpy()
-    y_train = (
-        inner_train[ACTUAL_FINISH_POSITION_COLUMN]
-        .cast(pl.Float64, strict=False)
-        .fill_null(99.0)
-        .to_numpy()
-    )
+    y_train = inner_train[ACTUAL_FINISH_POSITION_COLUMN].cast(pl.Float64).to_numpy()
     x_val = inner_val.select(feat_cols).cast(pl.Float64).to_numpy()
-    y_val = (
-        inner_val[ACTUAL_FINISH_POSITION_COLUMN]
-        .cast(pl.Float64, strict=False)
-        .fill_null(99.0)
-        .to_numpy()
-    )
+    y_val = inner_val[ACTUAL_FINISH_POSITION_COLUMN].cast(pl.Float64).to_numpy()
     model = regressor_factory(
         num_leaves=num_leaves,
         n_estimators=n_estimators,
