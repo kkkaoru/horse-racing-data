@@ -22,6 +22,7 @@ import finish_position_transformer
 from finish_position_transformer import cli as cli_module
 from finish_position_transformer.dataset import (
     MAX_RUNNERS,
+    RaceBatchArrays,
     build_race_batches,
     categorical_vocab_size,
     fit_normalization_stats,
@@ -37,7 +38,9 @@ from finish_position_transformer.model import (
     default_model_config,
 )
 from finish_position_transformer.training import (
+    TrainingConfig,
     TrainingDivergedError,
+    TrainingResult,
     default_training_config,
     evaluate_ndcg,
     multitask_loss,
@@ -496,9 +499,38 @@ def test_run_walk_forward_command_writes_report(
             "2",
         ]
     )
+    seen_race_ids: list[tuple[list[str], list[str]]] = []
+
+    def recording_train(
+        model: RaceSetTransformer,
+        train_arrays: RaceBatchArrays,
+        valid_arrays: RaceBatchArrays,
+        config: TrainingConfig,
+    ) -> TrainingResult:
+        seen_race_ids.append((list(train_arrays["race_ids"]), list(valid_arrays["race_ids"])))
+        return train_transformer(model, train_arrays, valid_arrays, config)
+
+    monkeypatch.setattr("finish_position_transformer.cli.train_transformer", recording_train)
     cli_module.run_walk_forward_command(args)
     payload = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
     assert payload["aggregate"]["fold_count"] == 1
+    assert payload["evaluation_regime"] == "early-stop-train-tail-refit-v1"
+    assert sorted(payload["folds"][0]) == [
+        "best_epoch",
+        "early_stop_ndcg_at_3",
+        "elapsed_seconds",
+        "fold_year",
+        "train_rows",
+        "valid_ndcg_at_3",
+        "valid_rows",
+    ]
+    assert payload["aggregate"]["valid_ndcg_at_3_mean"] == payload["folds"][0]["valid_ndcg_at_3"]
+    assert seen_race_ids == [
+        (
+            ["jra:2023:0101:01:01", "jra:2023:0101:01:02", "jra:2023:0101:01:03"],
+            ["jra:2023:0101:01:04"],
+        )
+    ]
     assert (tmp_path / "preds" / "2024.jsonl").exists()
 
 

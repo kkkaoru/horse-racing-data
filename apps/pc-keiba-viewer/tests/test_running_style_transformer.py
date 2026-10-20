@@ -425,11 +425,11 @@ def test_train_one_fold_tracks_best_epoch_and_stops_early(monkeypatch: pytest.Mo
     result = rst.train_one_fold(df, df, _small_params(max_epochs=10, early_stopping_epochs=2))
     assert result[5] == 3
     assert captured == [
-        '{"epoch": 1, "valid_loss": 1.0}',
-        '{"epoch": 2, "valid_loss": 2.0}',
-        '{"epoch": 3, "valid_loss": 0.5}',
-        '{"epoch": 4, "valid_loss": 3.0}',
-        '{"epoch": 5, "valid_loss": 3.0}',
+        '{"epoch": 1, "early_stop_loss": 1.0}',
+        '{"epoch": 2, "early_stop_loss": 2.0}',
+        '{"epoch": 3, "early_stop_loss": 0.5}',
+        '{"epoch": 4, "early_stop_loss": 3.0}',
+        '{"epoch": 5, "early_stop_loss": 3.0}',
     ]
 
 
@@ -680,3 +680,20 @@ def test_run_walk_forward_skips_report_when_not_requested(tmp_path: Path, monkey
     rst.run_walk_forward(args)
     assert sorted(path.name for path in tmp_path.iterdir()) == ["features.parquet", "preds"]
     assert len((tmp_path / "preds" / "2024-2024.jsonl").read_text(encoding="utf-8").splitlines()) == 8
+
+
+def test_train_one_fold_early_stops_on_train_tail_and_scores_valid_year(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("builtins.print", lambda *_args: None)
+    early_stop_race_counts: list[int] = []
+
+    def counting_loss(_model: rst.RunningStyleTransformer, batches: list[dict[str, mx.array]]) -> float:
+        early_stop_race_counts.append(sum(int(batch["mask"].shape[0]) for batch in batches))
+        return 1.0
+
+    monkeypatch.setattr(rst, "evaluate_validation_loss", counting_loss)
+    _model, _stats, probabilities, _targets, valid_arrays, _best_epoch = rst.train_one_fold(
+        _make_frame(years=(2024,), races_per_year=10), _make_frame(years=(2025,), races_per_year=3), _small_params()
+    )
+    assert early_stop_race_counts == [1]
+    assert probabilities.shape == (3, 18, 4)
+    assert valid_arrays["race_ids"] == ["jra:2025:0105:01:01", "jra:2025:0105:01:02", "jra:2025:0105:01:03"]

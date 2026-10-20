@@ -70,10 +70,12 @@ from finish_position_transformer.training import (
     DEFAULT_WEIGHT_DECAY,
     LossWeights,
     TrainingConfig,
+    evaluate_ndcg,
     predict_all_logits,
     predict_rank_scores,
     train_transformer,
 )
+from walk_forward_common import EVALUATION_REGIME, split_early_stopping_tail
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -87,7 +89,10 @@ class CheckpointPaths(TypedDict):
 
 class WalkForwardFoldReport(TypedDict):
     best_epoch: int
-    best_valid_ndcg_at_3: float
+    # NDCG@3 on the training-tail early-stopping set (selects the epoch; optimistic).
+    early_stop_ndcg_at_3: float
+    # NDCG@3 on the fold year, which never influences training: the honest fold metric.
+    valid_ndcg_at_3: float
     elapsed_seconds: float
     fold_year: int
     train_rows: int
@@ -96,6 +101,7 @@ class WalkForwardFoldReport(TypedDict):
 
 class WalkForwardReport(TypedDict):
     aggregate: dict[str, float]
+    evaluation_regime: str
     folds: list[WalkForwardFoldReport]
 
 
@@ -395,13 +401,24 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
             dropout=float(args.dropout),
             seed=int(args.seed),
         )
-        train_arrays = build_race_batches(train_df, stats)
-        valid_arrays = build_race_batches(valid_df, stats)
-        result = train_transformer(model, train_arrays, valid_arrays, training_config)
+        # Epoch selection / best-weight restore runs on the latest training races, never
+        # on the fold year being reported. Unlike the GBDT trainers there is no refit: the
+        # best-epoch weights trained on the fit part are kept.
+        fit_df, stop_df = split_early_stopping_tail(train_df)
+        result = train_transformer(
+            model,
+            build_race_batches(fit_df, stats),
+            build_race_batches(stop_df, stats),
+            training_config,
+        )
+        valid_ndcg = evaluate_ndcg(
+            model, build_race_batches(valid_df, stats), training_config["batch_size"]
+        )
         folds.append(
             {
                 "best_epoch": result["best_epoch"],
-                "best_valid_ndcg_at_3": result["best_valid_ndcg_at_3"],
+                "early_stop_ndcg_at_3": result["best_valid_ndcg_at_3"],
+                "valid_ndcg_at_3": valid_ndcg,
                 "elapsed_seconds": result["elapsed_seconds"],
                 "fold_year": valid_year,
                 "train_rows": train_df.height,
@@ -427,14 +444,18 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
     aggregate = {
         "fold_count": float(len(folds)),
         "valid_ndcg_at_3_mean": float(
-            sum(f["best_valid_ndcg_at_3"] for f in folds) / max(len(folds), 1)
+            sum(f["valid_ndcg_at_3"] for f in folds) / max(len(folds), 1)
         ),
         "elapsed_seconds_total": float(sum(f["elapsed_seconds"] for f in folds)),
     }
-    report: WalkForwardReport = {"aggregate": aggregate, "folds": folds}
+    report: WalkForwardReport = {
+        "aggregate": aggregate,
+        "evaluation_regime": EVALUATION_REGIME,
+        "folds": folds,
+    }
     args.output_report.parent.mkdir(parents=True, exist_ok=True)
     args.output_report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"aggregate": aggregate, "folds": folds}, ensure_ascii=False))
+    print(json.dumps(report, ensure_ascii=False))
 
 
 def run_predict_command(args: argparse.Namespace) -> None:

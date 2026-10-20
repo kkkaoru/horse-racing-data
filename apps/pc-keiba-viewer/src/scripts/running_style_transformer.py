@@ -42,6 +42,7 @@ from finish_position_transformer.dataset import (
 from finish_position_transformer.dataset import FeatureColumns
 from finish_position_transformer.model import DeterministicEmbedding
 from finish_position_transformer.training import global_grad_norm, raise_if_parameters_non_finite
+from walk_forward_common import split_early_stopping_tail
 from running_style_lightgbm import (
     CLASS_LABELS,
     LABEL_COLUMNS as RUNNING_STYLE_LABEL_COLUMNS,
@@ -329,9 +330,14 @@ def train_one_fold(
 ) -> tuple[RunningStyleTransformer, NormalizationStats, np.ndarray, np.ndarray, RaceBatchArrays, int]:
     feature_columns = resolve_running_style_feature_columns(list(train_df.columns))
     stats = fit_normalization_stats(train_df, feature_columns)
-    train_arrays = build_race_batches(train_df, stats)
+    # Early stopping watches the latest training races, never valid_df: valid_df is the
+    # walk-forward year whose predictions and metrics this fold reports.
+    fit_df, stop_df = split_early_stopping_tail(train_df)
+    fit_arrays = build_race_batches(fit_df, stats)
+    stop_arrays = build_race_batches(stop_df, stats)
     valid_arrays = build_race_batches(valid_df, stats)
-    train_targets = extract_running_style_targets(train_df, train_arrays["race_ids"])
+    fit_targets = extract_running_style_targets(fit_df, fit_arrays["race_ids"])
+    stop_targets = extract_running_style_targets(stop_df, stop_arrays["race_ids"])
     valid_targets = extract_running_style_targets(valid_df, valid_arrays["race_ids"])
     categorical_vocab_sizes = [
         categorical_vocab_size(stats, column) for column in stats["categorical_columns"]
@@ -352,7 +358,8 @@ def train_one_fold(
     )
     optimizer = opt.AdamW(learning_rate=params["learning_rate"], weight_decay=params["weight_decay"])
     rng = np.random.default_rng(params["seed"])
-    train_batched = _build_batched_inputs(train_arrays, train_targets)
+    train_batched = _build_batched_inputs(fit_arrays, fit_targets)
+    stop_batched = _build_batched_inputs(stop_arrays, stop_targets)
     valid_batched = _build_batched_inputs(valid_arrays, valid_targets)
     best_loss = float("inf")
     best_epoch = 0
@@ -377,11 +384,11 @@ def train_one_fold(
             mx.eval(model.parameters(), optimizer.state, loss_value)
         raise_if_parameters_non_finite(model, epoch)
         model.eval()
-        valid_batches = iterate_batches(valid_batched, params["batch_size"], shuffle=False, rng=rng)
-        valid_loss = evaluate_validation_loss(model, valid_batches)
-        print(json.dumps({"epoch": epoch, "valid_loss": valid_loss}))
-        if valid_loss < best_loss - 1e-4:
-            best_loss = valid_loss
+        stop_batches = iterate_batches(stop_batched, params["batch_size"], shuffle=False, rng=rng)
+        stop_loss = evaluate_validation_loss(model, stop_batches)
+        print(json.dumps({"epoch": epoch, "early_stop_loss": stop_loss}))
+        if stop_loss < best_loss - 1e-4:
+            best_loss = stop_loss
             best_epoch = epoch
             stale_epochs = 0
         else:
