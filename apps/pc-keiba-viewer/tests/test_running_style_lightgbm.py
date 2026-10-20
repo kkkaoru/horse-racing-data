@@ -780,10 +780,10 @@ def test_run_train_production_command_default_skips_walk_forward_eval(tmp_path: 
         *,
         valid_start_date: str | None = None,
         class_weight_scheme: str = "inverse_freq",
-    ) -> _FakeBooster:
+    ) -> tuple[_FakeBooster, None]:
         assert valid_start_date == "20260101"
         assert class_weight_scheme == "inverse_freq"
-        return _FakeBooster()
+        return _FakeBooster(), None
 
     def _no_walk_forward(*_args: object, **_kwargs: object) -> dict[str, subject.WalkForwardEvalMetrics]:
         raise AssertionError("walk-forward eval must not run when --enable-walk-forward-eval is absent")
@@ -1253,7 +1253,7 @@ def test_run_train_production_command_writes_hyperparameters_to_metadata(tmp_pat
 
     monkeypatch.setattr(subject, "load_dataset_parquet", lambda _path: df.clone())
     monkeypatch.setattr(subject, "maybe_enrich_with_field_features", lambda frame, _enabled: frame)
-    monkeypatch.setattr(subject, "train_full_dataset", lambda *_args, **_kwargs: _FakeBooster())
+    monkeypatch.setattr(subject, "train_full_dataset", lambda *_args, **_kwargs: (_FakeBooster(), None))
     monkeypatch.setattr("builtins.print", lambda *_args, **_kwargs: None)
     args = subject.parse_args(
         [
@@ -1390,7 +1390,7 @@ def test_run_train_production_command_enable_walk_forward_writes_results(tmp_pat
     monkeypatch.setattr(
         subject,
         "train_full_dataset",
-        lambda *_args, **_kwargs: _FakeBooster(),
+        lambda *_args, **_kwargs: (_FakeBooster(), _FakeBooster()),
     )
     monkeypatch.setattr(
         subject,
@@ -2439,7 +2439,11 @@ def test_train_full_dataset_picks_trees_on_validation_slice_then_refits_every_ro
     params["num_iterations"] = 30
     params["early_stopping_rounds"] = 3
     frame = pl.concat([_head_frame(2025, 20), _head_frame(2026, 5)])
-    booster = subject.train_full_dataset(frame, ["feature_a"], [], params, valid_start_date="20260101")
+    booster, holdout_booster = subject.train_full_dataset(
+        frame, ["feature_a"], [], params, valid_start_date="20260101"
+    )
+    assert holdout_booster is not None
+    assert holdout_booster.current_iteration() == calls[0]["best_iteration"]
     assert len(calls) == 2
     assert (calls[0]["train_rows"], calls[0]["valid_rows"]) == (120, [30])
     assert (calls[1]["train_rows"], calls[1]["valid_rows"]) == (150, [])

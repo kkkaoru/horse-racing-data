@@ -2216,7 +2216,14 @@ def train_full_dataset(
     *,
     valid_start_date: str | None = None,
     class_weight_scheme: str = "inverse_freq",
-) -> lgb.Booster:
+) -> tuple[lgb.Booster, lgb.Booster | None]:
+    """Return (shipped booster, holdout booster).
+
+    With valid_start_date the holdout booster trains on rows before it and picks the
+    tree count on the slice from it; the shipped booster is refit on every labeled row
+    with that count, so only the holdout booster can be scored on the slice
+    out-of-sample. Without valid_start_date there is no holdout (None).
+    """
     fit_params = resolve_training_params_for_fit(params)
     with acquire_local_training_slot():
         train_subset = filter_labeled_rows(train_df)
@@ -2259,7 +2266,7 @@ def train_full_dataset(
             )
             # The validation slice only picks the tree count; the shipped model is then
             # refit on every labeled row, so it also learns from the newest season.
-            return lgb.train(
+            booster = lgb.train(
                 lgb_params_for_multiclass(fit_params),
                 build_lgb_dataset(
                     train_subset,
@@ -2271,6 +2278,7 @@ def train_full_dataset(
                 num_boost_round=probe.best_iteration,
                 callbacks=[lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL)],
             )
+            return booster, probe
 
         train_weights = resolve_sample_weights(
             train_subset[TARGET_COLUMN], class_weight_scheme
@@ -2282,12 +2290,13 @@ def train_full_dataset(
             feature_columns,
             categorical_features,
         )
-        return lgb.train(
+        booster = lgb.train(
             lgb_params_for_multiclass(fit_params),
             train_dataset,
             num_boost_round=fit_params["num_iterations"],
             callbacks=[lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL)],
         )
+        return booster, None
 
 
 def run_walk_forward_eval_for_year(
@@ -2466,7 +2475,7 @@ def run_train_production_command(args: argparse.Namespace) -> None:
             categorical_features,
             params,
         )
-    booster = train_full_dataset(
+    booster, holdout_booster = train_full_dataset(
         train_subset_full,
         feature_columns,
         categorical_features,
@@ -2476,12 +2485,18 @@ def run_train_production_command(args: argparse.Namespace) -> None:
     )
     production_precision_nige: float | None = None
     if walk_forward_results is not None:
-        production_precision_nige = compute_production_precision_nige(
-            booster,
-            train_subset_full,
-            feature_columns,
-            categorical_features,
-            args.valid_start_date,
+        # Scored with the holdout booster: the shipped booster is refit on the slice
+        # itself, so scoring it there would be in-sample and trip false leakage warnings.
+        production_precision_nige = (
+            compute_production_precision_nige(
+                holdout_booster,
+                train_subset_full,
+                feature_columns,
+                categorical_features,
+                args.valid_start_date,
+            )
+            if holdout_booster is not None
+            else float("nan")
         )
         emit_walk_forward_warnings(walk_forward_results, production_precision_nige)
     args.output_model_dir.mkdir(parents=True, exist_ok=True)
