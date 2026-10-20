@@ -53,7 +53,7 @@ from finish_position_lightgbm import (
     split_walk_forward,
 )
 import mlflow_hook
-from walk_forward_common import atomic_write_metadata
+from walk_forward_common import EVALUATION_REGIME, atomic_write_metadata
 
 _psutil: ModuleType | None
 try:
@@ -926,7 +926,10 @@ class TrialExplorationStore:
 
     def __init__(self, pg_url: str, category: str, all_features: list[str]) -> None:
         self._pg_url: str = pg_url
-        self._category: str = category
+        # Cached ndcg_at_3 rows are only reusable under the evaluation protocol that
+        # produced them, so the partition key carries the regime: rows written under an
+        # older regime stay in the table but are never read back as cache hits.
+        self._category: str = f"{category}@{EVALUATION_REGIME}"
         # Canonical feature order: every mask/importance vector is built against this
         # so a hash's vector is comparable across trials regardless of selection order.
         self._all_features: list[str] = sorted(all_features)
@@ -1951,7 +1954,10 @@ class ContinuousLearner:
         self, parquet_path: Path, model_root: Path, model_version: str
     ) -> Path:
         script_name = _TRAINING_SCRIPT[self._category]
-        year_to = max(self._validation_years)
+        # The fold for the newest (blind holdout) year trains on every earlier year.
+        # Targeting max(validation_years) instead shipped a model that never saw the
+        # validation years themselves (default pool: trained through 2023 only).
+        year_to = self._blind_holdout_year
         _logger.info("│    script: %s  target year: %d", script_name, year_to)
         cmd = [
             sys.executable,

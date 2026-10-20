@@ -483,7 +483,7 @@ def test_train_fold_skips_when_checkpoint_completed(tmp_path: Path):
     model_dir = subject.build_per_fold_model_dir(args, 2024)
     model_dir.mkdir(parents=True)
     (model_dir / "metadata.json").write_text(
-        json.dumps({"status": "completed", "fold_year": 2024}),
+        json.dumps({"status": "completed", "fold_year": 2024, "evaluation_regime": "early-stop-train-tail-refit-v1"}),
         encoding="utf-8",
     )
     deps = _make_fake_deps(_feature_df())
@@ -532,6 +532,7 @@ def test_train_fold_trains_and_writes_completed_metadata(
     assert parsed["status"] == "completed"
     assert parsed["random_seed"] == subject.RANDOM_SEED_BASE + 2024
     assert parsed["alpha_bucket_weight"] == 0.5
+    assert parsed["evaluation_regime"] == "early-stop-train-tail-refit-v1"
 
 
 def test_train_fold_writes_predictions_parquet_when_root_set(

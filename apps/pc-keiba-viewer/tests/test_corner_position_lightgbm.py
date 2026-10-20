@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, Sized
 from pathlib import Path
+from typing import cast
 
+import lightgbm as lgb
 import numpy as np
 import polars as pl
 import pytest
@@ -216,3 +219,53 @@ def test_write_walk_forward_report_aggregates_per_head_mae(tmp_path: Path):
     assert payload["aggregate"]["per_head_mae_mean"]["corner_1"] == pytest.approx(0.14)
     assert payload["aggregate"]["corner_1_top3_agreement_mean"] == pytest.approx(0.375)
     assert len(payload["folds"]) == 2
+
+
+def _corner_frame(year: int, races: int) -> pl.DataFrame:
+    rng = np.random.default_rng(year)
+    return pl.DataFrame(
+        {
+            "race_id": [f"jra:{year}:{day // 4 + 1:02d}{day % 4 + 1:02d}:05:01" for day in range(races) for _ in range(5)],
+            "race_date": [f"{year}{day // 4 + 1:02d}{day % 4 + 1:02d}" for day in range(races) for _ in range(5)],
+            "feature_a": rng.normal(size=races * 5),
+            "target_corner_1_norm": rng.random(races * 5),
+        }
+    )
+
+
+def test_train_head_early_stops_on_train_tail_then_refits_whole_train(monkeypatch: pytest.MonkeyPatch):
+    calls: list[dict[str, object]] = []
+    real_train = lgb.train
+
+    def recording_train(
+        params: dict[str, object],
+        train_set: lgb.Dataset,
+        num_boost_round: int = 100,
+        valid_sets: list[lgb.Dataset] | None = None,
+        callbacks: list[Callable[..., None]] | None = None,
+    ) -> lgb.Booster:
+        booster = real_train(
+            params, train_set, num_boost_round=num_boost_round, valid_sets=valid_sets, callbacks=callbacks
+        )
+        calls.append(
+            {
+                "train_rows": len(cast(Sized, train_set.data)),
+                "valid_rows": [len(cast(Sized, dataset.data)) for dataset in valid_sets or []],
+                "num_boost_round": num_boost_round,
+                "best_iteration": booster.best_iteration,
+            }
+        )
+        return booster
+
+    monkeypatch.setattr(lgb, "train", recording_train)
+    params = subject.default_training_params()
+    params["num_iterations"] = 30
+    params["early_stopping_rounds"] = 3
+    _booster, predictions = subject.train_head(
+        _corner_frame(2024, 30), _corner_frame(2025, 4), "target_corner_1_norm", ["feature_a"], [], params
+    )
+    assert predictions.shape == (20,)
+    assert len(calls) == 2
+    assert (calls[0]["train_rows"], calls[0]["valid_rows"]) == (135, [15])
+    assert (calls[1]["train_rows"], calls[1]["valid_rows"]) == (150, [])
+    assert calls[1]["num_boost_round"] == calls[0]["best_iteration"]

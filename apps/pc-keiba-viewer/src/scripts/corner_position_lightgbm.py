@@ -26,6 +26,8 @@ import lightgbm as lgb
 import numpy as np
 import polars as pl
 
+from walk_forward_common import split_early_stopping_tail
+
 META_COLUMNS: tuple[str, ...] = (
     "source",
     "race_date",
@@ -210,28 +212,38 @@ def train_head(
     categorical_features: list[str],
     params: TrainingParams,
 ) -> tuple[lgb.Booster, np.ndarray]:
+    """Early-stop on the latest training races, refit the whole window, score valid_df.
+
+    valid_df is the walk-forward year being reported, so it never drives early stopping.
+    """
     train_subset = filter_target_rows(train_df, target_column)
-    valid_subset = filter_target_rows(valid_df, target_column)
-    train_dataset = build_lgb_dataset(
-        train_subset, train_subset[target_column], feature_columns, categorical_features
+    fit_subset, stop_subset = split_early_stopping_tail(train_subset)
+    fit_dataset = build_lgb_dataset(
+        fit_subset, fit_subset[target_column], feature_columns, categorical_features
     )
-    valid_dataset = build_lgb_dataset(
-        valid_subset, valid_subset[target_column], feature_columns, categorical_features,
-        reference=train_dataset,
+    stop_dataset = build_lgb_dataset(
+        stop_subset, stop_subset[target_column], feature_columns, categorical_features,
+        reference=fit_dataset,
     )
-    booster = lgb.train(
+    probe = lgb.train(
         lgb_params_for_regression(params),
-        train_dataset,
+        fit_dataset,
         num_boost_round=params["num_iterations"],
-        valid_sets=[valid_dataset],
+        valid_sets=[stop_dataset],
         callbacks=[
             lgb.early_stopping(stopping_rounds=params["early_stopping_rounds"]),
             lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL),
         ],
     )
+    booster = lgb.train(
+        lgb_params_for_regression(params),
+        build_lgb_dataset(
+            train_subset, train_subset[target_column], feature_columns, categorical_features
+        ),
+        num_boost_round=probe.best_iteration,
+    )
     predictions = booster.predict(
         encode_categoricals(valid_df.select(feature_columns), categorical_features),
-        num_iteration=booster.best_iteration,
     )
     return booster, np.asarray(predictions, dtype=np.float64)
 

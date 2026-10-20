@@ -42,6 +42,7 @@ from learning.feature_selection_policy import (
     normalize_feature_names,
     resolve_feature_columns_for_target,
 )
+from walk_forward_common import split_early_stopping_tail
 from running_style_field_features import (
     FIELD_FEATURE_COLUMNS,
     enrich_dataframe_with_field_features,
@@ -152,9 +153,11 @@ AUTO_NUM_THREADS = 0
 TRAINING_SLOT_LOCK_DIR = "horse-racing-running-style-lightgbm-slots"
 
 # 21-year training range: 2005-2026 inclusive. NAR feature parquet starts
-# in 2005, JRA starts in 2006 (filtered at category level). 2026 is the
-# latest backfilled year and is sliced off as the early-stop holdout via
-# DEFAULT_VALID_START_DATE so the production model still sees all 21 years.
+# in 2005, JRA starts in 2006 (filtered at category level). Rows from
+# DEFAULT_VALID_START_DATE on (2026) are the adoption/evaluation slice: the
+# shipped model trains on the years before it, and its tree count is chosen by
+# early stopping on the latest training races (train_running_style_head), never
+# on the slice it is evaluated on.
 DEFAULT_TRAIN_START_DATE = "20050101"
 DEFAULT_TRAIN_END_DATE = "20261231"
 DEFAULT_VALID_START_DATE = "20260101"
@@ -1364,6 +1367,11 @@ def lgb_params_for_multiclass(params: TrainingParams) -> dict[str, object]:
         "bagging_fraction": params["bagging_fraction"],
         "bagging_freq": params["bagging_freq"],
         "num_threads": num_threads,
+        # Without these LightGBM times row- vs col-wise histograms at startup and keeps
+        # the faster one, a load-dependent choice that changes the trained model; the
+        # thread count here is itself load-dependent (resolve_auto_num_threads).
+        "deterministic": True,
+        "force_row_wise": True,
         "verbose": -1,
     }
 
@@ -1777,38 +1785,53 @@ def train_running_style_head(
     *,
     class_weight_scheme: str = "inverse_freq",
 ) -> tuple[lgb.Booster, np.ndarray]:
+    """Train on train_df and return the booster plus softmax probabilities for valid_df.
+
+    The tree count is chosen by early stopping on the latest races of train_df, then the
+    whole of train_df is refit with it. valid_df is never used for early stopping: the
+    adoption gate and walk-forward reports score exactly those rows.
+    """
     fit_params = resolve_training_params_for_fit(params)
+    lgb_params = lgb_params_for_multiclass(fit_params)
     with acquire_local_training_slot():
         train_subset = filter_labeled_rows(train_df)
-        valid_subset = filter_labeled_rows(valid_df)
-        train_weights = resolve_sample_weights(
-            train_subset[TARGET_COLUMN], class_weight_scheme
-        )
-        valid_weights = np.ones(len(valid_subset), dtype=np.float64)
-        train_dataset = build_lgb_dataset(
-            train_subset,
-            train_subset[TARGET_COLUMN],
-            train_weights,
+        fit_subset, stop_subset = split_early_stopping_tail(train_subset)
+        fit_dataset = build_lgb_dataset(
+            fit_subset,
+            fit_subset[TARGET_COLUMN],
+            resolve_sample_weights(fit_subset[TARGET_COLUMN], class_weight_scheme),
             feature_columns,
             categorical_features,
         )
-        valid_dataset = build_lgb_dataset(
-            valid_subset,
-            valid_subset[TARGET_COLUMN],
-            valid_weights,
+        stop_dataset = build_lgb_dataset(
+            stop_subset,
+            stop_subset[TARGET_COLUMN],
+            np.ones(len(stop_subset), dtype=np.float64),
             feature_columns,
             categorical_features,
-            reference=train_dataset,
+            reference=fit_dataset,
         )
-        booster = lgb.train(
-            lgb_params_for_multiclass(fit_params),
-            train_dataset,
+        probe = lgb.train(
+            lgb_params,
+            fit_dataset,
             num_boost_round=fit_params["num_iterations"],
-            valid_sets=[valid_dataset],
+            valid_sets=[stop_dataset],
             callbacks=[
                 lgb.early_stopping(stopping_rounds=fit_params["early_stopping_rounds"]),
                 lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL),
             ],
+        )
+        refit_rounds = probe.best_iteration if probe.best_iteration > 0 else fit_params["num_iterations"]
+        booster = lgb.train(
+            lgb_params,
+            build_lgb_dataset(
+                train_subset,
+                train_subset[TARGET_COLUMN],
+                resolve_sample_weights(train_subset[TARGET_COLUMN], class_weight_scheme),
+                feature_columns,
+                categorical_features,
+            ),
+            num_boost_round=refit_rounds,
         )
     probabilities = predict_softmax(
         booster, valid_df, feature_columns, categorical_features
@@ -2222,7 +2245,7 @@ def train_full_dataset(
                 categorical_features,
                 reference=train_dataset,
             )
-            return lgb.train(
+            probe = lgb.train(
                 lgb_params_for_multiclass(fit_params),
                 train_dataset,
                 num_boost_round=fit_params["num_iterations"],
@@ -2233,6 +2256,20 @@ def train_full_dataset(
                     ),
                     lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL),
                 ],
+            )
+            # The validation slice only picks the tree count; the shipped model is then
+            # refit on every labeled row, so it also learns from the newest season.
+            return lgb.train(
+                lgb_params_for_multiclass(fit_params),
+                build_lgb_dataset(
+                    train_subset,
+                    train_subset[TARGET_COLUMN],
+                    resolve_sample_weights(train_subset[TARGET_COLUMN], class_weight_scheme),
+                    feature_columns,
+                    categorical_features,
+                ),
+                num_boost_round=probe.best_iteration,
+                callbacks=[lgb.log_evaluation(period=DEFAULT_VERBOSE_EVAL)],
             )
 
         train_weights = resolve_sample_weights(

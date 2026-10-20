@@ -28,6 +28,8 @@ import polars as pl
 import pyarrow.parquet as pq
 import xgboost as xgb
 
+import walk_forward_common
+
 __all__ = [
     "compute_fold_metrics",
     "group_weights_from_row_weights",
@@ -247,28 +249,24 @@ def group_weights_from_row_weights(
     )
 
 
-def train_xgboost_ranker(
-    train_df: pl.DataFrame,
-    valid_df: pl.DataFrame,
-    feature_cols: list[str],
-    args: argparse.Namespace,
-) -> tuple[xgb.Booster, dict[str, object]]:
-    train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
-    train_labels = relevance_labels(
-        train_df, int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
+def build_ranking_dmatrix(
+    df: pl.DataFrame, feature_cols: list[str], args: argparse.Namespace,
+) -> xgb.DMatrix:
+    """DMatrix with relevance labels, race groups and (if present) per-group weights."""
+    labels = relevance_labels(
+        df, int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
     )
-    valid_labels = relevance_labels(
-        valid_df, int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
+    group_sizes = build_group_sizes(df)
+    weights = (
+        group_weights_from_row_weights(df["sample_weight"].to_numpy(), group_sizes)
+        if "sample_weight" in df.columns else None
     )
-    train_group_sizes = build_group_sizes(train_df)
-    train_weights = (
-        group_weights_from_row_weights(train_df["sample_weight"].to_numpy(), train_group_sizes)
-        if "sample_weight" in train_df.columns else None
-    )
-    dtrain = xgb.DMatrix(train_df.select(feature_cols), label=train_labels, weight=train_weights)
-    dtrain.set_group(train_group_sizes)
-    dvalid = xgb.DMatrix(valid_df.select(feature_cols), label=valid_labels)
-    dvalid.set_group(build_group_sizes(valid_df))
+    dmatrix = xgb.DMatrix(df.select(feature_cols), label=labels, weight=weights)
+    dmatrix.set_group(group_sizes)
+    return dmatrix
+
+
+def build_xgboost_params(args: argparse.Namespace) -> dict[str, object]:
     objective_arg = getattr(args, "objective", "pairwise")
     xgb_objective = "rank:ndcg" if objective_arg == "ndcg" else "rank:pairwise"
     params: dict[str, object] = {
@@ -288,19 +286,45 @@ def train_xgboost_ranker(
     if objective_arg == "ndcg":
         params["lambdarank_pair_method"] = getattr(args, "lambdarank_pair_method", "topk")
         params["lambdarank_num_pair_per_sample"] = getattr(args, "lambdarank_num_pair_per_sample", 3)
+    return params
+
+
+def train_xgboost_ranker(
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
+    feature_cols: list[str],
+    args: argparse.Namespace,
+) -> tuple[xgb.Booster, dict[str, object]]:
+    """Train on ``train_df`` and score ``valid_df`` (the fold year) without peeking at it.
+
+    The tree count is chosen by early stopping on the latest races of the training
+    window, then the model is refit on the whole window with exactly that many trees.
+    ``best_iteration`` stays 0-based (the refit has ``best_iteration + 1`` trees).
+    """
+    train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
+    fit_df, stop_df = walk_forward_common.split_early_stopping_tail(train_df)
+    params = build_xgboost_params(args)
+    dfit = build_ranking_dmatrix(fit_df, feature_cols, args)
+    # The early-stopping set is scored unweighted, like the fold-year eval set it replaces.
+    dstop = build_ranking_dmatrix(stop_df.drop("sample_weight", strict=False), feature_cols, args)
     evals_result: dict[str, dict[str, list[float]]] = {}
-    booster = xgb.train(
+    probe = xgb.train(
         params,
-        dtrain,
+        dfit,
         num_boost_round=args.num_rounds,
-        evals=[(dvalid, "valid")],
+        evals=[(dstop, "early_stop")],
         early_stopping_rounds=args.early_stopping_rounds,
         evals_result=evals_result,
         verbose_eval=50,
     )
+    best_iteration = int(probe.best_iteration)
+    booster = xgb.train(
+        params,
+        build_ranking_dmatrix(train_df, feature_cols, args),
+        num_boost_round=best_iteration + 1,
+    )
     valid_pred = np.asarray(
-        booster.predict(dvalid, iteration_range=(0, booster.best_iteration + 1)),
-        dtype=np.float64,
+        booster.predict(xgb.DMatrix(valid_df.select(feature_cols))), dtype=np.float64,
     )
     valid_df = valid_df.with_columns(pl.Series("predicted_score", valid_pred))
     valid_df = valid_df.with_columns(
@@ -313,7 +337,7 @@ def train_xgboost_ranker(
     )
     metrics = compute_fold_metrics(valid_df)
     return booster, {
-        "best_iteration": int(booster.best_iteration),
+        "best_iteration": best_iteration,
         "valid_predictions": valid_df,
         "metrics": metrics,
     }
@@ -422,7 +446,11 @@ def run_walk_forward(args: argparse.Namespace) -> None:
         "top3_box_accuracy_mean": sum(cast(float, f["top3_box_accuracy"]) for f in folds) / max(len(folds), 1),
         "top3_exact_accuracy_mean": sum(cast(float, f["top3_exact_accuracy"]) for f in folds) / max(len(folds), 1),
     }
-    report = {"aggregate": aggregate, "folds": folds}
+    report = {
+        "aggregate": aggregate,
+        "evaluation_regime": walk_forward_common.EVALUATION_REGIME,
+        "folds": folds,
+    }
     args.output_report.parent.mkdir(parents=True, exist_ok=True)
     args.output_report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))

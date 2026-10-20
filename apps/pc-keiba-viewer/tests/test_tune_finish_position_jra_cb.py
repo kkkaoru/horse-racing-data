@@ -357,18 +357,38 @@ def test_build_fold_frames_with_bucket(tmp_path: Path) -> None:
     assert list(frames.bucket_df["bucket_grade_code"]) == ["A"]
 
 
-def test_build_fold_frames_leave_one_year_out_includes_future_non_held_years(tmp_path: Path) -> None:
+def test_build_fold_frames_held_out_2025_trains_on_2023_and_2024_only(tmp_path: Path) -> None:
     features_root = tmp_path / "feats"
     _write_year_parquet(features_root, 2023, ["r2023a"])
     _write_year_parquet(features_root, 2024, ["r2024a"])
     _write_year_parquet(features_root, 2025, ["r2025a"])
     frames = mod.build_fold_frames(
-        features_root, None, (2023, 2024, 2025), 2023, ["feature_a"],
+        features_root, None, (2023, 2024, 2025), 2025, ["feature_a"],
     )
-    train_race_ids = set(frames.train_df["race_id"].to_list())
-    assert "r2023a" not in train_race_ids
-    assert "r2024a" in train_race_ids
-    assert "r2025a" in train_race_ids
+    assert frames.train_df["race_id"].to_list() == ["r2023a", "r2024a"]
+    assert frames.valid_df["race_id"].to_list() == ["r2025a"]
+
+
+def test_build_fold_frames_held_out_2024_trains_on_2023_only(tmp_path: Path) -> None:
+    features_root = tmp_path / "feats"
+    _write_year_parquet(features_root, 2023, ["r2023a"])
+    _write_year_parquet(features_root, 2024, ["r2024a"])
+    _write_year_parquet(features_root, 2025, ["r2025a"])
+    frames = mod.build_fold_frames(
+        features_root, None, (2023, 2024, 2025), 2024, ["feature_a"],
+    )
+    assert frames.train_df["race_id"].to_list() == ["r2023a"]
+    assert frames.valid_df["race_id"].to_list() == ["r2024a"]
+
+
+def test_build_fold_frames_earliest_held_out_year_has_no_training_years(tmp_path: Path) -> None:
+    features_root = tmp_path / "feats"
+    _write_year_parquet(features_root, 2023, ["r2023a"])
+    _write_year_parquet(features_root, 2024, ["r2024a"])
+    with pytest.raises(RuntimeError, match="before 2023"):
+        mod.build_fold_frames(
+            features_root, None, (2023, 2024), 2023, ["feature_a"],
+        )
 
 
 def test_build_fold_frames_excludes_col_missing_from_train(tmp_path: Path) -> None:
@@ -506,10 +526,11 @@ def test_enforce_stability_floor_defaults_when_missing() -> None:
     assert out["depth"] == mod.DEPTH_CEIL
 
 
-def test_train_cb_fold_invokes_cb_and_returns_array() -> None:
+def test_train_cb_fold_refits_with_probe_tree_count() -> None:
     train_df = pl.DataFrame(
         {
             "race_id": ["r1", "r1", "r2", "r2"],
+            "race_date": ["2023-01-01", "2023-01-01", "2023-02-01", "2023-02-01"],
             "finish_position": [1.0, 2.0, 1.0, 2.0],
             "feature_a": [0.1, 0.2, 0.3, 0.4],
         },
@@ -530,6 +551,7 @@ def test_train_cb_fold_invokes_cb_and_returns_array() -> None:
         "iterations": 50,
     }
     fake_model = MagicMock()
+    fake_model.tree_count_ = 7
     fake_model.predict.return_value = np.array([0.5, 0.4])
     with patch("catboost.CatBoost", return_value=fake_model) as cb_mock, \
          patch("catboost.Pool") as pool_mock:
@@ -538,8 +560,101 @@ def test_train_cb_fold_invokes_cb_and_returns_array() -> None:
             train_df, valid_df, ["feature_a"], params, seed=42,
         )
     assert result.shape == (2,)
-    cb_mock.assert_called_once()
-    fake_model.fit.assert_called_once()
+    assert cb_mock.call_count == 2
+    assert cb_mock.call_args_list[0].args[0]["iterations"] == 50
+    assert cb_mock.call_args_list[0].args[0]["od_wait"] == 30
+    assert cb_mock.call_args_list[1].args[0]["iterations"] == 7
+    assert "od_type" not in cb_mock.call_args_list[1].args[0]
+    assert fake_model.fit.call_count == 2
+
+
+def test_train_cb_fold_early_stops_on_train_tail_not_held_out_year(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import catboost
+
+    real_pool = catboost.Pool
+    real_fit = catboost.CatBoost.fit
+    pool_features: dict[int, list[list[float]]] = {}
+    fit_calls: list[dict[str, object]] = []
+
+    def recording_pool(
+        *, data: np.ndarray, label: np.ndarray, group_id: np.ndarray,
+    ) -> catboost.Pool:
+        pool = real_pool(data=data, label=label, group_id=group_id)
+        pool_features[id(pool)] = data.tolist()
+        return pool
+
+    def recording_fit(
+        self: catboost.CatBoost,
+        pool: catboost.Pool,
+        eval_set: catboost.Pool | None = None,
+        use_best_model: bool | None = None,
+        verbose: bool | None = None,
+    ) -> catboost.CatBoost:
+        fit_calls.append({
+            "rows": len(pool_features[id(pool)]),
+            "iterations": self.get_params()["iterations"],
+            "od_type": self.get_params().get("od_type"),
+            "eval_features": None if eval_set is None else pool_features[id(eval_set)],
+        })
+        return real_fit(
+            self, pool, eval_set=eval_set, use_best_model=use_best_model, verbose=verbose,
+        )
+
+    monkeypatch.setattr(catboost, "Pool", recording_pool)
+    monkeypatch.setattr(catboost.CatBoost, "fit", recording_fit)
+    # 10 training races; the tail race r10 has only relevance-0 finishers, so the
+    # early-stopping NDCG is constant and the probe keeps just its first tree.
+    train_df = pl.DataFrame(
+        {
+            "race_id": [
+                "r01", "r01", "r02", "r02", "r03", "r03", "r04", "r04", "r05", "r05",
+                "r06", "r06", "r07", "r07", "r08", "r08", "r09", "r09", "r10", "r10",
+            ],
+            "race_date": [
+                "2023-01-01", "2023-01-01", "2023-01-02", "2023-01-02",
+                "2023-01-03", "2023-01-03", "2023-01-04", "2023-01-04",
+                "2023-01-05", "2023-01-05", "2023-01-06", "2023-01-06",
+                "2023-01-07", "2023-01-07", "2023-01-08", "2023-01-08",
+                "2023-01-09", "2023-01-09", "2023-12-31", "2023-12-31",
+            ],
+            "finish_position": [
+                1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0,
+                2.0, 1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 4.0, 5.0,
+            ],
+            "feature_a": [
+                0.9, 0.1, 0.2, 0.8, 0.7, 0.3, 0.4, 0.6, 0.9, 0.2,
+                0.1, 0.8, 0.7, 0.2, 0.3, 0.9, 0.8, 0.1, 0.55, 0.45,
+            ],
+        },
+    )
+    valid_df = pl.DataFrame(
+        {
+            "race_id": ["v1", "v1", "v1"],
+            "finish_position": [1.0, 2.0, 3.0],
+            "feature_a": [100.0, 101.0, 102.0],
+        },
+    )
+    params = {
+        "depth": 2,
+        "learning_rate": 0.05,
+        "l2_leaf_reg": 3.0,
+        "bagging_temperature": 0.5,
+        "random_strength": 1.0,
+        "iterations": 5,
+    }
+    result = mod.train_cb_fold(train_df, valid_df, ["feature_a"], params, seed=42)
+    assert result.shape == (3,)
+    assert fit_calls == [
+        {
+            "rows": 18,
+            "iterations": 5,
+            "od_type": "Iter",
+            "eval_features": [[0.550000011920929], [0.44999998807907104]],
+        },
+        {"rows": 20, "iterations": 1, "od_type": None, "eval_features": None},
+    ]
 
 
 def test_evaluate_params_aggregates_across_folds() -> None:
@@ -577,7 +692,7 @@ def test_evaluate_params_aggregates_across_folds() -> None:
 
     deps = mod.FoldDeps(fold_frames=fake_fold_frames, train_fn=fake_train)
     g, w = mod.evaluate_params(
-        {"depth": 5}, (2024,), 42, deps, ["feature_a"],
+        {"depth": 5}, (2023, 2024), 42, deps, ["feature_a"],
     )
     assert g == pytest.approx(1.0)
     assert w == 0.0
@@ -602,8 +717,47 @@ def test_evaluate_params_skips_fold_with_no_features() -> None:
         raise AssertionError("should not be called")
 
     deps = mod.FoldDeps(fold_frames=fake_fold_frames, train_fn=fake_train)
-    g, w = mod.evaluate_params({}, (2024,), 42, deps, [])
+    g, w = mod.evaluate_params({}, (2023, 2024), 42, deps, [])
     assert g == 0.0
+    assert w == 0.0
+
+
+def test_evaluate_params_skips_earliest_year_without_prior_training_year() -> None:
+    valid_df = pl.DataFrame(
+        {
+            "race_id": ["r1", "r1"],
+            "finish_position": [1.0, 2.0],
+            "feature_a": [0.5, 0.6],
+        },
+    )
+    train_df = pl.DataFrame(
+        {
+            "race_id": ["r99"],
+            "finish_position": [1.0],
+            "feature_a": [0.0],
+        },
+    )
+    loaded_years: list[int] = []
+
+    def fake_fold_frames(held_out: int, cols: list[str]) -> mod.FoldFrames:
+        loaded_years.append(held_out)
+        return mod.FoldFrames(
+            train_df=train_df, valid_df=valid_df, bucket_df=None, feature_cols=["feature_a"],
+        )
+
+    def fake_train(
+        train: pl.DataFrame,
+        valid: pl.DataFrame,
+        feats: list[str],
+        p: Mapping[str, object],
+        seed: int,
+    ) -> np.ndarray:
+        return np.array([3.0, 2.0])
+
+    deps = mod.FoldDeps(fold_frames=fake_fold_frames, train_fn=fake_train)
+    g, w = mod.evaluate_params({}, (2023, 2024, 2025), 42, deps, ["feature_a"])
+    assert loaded_years == [2024, 2025]
+    assert g == pytest.approx(1.0)
     assert w == 0.0
 
 
@@ -719,7 +873,10 @@ def test_run_study_writes_outputs(tmp_path: Path) -> None:
     with patch.object(mod, "train_cb_fold", side_effect=fake_train):
         result = mod.run_study(args)
     assert result["n_trials"] == 2
-    assert (tmp_path / "out" / "best-params.json").exists()
+    best = json.loads((tmp_path / "out" / "best-params.json").read_text(encoding="utf-8"))
+    summary = json.loads((tmp_path / "out" / "study-summary.json").read_text(encoding="utf-8"))
+    assert best["evaluation_regime"] == "early-stop-train-tail-refit-v1"
+    assert summary["evaluation_regime"] == "early-stop-train-tail-refit-v1"
 
 
 def test_run_study_raises_when_sample_year_missing(tmp_path: Path) -> None:

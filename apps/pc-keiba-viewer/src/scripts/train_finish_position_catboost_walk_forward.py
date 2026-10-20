@@ -389,6 +389,7 @@ def train_fold(
         "random_seed": ns.seed,
         "learning_rate": ns.learning_rate,
         "alpha_bucket_weight": args["alpha_bucket_weight"],
+        "evaluation_regime": wfc_common.EVALUATION_REGIME,
         "rows": int(len(valid_predictions)),
     }
     wfc_common.atomic_write_metadata(

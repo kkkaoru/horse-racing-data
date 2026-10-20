@@ -1197,6 +1197,24 @@ def test_train_production_model_uses_catboost_for_banei(tmp_path: Path) -> None:
         assert "train_finish_position_catboost_walk_forward.py" in cmd[1]
 
 
+def test_train_production_model_targets_blind_holdout_fold_not_validation_years(
+    tmp_path: Path,
+) -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        learner = _make_learner(
+            registry=reg, category="jra", validation_years=[2023, 2024], blind_holdout_year=2026
+        )
+        with patch("subprocess.run") as mock_run:
+            result = learner._train_production_model(
+                Path("/p/features.parquet"), tmp_path / "models", "auto-jra-v1"
+            )
+        cmd = mock_run.call_args.args[0]
+        year_from = cmd[cmd.index("--year-from") + 1]
+        year_to = cmd[cmd.index("--year-to") + 1]
+        assert (year_from, year_to) == ("2026", "2026")
+        assert result == tmp_path / "models" / "jra" / "iter0" / "fold-2026"
+
+
 def test_init_raises_for_unknown_category() -> None:
     with FeatureRegistry(Path(":memory:")) as reg:
         with pytest.raises(ValueError, match="unknown-cat"):
@@ -6116,7 +6134,7 @@ def test_trial_store_init_sorts_all_features() -> None:
         "postgresql://test", "jra", ["fc", "fa", "fb"]
     )
     assert store._all_features == ["fa", "fb", "fc"]
-    assert store._category == "jra"
+    assert store._category == "jra@early-stop-train-tail-refit-v1"
     assert store._con is None
 
 

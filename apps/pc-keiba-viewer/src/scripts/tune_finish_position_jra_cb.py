@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Iter 13 (L3): Optuna HPO for JRA CatBoost on iter 9 pacestyle features.
 
-Bayesian search over 50 trials x 3-fold leave-one-year-out CV (2023/2024/2025).
+Bayesian search over 50 trials x forward-only CV over (2023/2024/2025): each
+held-out year trains on the earlier CV years only (2024 <- 2023, 2025 <- 2023+2024).
 Multi-objective Pareto over (global NDCG@3, worst-bucket NDCG@3) with picker
 weight ``0.7 * global + 0.3 * worst_bucket``.
 
@@ -35,6 +36,7 @@ from typing import TYPE_CHECKING, Final, Protocol, cast
 import numpy as np
 import polars as pl
 
+import walk_forward_common
 from learning.feature_selection_policy import SHARED_LABEL_COLUMNS
 
 if TYPE_CHECKING:
@@ -272,8 +274,9 @@ def build_fold_frames(
     feature_cols: list[str],
 ) -> FoldFrames:
     train_parts: list[pl.DataFrame] = []
+    # Forward-only: a held-out year is predicted only by models trained on earlier years.
     for y in cv_years:
-        if y == held_out_year:
+        if y >= held_out_year:
             continue
         df = load_year_parquet(features_root, y)
         if df is None:
@@ -281,7 +284,7 @@ def build_fold_frames(
         train_parts.append(df)
     if not train_parts:
         raise RuntimeError(
-            f"No training years available among {cv_years} excluding {held_out_year}",
+            f"No training years available among {cv_years} before {held_out_year}",
         )
     train_df = pl.concat(train_parts, how="diagonal_relaxed")
     valid_df = load_year_parquet(features_root, held_out_year)
@@ -372,24 +375,22 @@ def train_cb_fold(
     params: "Mapping[str, object]",
     seed: int,
 ) -> np.ndarray:
+    """Score ``valid_df`` without peeking at it.
+
+    A probe early-stops on the latest races of ``train_df``; with ``use_best_model``
+    its ``tree_count_`` is the best iteration + 1. The scoring model is refit on all of
+    ``train_df`` with exactly that many trees and no overfitting detector.
+    """
     from catboost import CatBoost, Pool  # pyright: ignore[reportMissingTypeStubs]
 
-    train_labels = (
-        train_df["finish_position"].map_elements(to_relevance, return_dtype=pl.Int32).to_numpy()
-    )
-    valid_labels = (
-        valid_df["finish_position"].map_elements(to_relevance, return_dtype=pl.Int32).to_numpy()
-    )
-    train_features = train_df.select(feature_cols).cast(pl.Float32).to_numpy()
-    valid_features = valid_df.select(feature_cols).cast(pl.Float32).to_numpy()
-    train_groups = train_df["race_id"].cast(pl.Categorical).to_physical().to_numpy()
-    valid_groups = valid_df["race_id"].cast(pl.Categorical).to_physical().to_numpy()
-    train_pool = Pool(
-        data=train_features, label=train_labels, group_id=train_groups,
-    )
-    valid_pool = Pool(
-        data=valid_features, label=valid_labels, group_id=valid_groups,
-    )
+    def to_pool(df: pl.DataFrame) -> Pool:
+        return Pool(
+            data=df.select(feature_cols).cast(pl.Float32).to_numpy(),
+            label=df["finish_position"].map_elements(to_relevance, return_dtype=pl.Int32).to_numpy(),
+            group_id=df["race_id"].cast(pl.Categorical).to_physical().to_numpy(),
+        )
+
+    fit_df, stop_df = walk_forward_common.split_early_stopping_tail(train_df)
     cb_params: dict[str, object] = {
         "loss_function": "YetiRank",
         "eval_metric": "NDCG:top=3",
@@ -400,15 +401,15 @@ def train_cb_fold(
         "bagging_temperature": float(cast(float, params["bagging_temperature"])),
         "random_strength": float(cast(float, params["random_strength"])),
         "bootstrap_type": "Bayesian",
-        "od_type": "Iter",
-        "od_wait": EARLY_STOPPING_ROUNDS,
         "random_seed": seed,
         "task_type": "CPU",
         "verbose": 0,
     }
-    model = CatBoost(cb_params)
-    model.fit(train_pool, eval_set=valid_pool, verbose=False)
-    return np.asarray(model.predict(valid_pool), dtype=np.float64)
+    probe = CatBoost({**cb_params, "od_type": "Iter", "od_wait": EARLY_STOPPING_ROUNDS})
+    probe.fit(to_pool(fit_df), eval_set=to_pool(stop_df), use_best_model=True, verbose=False)
+    model = CatBoost({**cb_params, "iterations": cast(int, probe.tree_count_)})
+    model.fit(to_pool(train_df), verbose=False)
+    return np.asarray(model.predict(to_pool(valid_df)), dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -427,6 +428,8 @@ def evaluate_params(
     global_ndcgs: list[float] = []
     worst_ndcgs: list[float] = []
     for held_out in cv_years:
+        if all(y >= held_out for y in cv_years):
+            continue
         frames = deps.fold_frames(held_out, feature_cols)
         if not frames.feature_cols:
             continue
@@ -561,7 +564,10 @@ def run_study(args: TuneArgs) -> dict[str, object]:
         show_progress_bar=False,
     )
 
-    best = pick_best_trial(trial_records)
+    best = {
+        **pick_best_trial(trial_records),
+        "evaluation_regime": walk_forward_common.EVALUATION_REGIME,
+    }
     study_meta = {
         "n_trials_completed": len(trial_records),
         "cv_years": list(args.cv_years),
@@ -569,6 +575,7 @@ def run_study(args: TuneArgs) -> dict[str, object]:
         "features_parquet_root": str(args.features_parquet_root),
         "bucket_membership_parquet_root": str(args.bucket_membership_parquet_root),
         "best_picker_score": best["picker_score"],
+        "evaluation_regime": walk_forward_common.EVALUATION_REGIME,
     }
     write_outputs(args.output_dir, best, trial_records, study_meta)
     return {"best": best, "n_trials": len(trial_records)}

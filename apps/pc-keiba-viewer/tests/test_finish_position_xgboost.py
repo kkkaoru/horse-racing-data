@@ -797,10 +797,10 @@ def test_train_xgboost_ranker_returns_metrics_and_booster(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -868,8 +868,11 @@ def test_train_xgboost_ranker_presorted_matches_unsorted_labels_and_groups(
     subject.train_xgboost_ranker(
         sorted_df, valid_df, ["feature_a"], _make_args(presorted=True),
     )
-    np.testing.assert_array_equal(cast(np.ndarray, labels[0]), cast(np.ndarray, labels[2]))
-    assert groups[0] == groups[2]
+    # Per call: fit, early-stop, full-window refit, valid DMatrix (only the first three get groups).
+    np.testing.assert_array_equal(cast(np.ndarray, labels[2]), np.array([3, 2, 2, 3]))
+    np.testing.assert_array_equal(cast(np.ndarray, labels[6]), np.array([3, 2, 2, 3]))
+    assert groups[2] == [2, 2]
+    assert groups[5] == [2, 2]
 
 
 def test_train_xgboost_ranker_passes_group_reduced_weight_to_dmatrix(
@@ -913,9 +916,10 @@ def test_train_xgboost_ranker_passes_group_reduced_weight_to_dmatrix(
     args = _make_args(presorted=True)
     subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
 
-    train_call = dmatrix_calls[0]
-    assert train_call["weight"] is not None, "sample_weight was not passed to xgb.DMatrix"
-    weight_arr = cast(np.ndarray, train_call["weight"])
+    # DMatrix order: fit (r1), early-stop (r2, unweighted), full-window refit (r1+r2), valid.
+    np.testing.assert_array_almost_equal(cast(np.ndarray, dmatrix_calls[0]["weight"]), np.array([1.5]))
+    assert dmatrix_calls[1]["weight"] is None
+    weight_arr = cast(np.ndarray, dmatrix_calls[2]["weight"])
     assert weight_arr.shape == (2,), "weight must have one entry per query group, not per row"
     np.testing.assert_array_almost_equal(weight_arr, np.array([1.5, 2.0]))
 
@@ -924,10 +928,10 @@ def test_train_xgboost_ranker_passes_none_weight_when_no_sample_weight_column(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -961,10 +965,10 @@ def test_train_xgboost_ranker_uses_ndcg_objective_when_specified(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -1004,10 +1008,10 @@ def test_train_xgboost_ranker_sets_nthread_to_six(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -1047,10 +1051,10 @@ def test_train_xgboost_ranker_clamps_nthread_above_six(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -1090,10 +1094,10 @@ def test_train_xgboost_ranker_defaults_nthread_when_arg_absent(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -1145,10 +1149,10 @@ def test_train_xgboost_ranker_assigns_bottom_rank_to_nan_prediction(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -1165,6 +1169,104 @@ def test_train_xgboost_ranker_assigns_bottom_rank_to_nan_prediction(
     preds = cast(pl.DataFrame, result["valid_predictions"])
     # NaN score (row 0) must get bottom rank; valid score 0.8 (row 1) gets rank 1
     assert preds["predicted_rank"].to_list() == [2, 1]
+
+
+def test_train_xgboost_ranker_early_stops_on_train_tail_and_refits_on_full_window(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The fold year (valid_df) must never be the early-stopping eval set: the probe
+    early-stops on the latest training race (r3 by race_date, not by race_id), then
+    the returned booster is refit on every training row with the probe's tree count."""
+    train_df = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r2", "r2", "r2", "r3", "r3", "r3", "r4", "r4", "r4"],
+        "race_date": [
+            "20230105", "20230105", "20230105", "20230103", "20230103", "20230103",
+            "20230110", "20230110", "20230110", "20230101", "20230101", "20230101",
+        ],
+        "umaban": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+        "finish_position": [1.0, 2.0, 3.0, 3.0, 1.0, 2.0, 2.0, 3.0, 1.0, 1.0, 3.0, 2.0],
+        "feature_a": [0.9, 0.5, 0.1, 0.2, 0.8, 0.4, 0.5, 0.2, 0.9, 0.7, 0.1, 0.4],
+        "sample_weight": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0],
+    })
+    valid_df = pl.DataFrame({
+        "race_id": ["v1", "v1", "v1", "v2", "v2", "v2"],
+        "race_date": ["20240105", "20240105", "20240105", "20240201", "20240201", "20240201"],
+        "umaban": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+        "finish_position": [1.0, 2.0, 3.0, 2.0, 1.0, 3.0],
+        "feature_a": [0.8, 0.3, 0.1, 0.4, 0.9, 0.2],
+    })
+    dmatrix_frames: dict[int, dict[str, object]] = {}
+    real_build = subject.build_ranking_dmatrix
+
+    def recording_build(
+        df: pl.DataFrame, feature_cols: list[str], args: argparse.Namespace,
+    ) -> subject.xgb.DMatrix:
+        dmatrix = real_build(df, feature_cols, args)
+        dmatrix_frames[id(dmatrix)] = {
+            "race_ids": df["race_id"].to_list(),
+            "weighted": "sample_weight" in df.columns,
+        }
+        return dmatrix
+
+    train_calls: list[dict[str, object]] = []
+    real_train = subject.xgb.train
+
+    def recording_train(
+        params: dict[str, object],
+        dtrain: subject.xgb.DMatrix,
+        num_boost_round: int = 10,
+        evals: list[tuple[subject.xgb.DMatrix, str]] | None = None,
+        early_stopping_rounds: int | None = None,
+        evals_result: dict[str, dict[str, list[float]]] | None = None,
+        verbose_eval: int | bool = True,
+    ) -> subject.xgb.Booster:
+        eval_list = evals if evals is not None else []
+        train_calls.append({
+            "train": dmatrix_frames[id(dtrain)],
+            "evals": [dmatrix_frames[id(dm)] for dm, _name in eval_list],
+            "num_boost_round": num_boost_round,
+            "early_stopping_rounds": early_stopping_rounds,
+        })
+        return real_train(
+            params,
+            dtrain,
+            num_boost_round=num_boost_round,
+            evals=eval_list,
+            early_stopping_rounds=early_stopping_rounds,
+            evals_result=evals_result,
+            verbose_eval=verbose_eval,
+        )
+
+    monkeypatch.setattr(subject, "build_ranking_dmatrix", recording_build)
+    monkeypatch.setattr(subject.xgb, "train", recording_train)
+    args = _make_args(num_rounds=50, early_stopping_rounds=3, min_child_weight=0.0, nthread=1)
+
+    booster, result = subject.train_xgboost_ranker(train_df, valid_df, ["feature_a"], args)
+
+    assert train_calls[0] == {
+        "train": {
+            "race_ids": ["r1", "r1", "r1", "r2", "r2", "r2", "r4", "r4", "r4"],
+            "weighted": True,
+        },
+        "evals": [{"race_ids": ["r3", "r3", "r3"], "weighted": False}],
+        "num_boost_round": 50,
+        "early_stopping_rounds": 3,
+    }
+    assert train_calls[1] == {
+        "train": {
+            "race_ids": ["r1", "r1", "r1", "r2", "r2", "r2", "r3", "r3", "r3", "r4", "r4", "r4"],
+            "weighted": True,
+        },
+        "evals": [],
+        "num_boost_round": 1,
+        "early_stopping_rounds": None,
+    }
+    assert len(train_calls) == 2
+    assert result["best_iteration"] == 0
+    assert booster.num_boosted_rounds() == 1
+    preds = cast(pl.DataFrame, result["valid_predictions"])
+    assert preds["race_id"].to_list() == ["v1", "v1", "v1", "v2", "v2", "v2"]
+    assert preds["umaban"].to_list() == [1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
 
 
 # ---------------------------------------------------------------------------

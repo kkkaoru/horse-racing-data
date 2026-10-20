@@ -169,6 +169,8 @@ def test_build_lightgbm_params_uses_lambdarank_with_ndcg_at_3():
     )
     assert lgb_params["objective"] == "lambdarank"
     assert lgb_params["metric"] == "ndcg"
+    assert lgb_params["deterministic"] is True
+    assert lgb_params["force_row_wise"] is True
     assert lgb_params["eval_at"] == [3]
 
 
@@ -881,6 +883,7 @@ def test_write_walk_forward_report_writes_json(tmp_path: Path):
     parsed = json.loads(output_path.read_text(encoding="utf-8"))
     assert parsed["aggregate"]["fold_count"] == 1
     assert parsed["folds"][0]["valid_year"] == 2021
+    assert parsed["evaluation_regime"] == "early-stop-train-tail-refit-v1"
 
 
 def make_walk_forward_dataset(seed: int = 7) -> pl.DataFrame:
@@ -933,7 +936,92 @@ def test_run_walk_forward_fold_returns_metrics():
     )
     assert metrics["valid_year"] == 2021
     assert metrics["race_count"] == 8
+    assert metrics["valid_rows"] == 48
     assert len(predictions) == len(fold["valid_df"])
+
+
+def test_run_walk_forward_fold_early_stops_on_train_tail_and_refits_on_full_window(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The fold year (2021) must never be the early-stopping eval set: the probe
+    early-stops on the latest 2020 race, then the returned booster is refit on the
+    whole 2020 window with the probe's tree count and no eval set."""
+    df = make_walk_forward_dataset()
+    fold = subject.split_walk_forward(df, "20200101", 2021)
+    bundle_races: dict[int, list[str]] = {}
+    real_prepare = subject.prepare_lgb_dataset
+
+    def recording_prepare(
+        frame: pl.DataFrame,
+        objective: str = subject.OBJECTIVE_LAMBDARANK,
+        sample_weight_mode: str = subject.SAMPLE_WEIGHT_MODE_NONE,
+        relevance_tier_name: str | None = None,
+    ) -> subject.LgbDatasetBundle:
+        bundle = real_prepare(frame, objective, sample_weight_mode, relevance_tier_name)
+        bundle_races[id(bundle)] = frame["race_id"].unique(maintain_order=True).sort().to_list()
+        return bundle
+
+    train_calls: list[dict[str, object]] = []
+    boosters: list[lgb.Booster] = []
+    real_train = subject.train_lambdarank
+
+    def recording_train(
+        train_bundle: subject.LgbDatasetBundle,
+        valid_bundle: subject.LgbDatasetBundle | None,
+        params: subject.TrainingParams,
+        *,
+        exploration_mode: bool = False,
+        num_threads: int | None = None,
+    ) -> tuple[lgb.Booster, subject.TrainingResult]:
+        train_calls.append({
+            "train_races": bundle_races[id(train_bundle)],
+            "valid_races": None if valid_bundle is None else bundle_races[id(valid_bundle)],
+            "num_iterations": params["num_iterations"],
+        })
+        booster, result = real_train(
+            train_bundle, valid_bundle, params,
+            exploration_mode=exploration_mode, num_threads=num_threads,
+        )
+        boosters.append(booster)
+        return booster, result
+
+    monkeypatch.setattr(subject, "prepare_lgb_dataset", recording_prepare)
+    monkeypatch.setattr(subject, "train_lambdarank", recording_train)
+
+    booster, predictions, metrics = subject.run_walk_forward_fold(
+        fold,
+        {
+            "lambda_l2": 0.0,
+            "learning_rate": 0.1,
+            "min_child_samples": 2,
+            "num_iterations": 10,
+            "num_leaves": 7,
+            "objective": "lambdarank",
+        },
+    )
+
+    assert train_calls[0] == {
+        "train_races": [
+            "2020-r0", "2020-r1", "2020-r2", "2020-r3", "2020-r4", "2020-r5", "2020-r6",
+        ],
+        "valid_races": ["2020-r7"],
+        "num_iterations": 10,
+    }
+    assert train_calls[1] == {
+        "train_races": [
+            "2020-r0", "2020-r1", "2020-r2", "2020-r3", "2020-r4", "2020-r5", "2020-r6", "2020-r7",
+        ],
+        "valid_races": None,
+        "num_iterations": 1,
+    }
+    assert len(train_calls) == 2
+    assert booster is boosters[1]
+    assert booster.num_trees() == 1
+    assert predictions.height == 48
+    assert predictions["race_id"].unique().sort().to_list() == [
+        "2021-r0", "2021-r1", "2021-r2", "2021-r3", "2021-r4", "2021-r5", "2021-r6", "2021-r7",
+    ]
+    assert metrics["valid_rows"] == 48
 
 
 def test_run_walk_forward_command_writes_report_and_predictions(

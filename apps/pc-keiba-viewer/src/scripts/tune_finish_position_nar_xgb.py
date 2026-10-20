@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Iter 12 (L3): Optuna HPO for NAR XGBoost on iter 9 pacestyle features.
 
-Bayesian search over 50 trials x 3-fold leave-one-year-out CV (2023/2024/2025).
+Bayesian search over 50 trials x forward-only CV over (2023/2024/2025): each
+held-out year trains on the earlier CV years only (2024 <- 2023, 2025 <- 2023+2024).
 Multi-objective Pareto over (global NDCG@3, worst-bucket NDCG@3) with picker
 weight ``0.7 * global + 0.3 * worst_bucket``.
 
@@ -35,6 +36,7 @@ from typing import TYPE_CHECKING, Final, Protocol, cast
 import numpy as np
 import polars as pl
 
+import walk_forward_common
 from learning.feature_selection_policy import SHARED_LABEL_COLUMNS
 
 if TYPE_CHECKING:
@@ -272,8 +274,9 @@ def build_fold_frames(
     feature_cols: list[str],
 ) -> FoldFrames:
     train_parts: list[pl.DataFrame] = []
+    # Forward-only: a held-out year is predicted only by models trained on earlier years.
     for y in cv_years:
-        if y == held_out_year:
+        if y >= held_out_year:
             continue
         df = load_year_parquet(features_root, y)
         if df is None:
@@ -281,7 +284,7 @@ def build_fold_frames(
         train_parts.append(df)
     if not train_parts:
         raise RuntimeError(
-            f"No training years available among {cv_years} excluding {held_out_year}",
+            f"No training years available among {cv_years} before {held_out_year}",
         )
     train_df = pl.concat(train_parts, how="diagonal_relaxed")
     valid_df = load_year_parquet(features_root, held_out_year)
@@ -369,18 +372,20 @@ def train_xgb_fold(
     params: "Mapping[str, object]",
     seed: int,
 ) -> np.ndarray:
+    """Score ``valid_df`` without peeking at it.
+
+    A probe early-stops on the latest races of ``train_df``; the scoring booster is
+    refit on all of ``train_df`` with exactly ``best_iteration + 1`` rounds.
+    """
     import xgboost as xgb
 
-    train_labels = (
-        train_df["finish_position"].map_elements(to_relevance, return_dtype=pl.Int32).to_numpy()
-    )
-    valid_labels = (
-        valid_df["finish_position"].map_elements(to_relevance, return_dtype=pl.Int32).to_numpy()
-    )
-    dtrain = xgb.DMatrix(train_df.select(feature_cols), label=train_labels)
-    dtrain.set_group(build_group_sizes(train_df))
-    dvalid = xgb.DMatrix(valid_df.select(feature_cols), label=valid_labels)
-    dvalid.set_group(build_group_sizes(valid_df))
+    def to_dmatrix(df: pl.DataFrame) -> xgb.DMatrix:
+        labels = df["finish_position"].map_elements(to_relevance, return_dtype=pl.Int32).to_numpy()
+        dmat = xgb.DMatrix(df.select(feature_cols), label=labels)
+        dmat.set_group(build_group_sizes(df))
+        return dmat
+
+    fit_df, stop_df = walk_forward_common.split_early_stopping_tail(train_df)
     xgb_params = {
         "objective": "rank:pairwise",
         "eval_metric": "ndcg@3",
@@ -394,19 +399,18 @@ def train_xgb_fold(
         "seed": seed,
         "verbosity": 0,
     }
-    booster = xgb.train(
+    probe = xgb.train(
         xgb_params,
-        dtrain,
+        to_dmatrix(fit_df),
         num_boost_round=int(cast(int, params["n_estimators"])),
-        evals=[(dvalid, "valid")],
+        evals=[(to_dmatrix(stop_df), "early_stop")],
         early_stopping_rounds=EARLY_STOPPING_ROUNDS,
         verbose_eval=False,
     )
-    best_iter = int(booster.best_iteration)
-    return np.asarray(
-        booster.predict(dvalid, iteration_range=(0, best_iter + 1)),
-        dtype=np.float64,
+    booster = xgb.train(
+        xgb_params, to_dmatrix(train_df), num_boost_round=int(probe.best_iteration) + 1,
     )
+    return np.asarray(booster.predict(to_dmatrix(valid_df)), dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -425,6 +429,8 @@ def evaluate_params(
     global_ndcgs: list[float] = []
     worst_ndcgs: list[float] = []
     for held_out in cv_years:
+        if all(y >= held_out for y in cv_years):
+            continue
         frames = deps.fold_frames(held_out, feature_cols)
         if not frames.feature_cols:
             continue
@@ -559,7 +565,10 @@ def run_study(args: TuneArgs) -> dict[str, object]:
         show_progress_bar=False,
     )
 
-    best = pick_best_trial(trial_records)
+    best = {
+        **pick_best_trial(trial_records),
+        "evaluation_regime": walk_forward_common.EVALUATION_REGIME,
+    }
     study_meta = {
         "n_trials_completed": len(trial_records),
         "cv_years": list(args.cv_years),
@@ -567,6 +576,7 @@ def run_study(args: TuneArgs) -> dict[str, object]:
         "features_parquet_root": str(args.features_parquet_root),
         "bucket_membership_parquet_root": str(args.bucket_membership_parquet_root),
         "best_picker_score": best["picker_score"],
+        "evaluation_regime": walk_forward_common.EVALUATION_REGIME,
     }
     write_outputs(args.output_dir, best, trial_records, study_meta)
     return {"best": best, "n_trials": len(trial_records)}

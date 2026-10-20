@@ -378,38 +378,29 @@ def default_fold_trainer(
     import lightgbm as lgb
 
     train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
+    fit_df, stop_df = wfc_common.split_early_stopping_tail(train_df)
     to_relevance = make_to_relevance()
-    train_labels = (
-        train_df["finish_position"]
-        .map_elements(to_relevance, return_dtype=pl.Int32)
-        .to_numpy()
-        .astype(np.int32)
-    )
-    valid_labels = (
-        valid_df["finish_position"]
-        .map_elements(to_relevance, return_dtype=pl.Int32)
-        .to_numpy()
-        .astype(np.int32)
-    )
-    weights = (
-        train_df["sample_weight"].to_numpy().astype(np.float32)
-        if "sample_weight" in train_df.columns
-        else None
-    )
-    train_ds = lgb.Dataset(
-        train_df.select(feature_cols).to_numpy(),
-        label=train_labels,
-        feature_name=feature_cols,
-        group=build_group_sizes(train_df),
-        weight=weights,
-    )
-    valid_ds = lgb.Dataset(
-        valid_df.select(feature_cols).to_numpy(),
-        label=valid_labels,
-        feature_name=feature_cols,
-        group=build_group_sizes(valid_df),
-        reference=train_ds,
-    )
+
+    def build_dataset(df: pl.DataFrame) -> lgb.Dataset:
+        labels = (
+            df["finish_position"]
+            .map_elements(to_relevance, return_dtype=pl.Int32)
+            .to_numpy()
+            .astype(np.int32)
+        )
+        weights = (
+            df["sample_weight"].to_numpy().astype(np.float32)
+            if "sample_weight" in df.columns
+            else None
+        )
+        return lgb.Dataset(
+            df.select(feature_cols).to_numpy(),
+            label=labels,
+            feature_name=feature_cols,
+            group=build_group_sizes(df),
+            weight=weights,
+        )
+
     params = {
         "objective": args.objective,
         "metric": "ndcg",
@@ -422,13 +413,16 @@ def default_fold_trainer(
         "seed": args.seed,
         "verbose": -1,
     }
-    booster = lgb.train(
+    # Early-stop on the latest training races (unweighted, like the fold-year eval set
+    # it replaces), then refit on the whole window with exactly that many trees.
+    probe = lgb.train(
         params,
-        train_ds,
+        build_dataset(fit_df),
         num_boost_round=args.num_iterations,
-        valid_sets=[valid_ds],
+        valid_sets=[build_dataset(stop_df.drop("sample_weight", strict=False))],
         callbacks=[lgb.early_stopping(args.early_stopping_rounds, verbose=False)],
     )
+    booster = lgb.train(params, build_dataset(train_df), num_boost_round=probe.best_iteration)
     predictions = cast(
         "np.ndarray[tuple[int], np.dtype[np.float64]]",
         booster.predict(valid_df.select(feature_cols).to_numpy()),
@@ -498,6 +492,7 @@ def train_fold(
         "objective": args["objective"],
         "lambdarank_truncation_level": args["lambdarank_truncation_level"],
         "alpha_bucket_weight": args["alpha_bucket_weight"],
+        "evaluation_regime": wfc_common.EVALUATION_REGIME,
         "rows": int(len(valid_predictions)),
     }
     wfc_common.atomic_write_metadata(

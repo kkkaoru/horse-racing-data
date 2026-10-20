@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sized
 import json
 from pathlib import Path
 from typing import cast
@@ -254,6 +254,8 @@ def test_lgb_params_for_multiclass_sets_objective_and_num_class(
     assert params["num_class"] == 4
     assert params["metric"] == "multi_logloss"
     assert params["num_threads"] == 3
+    assert params["deterministic"] is True
+    assert params["force_row_wise"] is True
 
 
 def test_parse_validation_years_accepts_multiple_years():
@@ -2349,3 +2351,97 @@ def test_parse_train_cells_accepts_postgres_persistence_options(tmp_path: Path):
 
     assert args.pg_url == "postgresql://local/test"
     assert args.save_cell_metrics_to_postgres is True
+
+
+def _head_frame(year: int, races: int) -> pl.DataFrame:
+    rng = np.random.default_rng(year)
+    return pl.DataFrame(
+        {
+            "race_id": [f"jra:{year}:{day // 4 + 1:02d}{day % 4 + 1:02d}:05:01" for day in range(races) for _ in range(6)],
+            "race_date": [f"{year}{day // 4 + 1:02d}{day % 4 + 1:02d}" for day in range(races) for _ in range(6)],
+            "feature_a": rng.normal(size=races * 6),
+            subject.TARGET_COLUMN: [slot % 4 for _ in range(races) for slot in range(6)],
+        }
+    )
+
+
+def test_train_running_style_head_early_stops_on_train_tail_then_refits_whole_train(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    real_train = lgb.train
+
+    def recording_train(
+        params: dict[str, object],
+        train_set: lgb.Dataset,
+        num_boost_round: int = 100,
+        valid_sets: list[lgb.Dataset] | None = None,
+        callbacks: list[Callable[..., None]] | None = None,
+    ) -> lgb.Booster:
+        calls.append(
+            {
+                "train_rows": len(cast(Sized, train_set.data)),
+                "valid_rows": [len(cast(Sized, dataset.data)) for dataset in valid_sets or []],
+                "num_boost_round": num_boost_round,
+                "has_callbacks": bool(callbacks),
+            }
+        )
+        booster = real_train(
+            params, train_set, num_boost_round=num_boost_round, valid_sets=valid_sets, callbacks=callbacks
+        )
+        calls[-1]["best_iteration"] = booster.best_iteration
+        return booster
+
+    monkeypatch.setattr(lgb, "train", recording_train)
+    params = subject.default_training_params()
+    params["num_threads"] = 1
+    params["num_iterations"] = 30
+    params["early_stopping_rounds"] = 3
+    _booster, probabilities = subject.train_running_style_head(
+        _head_frame(2024, 40), _head_frame(2025, 5), ["feature_a"], [], params
+    )
+    assert probabilities.shape == (30, 4)
+    assert len(calls) == 2
+    assert (calls[0]["train_rows"], calls[0]["valid_rows"], calls[0]["has_callbacks"]) == (216, [24], True)
+    assert (calls[1]["train_rows"], calls[1]["valid_rows"], calls[1]["has_callbacks"]) == (240, [], False)
+    assert calls[1]["num_boost_round"] == calls[0]["best_iteration"]
+
+
+def test_train_full_dataset_picks_trees_on_validation_slice_then_refits_every_row(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    real_train = lgb.train
+
+    def recording_train(
+        params: dict[str, object],
+        train_set: lgb.Dataset,
+        num_boost_round: int = 100,
+        valid_sets: list[lgb.Dataset] | None = None,
+        callbacks: list[Callable[..., None]] | None = None,
+    ) -> lgb.Booster:
+        booster = real_train(
+            params, train_set, num_boost_round=num_boost_round, valid_sets=valid_sets, callbacks=callbacks
+        )
+        calls.append(
+            {
+                "train_rows": len(cast(Sized, train_set.data)),
+                "valid_rows": [len(cast(Sized, dataset.data)) for dataset in valid_sets or []],
+                "num_boost_round": num_boost_round,
+                "best_iteration": booster.best_iteration,
+            }
+        )
+        return booster
+
+    monkeypatch.setattr(lgb, "train", recording_train)
+    params = subject.default_training_params()
+    params["num_threads"] = 1
+    params["num_iterations"] = 30
+    params["early_stopping_rounds"] = 3
+    frame = pl.concat([_head_frame(2025, 20), _head_frame(2026, 5)])
+    booster = subject.train_full_dataset(frame, ["feature_a"], [], params, valid_start_date="20260101")
+    assert len(calls) == 2
+    assert (calls[0]["train_rows"], calls[0]["valid_rows"]) == (120, [30])
+    assert (calls[1]["train_rows"], calls[1]["valid_rows"]) == (150, [])
+    assert calls[1]["num_boost_round"] == calls[0]["best_iteration"]
+    assert booster.current_iteration() == calls[0]["best_iteration"]

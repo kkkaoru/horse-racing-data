@@ -273,10 +273,18 @@ def test_detect_completed_fold_returns_true_for_matching_completed_metadata(
     tmp_path: Path,
 ):
     (tmp_path / "metadata.json").write_text(
-        json.dumps({"status": "completed", "fold_year": 2025}),
+        json.dumps({"status": "completed", "fold_year": 2025, "evaluation_regime": "early-stop-train-tail-refit-v1"}),
         encoding="utf-8",
     )
     assert subject.detect_completed_fold(tmp_path, fold_year=2025) is True
+
+
+def test_detect_completed_fold_returns_false_for_fold_from_older_evaluation_regime(tmp_path: Path):
+    (tmp_path / "metadata.json").write_text(
+        json.dumps({"status": "completed", "fold_year": 2025}),
+        encoding="utf-8",
+    )
+    assert subject.detect_completed_fold(tmp_path, fold_year=2025) is False
 
 
 def test_detect_completed_fold_returns_false_when_in_progress(tmp_path: Path):
@@ -508,3 +516,37 @@ def test_sort_full_dataset_sorts_by_race_id_only_when_umaban_missing():
     df = pl.DataFrame({"race_id": ["r2", "r1", "r2"], "value": [1, 2, 3]})
     out = subject.sort_full_dataset(df)
     assert out["race_id"].to_list() == ["r1", "r2", "r2"]
+
+
+def test_split_early_stopping_tail_holds_out_latest_races_by_date_and_keeps_row_order():
+    frame = pl.DataFrame(
+        {
+            "race_id": ["nar:2024:0105:30:01", "jra:2024:0301:05:01", "jra:2024:0301:05:01", "nar:2024:0110:30:01"],
+            "race_date": ["20240105", "20240301", "20240301", "20240110"],
+            "umaban": [1, 1, 2, 1],
+        }
+    )
+    fit, stop = subject.split_early_stopping_tail(frame, fraction=0.34)
+    assert fit["race_id"].to_list() == ["nar:2024:0105:30:01", "nar:2024:0110:30:01"]
+    assert stop["race_id"].to_list() == ["jra:2024:0301:05:01", "jra:2024:0301:05:01"]
+    assert stop["umaban"].to_list() == [1, 2]
+
+
+def test_split_early_stopping_tail_orders_by_race_id_without_race_date():
+    frame = pl.DataFrame({"race_id": ["jra:2024:0105:06:02", "jra:2024:0105:06:01", "jra:2024:0106:06:01"]})
+    fit, stop = subject.split_early_stopping_tail(frame)
+    assert fit["race_id"].to_list() == ["jra:2024:0105:06:02", "jra:2024:0105:06:01"]
+    assert stop["race_id"].to_list() == ["jra:2024:0106:06:01"]
+
+
+def test_split_early_stopping_tail_always_leaves_one_fit_race():
+    frame = pl.DataFrame({"race_id": ["a", "b"], "race_date": ["20240101", "20240102"]})
+    fit, stop = subject.split_early_stopping_tail(frame, fraction=0.9)
+    assert fit["race_id"].to_list() == ["a"]
+    assert stop["race_id"].to_list() == ["b"]
+
+
+def test_split_early_stopping_tail_rejects_single_race_window():
+    frame = pl.DataFrame({"race_id": ["a", "a"], "race_date": ["20240101", "20240101"]})
+    with pytest.raises(ValueError, match="at least 2 races"):
+        _ = subject.split_early_stopping_tail(frame)

@@ -859,3 +859,42 @@ def test_bulk_record_trials_found_by_get_best_ndcg_for_study() -> None:
             ]
         )
         assert reg.get_best_ndcg_for_study("mystudy") == 0.71
+
+
+def test_open_stamps_fresh_registry_with_current_evaluation_regime(tmp_path: Path):
+    db_path = tmp_path / "registry.duckdb"
+    with subject.FeatureRegistry(db_path) as reg:
+        reg.record_deployment(0.61, 120)
+    con = duckdb.connect(str(db_path))
+    stored = con.execute("SELECT value FROM registry_meta WHERE key = 'evaluation_regime'").fetchone()
+    con.close()
+    assert stored == ("early-stop-train-tail-refit-v1",)
+
+
+def test_open_reopens_registry_stamped_with_same_regime(tmp_path: Path):
+    db_path = tmp_path / "registry.duckdb"
+    with subject.FeatureRegistry(db_path) as reg:
+        reg.record_deployment(0.61, 120)
+    with subject.FeatureRegistry(db_path) as reg:
+        assert reg.get_deployed_ndcg() == 0.61
+
+
+def test_open_rejects_unstamped_legacy_registry_with_scores(tmp_path: Path):
+    db_path = tmp_path / "legacy.duckdb"
+    con = duckdb.connect(str(db_path))
+    con.execute(
+        "CREATE TABLE deployments (id INTEGER PRIMARY KEY, ndcg_at_3 DOUBLE NOT NULL, "
+        "feature_count INTEGER NOT NULL, deployed_at TEXT NOT NULL)"
+    )
+    con.execute("INSERT INTO deployments VALUES (1, 0.64, 100, '2026-09-01T00:00:00+00:00')")
+    con.close()
+    with pytest.raises(subject.RegistryRegimeMismatchError, match="legacy \\(unstamped\\)"):
+        subject.FeatureRegistry(db_path).open()
+
+
+def test_open_rejects_registry_stamped_with_another_regime(tmp_path: Path):
+    db_path = tmp_path / "registry.duckdb"
+    with subject.FeatureRegistry(db_path, evaluation_regime="older-regime-v0"):
+        pass
+    with pytest.raises(subject.RegistryRegimeMismatchError, match="older-regime-v0"):
+        subject.FeatureRegistry(db_path).open()

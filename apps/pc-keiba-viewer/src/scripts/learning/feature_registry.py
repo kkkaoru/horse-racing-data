@@ -9,9 +9,18 @@ from typing import Final, SupportsFloat, SupportsInt, TypedDict, cast
 
 import duckdb
 
+from walk_forward_common import EVALUATION_REGIME
+
 DEFAULT_DB_PATH: Final[Path] = Path("feature_registry.duckdb")
 NDCG_IMPROVEMENT_THRESHOLD: Final[float] = 0.005
 ENRICHMENT_SCORE_THRESHOLD: Final[float] = 0.3
+
+
+REGIME_META_KEY: Final[str] = "evaluation_regime"
+
+
+class RegistryRegimeMismatchError(RuntimeError):
+    """The registry's stored scores came from a different evaluation protocol."""
 
 
 class FeatureEntry(TypedDict):
@@ -27,13 +36,45 @@ class FeatureEntry(TypedDict):
 class FeatureRegistry:
     """Context-manager wrapper around a DuckDB feature trial store."""
 
-    def __init__(self, db_path: Path = DEFAULT_DB_PATH) -> None:
+    def __init__(self, db_path: Path = DEFAULT_DB_PATH, evaluation_regime: str = EVALUATION_REGIME) -> None:
         self._db_path: Path = db_path
+        self._evaluation_regime: str = evaluation_regime
         self._con: duckdb.DuckDBPyConnection | None = None
 
     def open(self) -> None:
         self._con = duckdb.connect(str(self._db_path))
         self._ensure_schema()
+        self._ensure_evaluation_regime()
+
+    def _ensure_evaluation_regime(self) -> None:
+        """Stamp a fresh registry; refuse one whose scores come from another regime.
+
+        Every stored ndcg_at_3 (trials, active entry, deployment baseline) depends on
+        the walk-forward evaluation protocol, so comparing across regimes would decide
+        deploys on incomparable numbers. Fail closed instead of mixing them.
+        """
+        assert self._con is not None
+        row = self._con.execute(
+            "SELECT value FROM registry_meta WHERE key = ?", [REGIME_META_KEY]
+        ).fetchone()
+        stored = None if row is None else str(row[0])
+        if stored == self._evaluation_regime:
+            return
+        count_row = self._con.execute(
+            "SELECT (SELECT COUNT(*) FROM feature_trials) + (SELECT COUNT(*) FROM deployments)"
+        ).fetchone()
+        has_scores = count_row is not None and int(count_row[0]) > 0
+        if stored is not None or has_scores:
+            self.close()
+            raise RegistryRegimeMismatchError(
+                f"registry {self._db_path} holds scores from evaluation regime "
+                f"{stored or 'legacy (unstamped)'}, not {self._evaluation_regime}; "
+                "pass a new --registry-path to start a registry under the current regime"
+            )
+        self._con.execute(
+            "INSERT INTO registry_meta (key, value) VALUES (?, ?)",
+            [REGIME_META_KEY, self._evaluation_regime],
+        )
 
     def close(self) -> None:
         if self._con is not None:
@@ -69,6 +110,12 @@ class FeatureRegistry:
                 ndcg_at_3     DOUBLE  NOT NULL,
                 feature_count INTEGER NOT NULL,
                 deployed_at   TEXT    NOT NULL
+            )
+        """)
+        self._con.execute("""
+            CREATE TABLE IF NOT EXISTS registry_meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
             )
         """)
         self._con.execute("""

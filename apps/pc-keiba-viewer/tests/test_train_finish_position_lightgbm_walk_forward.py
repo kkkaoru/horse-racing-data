@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
+import numpy as np
 import polars as pl
 import pytest
 
@@ -349,7 +351,7 @@ def test_train_fold_skips_when_checkpoint_completed(tmp_path: Path):
     model_dir = subject.build_per_fold_model_dir(args, 2024)
     model_dir.mkdir(parents=True)
     (model_dir / "metadata.json").write_text(
-        json.dumps({"status": "completed", "fold_year": 2024}),
+        json.dumps({"status": "completed", "fold_year": 2024, "evaluation_regime": "early-stop-train-tail-refit-v1"}),
         encoding="utf-8",
     )
     deps = _make_fake_deps(_feature_df())
@@ -385,6 +387,7 @@ def test_train_fold_completes_and_writes_metadata(
     assert parsed["objective"] == "lambdarank"
     assert parsed["lambdarank_truncation_level"] == 5
     assert parsed["random_seed"] == subject.RANDOM_SEED_BASE + 2024
+    assert parsed["evaluation_regime"] == "early-stop-train-tail-refit-v1"
     booster = cast(MagicMock, deps["fold_trainer"]).return_value["booster"]
     booster.save_model.assert_called_once_with(
         str(subject.build_per_fold_model_dir(args, 2024) / "model.txt")
@@ -714,6 +717,119 @@ def test_default_fold_trainer_invokes_lightgbm_train(monkeypatch: pytest.MonkeyP
     valid_predictions = cast(pl.DataFrame, out["valid_predictions"])
     assert "predicted_score" in valid_predictions.columns
     assert "predicted_rank" in valid_predictions.columns
+
+
+def test_default_fold_trainer_early_stops_on_train_tail_and_refits_on_full_window(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The fold year (valid_df) must never be the early-stopping eval set: the probe
+    early-stops on the latest training race (r3 by race_date, not by race_id), then
+    the returned booster is refit on every training row with the probe's tree count."""
+    import lightgbm as lgb
+
+    train_df = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r2", "r2", "r2", "r3", "r3", "r3", "r4", "r4", "r4"],
+        "race_date": [
+            "20230105", "20230105", "20230105", "20230103", "20230103", "20230103",
+            "20230110", "20230110", "20230110", "20230101", "20230101", "20230101",
+        ],
+        "umaban": [1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3],
+        "finish_position": [1.0, 2.0, 3.0, 3.0, 1.0, 2.0, 2.0, 3.0, 1.0, 1.0, 3.0, 2.0],
+        "feature_a": [0.9, 0.5, 0.1, 0.2, 0.8, 0.4, 0.5, 0.2, 0.9, 0.7, 0.1, 0.4],
+        "sample_weight": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0],
+    })
+    valid_df = pl.DataFrame({
+        "race_id": ["v1", "v1", "v1", "v2", "v2", "v2"],
+        "race_date": ["20240105", "20240105", "20240105", "20240201", "20240201", "20240201"],
+        "umaban": [1, 2, 3, 1, 2, 3],
+        "finish_position": [1.0, 2.0, 3.0, 2.0, 1.0, 3.0],
+        "feature_a": [0.8, 0.3, 0.1, 0.4, 0.9, 0.2],
+    })
+    dataset_inputs: dict[int, dict[str, object]] = {}
+    real_dataset = lgb.Dataset
+
+    def recording_dataset(
+        data: np.ndarray,
+        label: np.ndarray,
+        feature_name: list[str],
+        group: list[int],
+        weight: np.ndarray | None,
+    ) -> lgb.Dataset:
+        dataset = real_dataset(
+            data, label=label, feature_name=feature_name, group=group, weight=weight,
+        )
+        dataset_inputs[id(dataset)] = {
+            "feature_a": data[:, 0].tolist(),
+            "group": group,
+            "weight": None if weight is None else weight.tolist(),
+        }
+        return dataset
+
+    train_calls: list[dict[str, object]] = []
+    real_train = lgb.train
+
+    def recording_train(
+        params: dict[str, object],
+        train_set: lgb.Dataset,
+        num_boost_round: int = 100,
+        valid_sets: list[lgb.Dataset] | None = None,
+        callbacks: list[Callable[..., None]] | None = None,
+    ) -> lgb.Booster:
+        train_calls.append({
+            "train": dataset_inputs[id(train_set)],
+            "valid_sets": [dataset_inputs[id(ds)] for ds in valid_sets or []],
+            "num_boost_round": num_boost_round,
+            "has_callbacks": callbacks is not None,
+        })
+        return real_train(
+            params,
+            train_set,
+            num_boost_round=num_boost_round,
+            valid_sets=valid_sets,
+            callbacks=callbacks,
+        )
+
+    monkeypatch.setattr(lgb, "Dataset", recording_dataset)
+    monkeypatch.setattr(lgb, "train", recording_train)
+    ns = argparse.Namespace(
+        objective="lambdarank",
+        num_iterations=50,
+        num_leaves=4,
+        learning_rate=0.1,
+        min_child_samples=1,
+        lambda_l2=0.0,
+        lambdarank_truncation_level=3,
+        early_stopping_rounds=3,
+        seed=42,
+    )
+
+    out = subject.default_fold_trainer(train_df, valid_df, ["feature_a"], ns)
+
+    assert train_calls[0] == {
+        "train": {
+            "feature_a": [0.9, 0.5, 0.1, 0.2, 0.8, 0.4, 0.7, 0.1, 0.4],
+            "group": [3, 3, 3],
+            "weight": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        },
+        "valid_sets": [{"feature_a": [0.5, 0.2, 0.9], "group": [3], "weight": None}],
+        "num_boost_round": 50,
+        "has_callbacks": True,
+    }
+    assert train_calls[1] == {
+        "train": {
+            "feature_a": [0.9, 0.5, 0.1, 0.2, 0.8, 0.4, 0.5, 0.2, 0.9, 0.7, 0.1, 0.4],
+            "group": [3, 3, 3, 3],
+            "weight": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0],
+        },
+        "valid_sets": [],
+        "num_boost_round": 1,
+        "has_callbacks": False,
+    }
+    assert len(train_calls) == 2
+    assert cast(lgb.Booster, out["booster"]).num_trees() == 1
+    valid_predictions = cast(pl.DataFrame, out["valid_predictions"])
+    assert valid_predictions["race_id"].to_list() == ["v1", "v1", "v1", "v2", "v2", "v2"]
+    assert valid_predictions["umaban"].to_list() == [1, 2, 3, 1, 2, 3]
 
 
 def test_default_fold_trainer_supports_train_without_sample_weight(

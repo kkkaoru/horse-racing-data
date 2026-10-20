@@ -536,7 +536,7 @@ def test_train_fold_skips_when_checkpoint_completed(tmp_path: Path):
     model_dir = subject.build_per_fold_model_dir(args, 2024)
     model_dir.mkdir(parents=True)
     (model_dir / "metadata.json").write_text(
-        json.dumps({"status": "completed", "fold_year": 2024}),
+        json.dumps({"status": "completed", "fold_year": 2024, "evaluation_regime": "early-stop-train-tail-refit-v1"}),
         encoding="utf-8",
     )
     deps = _make_fake_deps(_feature_df())
@@ -574,6 +574,7 @@ def test_train_fold_completes_and_writes_metadata(
     parsed = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert parsed["objective"] == "ndcg"
     assert parsed["random_seed"] == subject.RANDOM_SEED_BASE + 2024
+    assert parsed["evaluation_regime"] == "early-stop-train-tail-refit-v1"
 
 
 def test_train_fold_returns_real_metrics_from_fold_trainer(
@@ -898,14 +899,14 @@ def test_train_xgboost_ranker_uses_pairwise_objective_by_default(monkeypatch: py
         captured_params.append(dict(params))
         fake_booster = MagicMock()
         fake_booster.best_iteration = 5
-        fake_booster.predict.return_value = np.array([0.9, 0.5])
+        fake_booster.predict.return_value = np.array([0.9, 0.5, 0.4, 0.8])
         return fake_booster
 
     monkeypatch.setattr(xgb, "train", fake_train)
     df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1, 2],
-        "finish_position": [1.0, 2.0],
+        "race_id": ["r1", "r1", "r2", "r2"],
+        "umaban": [1, 2, 1, 2],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
     })
     ns = argparse.Namespace(
         relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
@@ -927,14 +928,14 @@ def test_train_xgboost_ranker_uses_ndcg_objective_when_set(monkeypatch: pytest.M
         captured_params.append(dict(params))
         fake_booster = MagicMock()
         fake_booster.best_iteration = 5
-        fake_booster.predict.return_value = np.array([0.9, 0.5])
+        fake_booster.predict.return_value = np.array([0.9, 0.5, 0.4, 0.8])
         return fake_booster
 
     monkeypatch.setattr(xgb, "train", fake_train)
     df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1, 2],
-        "finish_position": [1.0, 2.0],
+        "race_id": ["r1", "r1", "r2", "r2"],
+        "umaban": [1, 2, 1, 2],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
     })
     ns = argparse.Namespace(
         relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,
@@ -958,14 +959,14 @@ def test_train_xgboost_ranker_passes_subsample_and_colsample_bytree(monkeypatch:
         captured_params.append(dict(params))
         fake_booster = MagicMock()
         fake_booster.best_iteration = 5
-        fake_booster.predict.return_value = np.array([0.9, 0.5])
+        fake_booster.predict.return_value = np.array([0.9, 0.5, 0.4, 0.8])
         return fake_booster
 
     monkeypatch.setattr(xgb, "train", fake_train)
     df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1, 2],
-        "finish_position": [1.0, 2.0],
+        "race_id": ["r1", "r1", "r2", "r2"],
+        "umaban": [1, 2, 1, 2],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
     })
     ns = argparse.Namespace(
         relevance_rank1=3, relevance_rank2=2, relevance_rank3=1,

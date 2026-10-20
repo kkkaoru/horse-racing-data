@@ -12,6 +12,7 @@ LightGBM) can share:
   * atomic metadata.json writer + per-fold completion detector
   * per-bucket NDCG@3 computer
   * stratified KFold index builder for Optuna HPO
+  * time-ordered early-stopping tail split (never early-stop on the reported year)
 
 Every helper is mockable; the train scripts inject filesystem / system calls
 so unit tests can run with zero real I/O.
@@ -55,8 +56,15 @@ COMPLETED_FOLD_STATUS: Final[str] = "completed"
 METADATA_FILENAME: Final[str] = "metadata.json"
 METADATA_FOLD_KEY: Final[str] = "fold_year"
 METADATA_STATUS_KEY: Final[str] = "status"
+METADATA_REGIME_KEY: Final[str] = "evaluation_regime"
 HPO_MIN_FOLDS: Final[int] = 2
 GROUP_SORT_KEYS: Final[tuple[str, str]] = ("race_id", "umaban")
+# Fold trainers early-stop on the most recent races of the training window, then refit
+# the whole window with the found tree count and score the fold year with that refit.
+# Bump EVALUATION_REGIME whenever this protocol changes: scores from different regimes
+# are not comparable (the previous regime early-stopped on the reported year itself).
+EARLY_STOPPING_TAIL_FRACTION: Final[float] = 0.1
+EVALUATION_REGIME: Final[str] = "early-stop-train-tail-refit-v1"
 
 
 def sort_full_dataset(df: pl.DataFrame) -> pl.DataFrame:
@@ -214,7 +222,7 @@ def atomic_write_metadata(path: Path, data: "Mapping[str, object]") -> None:
 
 
 def detect_completed_fold(model_dir: Path, fold_year: int) -> bool:
-    """Return True iff ``model_dir/metadata.json`` exists and is completed.
+    """Return True iff ``model_dir/metadata.json`` exists, is completed, and is current-regime.
 
     The metadata's ``fold_year`` must match the requested fold; otherwise the
     checkpoint belongs to a different fold and we must not skip it.
@@ -229,6 +237,10 @@ def detect_completed_fold(model_dir: Path, fold_year: int) -> bool:
     if not isinstance(parsed, dict):
         return False
     if parsed.get(METADATA_STATUS_KEY) != COMPLETED_FOLD_STATUS:
+        return False
+    # A fold trained under another evaluation protocol must be retrained, not resumed,
+    # or one run's report would mix incomparable folds.
+    if parsed.get(METADATA_REGIME_KEY) != EVALUATION_REGIME:
         return False
     stored_year = parsed.get(METADATA_FOLD_KEY)
     if stored_year is None:
@@ -333,3 +345,21 @@ def stratified_kfold_indices(
             )
         indices.append((train_idx, val_idx))
     return indices
+
+
+def split_early_stopping_tail(
+    train_df: pl.DataFrame, fraction: float = EARLY_STOPPING_TAIL_FRACTION
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Split a training window into (fit, early_stop) with early_stop = its latest races.
+
+    Races are ordered by (race_date, race_id) and kept whole; rows keep their input
+    order, so frames presorted by GROUP_SORT_KEYS stay group-contiguous.
+    """
+    order_keys = [column for column in ("race_date", "race_id") if column in train_df.columns]
+    races = train_df.select(order_keys).unique(subset=["race_id"]).sort(order_keys)["race_id"]
+    if races.len() < 2:
+        raise ValueError("early stopping needs at least 2 races in the training window")
+    stop_count = min(races.len() - 1, max(1, round(races.len() * fraction)))
+    stop_races = races.tail(stop_count).implode()
+    is_stop = pl.col("race_id").is_in(stop_races)
+    return train_df.filter(~is_stop), train_df.filter(is_stop)

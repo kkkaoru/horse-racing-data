@@ -29,6 +29,8 @@ import polars as pl
 import pyarrow.parquet as pq
 from catboost import CatBoost, Pool  # pyright: ignore[reportMissingTypeStubs]
 
+import walk_forward_common
+
 META_COLUMNS = (
     "race_id", "race_date", "race_year", "source", "kaisai_nen", "kaisai_tsukihi",
     "race_bango", "ketto_toroku_bango", "bamei",
@@ -240,40 +242,27 @@ def prepare_feature_matrix(
     return df.select(exprs)
 
 
-def train_catboost_ranker(
-    train_df: pl.DataFrame,
-    valid_df: pl.DataFrame,
+def build_ranking_pool(
+    df: pl.DataFrame,
     feature_cols: list[str],
+    cat_indices: list[int],
     args: argparse.Namespace,
-) -> dict[str, object]:
-    train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
-    train_labels = relevance_labels(
-        train_df, int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
+) -> Pool:
+    """Pool with relevance labels, race groups and (if present) row weights."""
+    labels = relevance_labels(
+        df, int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
     )
-    valid_labels = relevance_labels(
-        valid_df, int(args.relevance_rank1), int(args.relevance_rank2), int(args.relevance_rank3),
-    )
-    use_cat = not getattr(args, "no_cat_features", False)
-    cat_indices = resolve_cat_feature_indices(train_df, feature_cols, use_cat_features=use_cat)
-    train_features = prepare_feature_matrix(train_df, feature_cols, cat_indices)
-    valid_features = prepare_feature_matrix(valid_df, feature_cols, cat_indices)
-    train_weights = (
-        train_df["sample_weight"].to_numpy() if "sample_weight" in train_df.columns else None
-    )
-    train_pool = Pool(
-        data=train_features,
-        label=train_labels,
-        group_id=race_group_ids(train_df),
+    return Pool(
+        data=prepare_feature_matrix(df, feature_cols, cat_indices),
+        label=labels,
+        group_id=race_group_ids(df),
         cat_features=cat_indices if cat_indices else None,
-        weight=train_weights,
+        weight=df["sample_weight"].to_numpy() if "sample_weight" in df.columns else None,
     )
-    valid_pool = Pool(
-        data=valid_features,
-        label=valid_labels,
-        group_id=race_group_ids(valid_df),
-        cat_features=cat_indices if cat_indices else None,
-    )
-    params = {
+
+
+def build_catboost_params(args: argparse.Namespace) -> dict[str, object]:
+    params: dict[str, object] = {
         "loss_function": "YetiRank",
         "eval_metric": "NDCG:top=3",
         "iterations": args.iterations,
@@ -294,8 +283,48 @@ def train_catboost_ranker(
         params["bootstrap_type"] = "Bayesian"
     if random_strength is not None:
         params["random_strength"] = float(random_strength)
-    model = CatBoost(params)
-    model.fit(train_pool, eval_set=valid_pool, verbose=False)
+    return params
+
+
+def train_catboost_ranker(
+    train_df: pl.DataFrame,
+    valid_df: pl.DataFrame,
+    feature_cols: list[str],
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    """Train on ``train_df`` and score ``valid_df`` (the fold year) without peeking at it.
+
+    A probe model early-stops on the latest races of the training window; with
+    ``use_best_model`` (CatBoost's default when an eval set is given) its
+    ``tree_count_`` is the best iteration + 1. The returned model is refit on the
+    whole window with exactly that many trees and no overfitting detector.
+    ``best_iteration`` stays 0-based.
+    """
+    train_df, valid_df = sort_train_valid_for_grouping(train_df, valid_df, args)
+    fit_df, stop_df = walk_forward_common.split_early_stopping_tail(train_df)
+    use_cat = not getattr(args, "no_cat_features", False)
+    cat_indices = resolve_cat_feature_indices(train_df, feature_cols, use_cat_features=use_cat)
+    params = build_catboost_params(args)
+    probe = CatBoost(params)
+    # The early-stopping set is scored unweighted, like the fold-year eval set it replaces.
+    probe.fit(
+        build_ranking_pool(fit_df, feature_cols, cat_indices, args),
+        eval_set=build_ranking_pool(
+            stop_df.drop("sample_weight", strict=False), feature_cols, cat_indices, args,
+        ),
+        verbose=False,
+    )
+    tree_count = cast(int, probe.tree_count_)
+    refit_params = {
+        key: value for key, value in params.items() if key not in ("od_type", "od_wait")
+    }
+    model = CatBoost({**refit_params, "iterations": tree_count})
+    model.fit(build_ranking_pool(train_df, feature_cols, cat_indices, args), verbose=False)
+    valid_pool = Pool(
+        data=prepare_feature_matrix(valid_df, feature_cols, cat_indices),
+        group_id=race_group_ids(valid_df),
+        cat_features=cat_indices if cat_indices else None,
+    )
     pred = np.asarray(model.predict(valid_pool), dtype=np.float64)
     valid_df = valid_df.with_columns(pl.Series("predicted_score", pred))
     valid_df = valid_df.with_columns(
@@ -307,9 +336,8 @@ def train_catboost_ranker(
         .alias("predicted_rank")
     )
     metrics = compute_fold_metrics(valid_df)
-    best_iter = model.get_best_iteration()
     return {
-        "best_iteration": int(best_iter if best_iter is not None else cast(int, model.tree_count_)),
+        "best_iteration": tree_count - 1,
         "valid_predictions": valid_df,
         "metrics": metrics,
         "model": model,
@@ -409,7 +437,11 @@ def run_walk_forward(args: argparse.Namespace) -> None:
         "top1_accuracy_mean": sum(cast(float, f["top1_accuracy"]) for f in folds) / max(len(folds), 1),
         "top3_box_accuracy_mean": sum(cast(float, f["top3_box_accuracy"]) for f in folds) / max(len(folds), 1),
     }
-    report = {"aggregate": aggregate, "folds": folds}
+    report = {
+        "aggregate": aggregate,
+        "evaluation_regime": walk_forward_common.EVALUATION_REGIME,
+        "folds": folds,
+    }
     args.output_report.parent.mkdir(parents=True, exist_ok=True)
     args.output_report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))

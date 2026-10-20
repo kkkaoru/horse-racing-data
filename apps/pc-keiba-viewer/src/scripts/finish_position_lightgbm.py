@@ -24,6 +24,7 @@ import optuna
 import polars as pl
 from numpy.typing import NDArray
 
+import walk_forward_common
 from learning.feature_selection_policy import resolve_feature_columns_for_target
 from learning.subgroup_diagnostics import compute_race_ndcg
 
@@ -355,6 +356,11 @@ def build_lightgbm_params(
         "num_leaves": params["num_leaves"],
         "min_child_samples": params["min_child_samples"],
         "lambda_l2": params["lambda_l2"],
+        # Pin the histogram layout and accumulation order: LightGBM otherwise times
+        # row- vs col-wise at startup (a load-dependent pick), and callers vary
+        # num_threads with machine load, so the same inputs could train different models.
+        "deterministic": True,
+        "force_row_wise": True,
         "verbose": -1,
     }
     if feature_columns is not None:
@@ -694,15 +700,22 @@ def run_walk_forward_fold(
     relevance_tier_name: str | None = None,
     num_threads: int | None = None,
 ) -> tuple["lgb.Booster", pl.DataFrame, FoldMetrics]:
+    """Train one fold and score its fold year without early-stopping on it.
+
+    The tree count comes from early stopping on the latest races of the training
+    window; the returned booster is refit on the whole window with that many trees.
+    """
+    fit_df, stop_df = walk_forward_common.split_early_stopping_tail(fold["train_df"])
+    fit_bundle = prepare_lgb_dataset(fit_df, params["objective"], sample_weight_mode, relevance_tier_name)
+    stop_bundle = prepare_lgb_dataset(
+        stop_df, params["objective"], SAMPLE_WEIGHT_MODE_NONE, relevance_tier_name
+    )
+    _probe, probe_result = train_lambdarank(fit_bundle, stop_bundle, params, num_threads=num_threads)
     train_bundle = prepare_lgb_dataset(
         fold["train_df"], params["objective"], sample_weight_mode, relevance_tier_name
     )
-    valid_bundle = prepare_lgb_dataset(
-        fold["valid_df"], params["objective"], SAMPLE_WEIGHT_MODE_NONE, relevance_tier_name
-    )
-    booster, training_result = train_lambdarank(
-        train_bundle, valid_bundle, params, num_threads=num_threads
-    )
+    refit_params: TrainingParams = {**params, "num_iterations": probe_result["best_iteration"]}
+    booster, _refit_result = train_lambdarank(train_bundle, None, refit_params, num_threads=num_threads)
     predictions = score_dataset(booster, fold["valid_df"])
     eval_metrics = evaluate_predictions(predictions, fold["valid_df"])
     metrics: FoldMetrics = {
@@ -711,7 +724,7 @@ def run_walk_forward_fold(
         "top1_accuracy": float(eval_metrics["top1_accuracy"]),
         "top3_box_accuracy": float(eval_metrics["top3_box_accuracy"]),
         "top3_exact_accuracy": float(eval_metrics["top3_exact_accuracy"]),
-        "valid_rows": training_result["valid_rows"],
+        "valid_rows": fold["valid_df"].height,
         "valid_year": fold["valid_year"],
     }
     return booster, predictions, metrics
@@ -742,7 +755,11 @@ def write_walk_forward_report(
     output_path: Path,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"aggregate": aggregate, "folds": fold_metrics}
+    payload = {
+        "aggregate": aggregate,
+        "evaluation_regime": walk_forward_common.EVALUATION_REGIME,
+        "folds": fold_metrics,
+    }
     with output_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
 

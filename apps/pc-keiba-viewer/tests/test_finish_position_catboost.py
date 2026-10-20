@@ -789,10 +789,10 @@ def test_train_catboost_ranker_returns_metrics_and_predictions(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -825,7 +825,7 @@ def test_train_catboost_ranker_returns_metrics_and_predictions(
         no_cat_features=False,
     )
     result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
-    assert result["best_iteration"] == 10
+    assert result["best_iteration"] == 9
     assert "valid_predictions" in result
     metrics = cast(dict[str, float], result["metrics"])
     assert "top1_accuracy" in metrics
@@ -871,11 +871,11 @@ def test_train_catboost_ranker_presorted_matches_unsorted_labels_and_groups(
     subject.train_catboost_ranker(
         sorted_df, valid_df, ["feature_a"], _make_args(presorted=True, no_cat_features=True),
     )
+    # Per call: fit, early-stop, full-window refit, valid Pool.
+    np.testing.assert_array_equal(cast(np.ndarray, pool_calls[2]["label"]), np.array([3, 2, 2, 3]))
+    np.testing.assert_array_equal(cast(np.ndarray, pool_calls[6]["label"]), np.array([3, 2, 2, 3]))
     np.testing.assert_array_equal(
-        cast(np.ndarray, pool_calls[0]["label"]), cast(np.ndarray, pool_calls[2]["label"]),
-    )
-    np.testing.assert_array_equal(
-        cast(np.ndarray, pool_calls[0]["group_id"]), cast(np.ndarray, pool_calls[2]["group_id"]),
+        cast(np.ndarray, pool_calls[2]["group_id"]), cast(np.ndarray, pool_calls[6]["group_id"]),
     )
 
 
@@ -884,10 +884,10 @@ def test_train_catboost_ranker_caps_thread_count_at_six(
 ):
     """Default thread_count stays 6 to respect the nthread<=6 memory-budget hard rule."""
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -912,10 +912,10 @@ def test_train_catboost_ranker_uses_explicit_thread_count(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -940,12 +940,17 @@ def test_train_catboost_ranker_uses_no_cat_features_when_flag_set(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
+    })
+    valid_df = pl.DataFrame({
+        "race_id": ["r2", "r2"],
         "umaban": [1.0, 2.0],
         "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "feature_a": [0.3, 0.4],
     })
-    valid_df = train_df.with_columns(pl.Series("race_id", ["r2", "r2"]))
 
     fake_model = MagicMock()
     fake_model.predict.return_value = np.array([0.9, 0.5])
@@ -957,19 +962,20 @@ def test_train_catboost_ranker_uses_no_cat_features_when_flag_set(
 
     args = _make_args(no_cat_features=True)
     result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
-    # get_best_iteration returns None so tree_count_ is used
-    assert result["best_iteration"] == 5
+    # The probe's tree_count_ (already shrunk by use_best_model) is the refit tree count.
+    assert result["best_iteration"] == 4
 
 
-def test_train_catboost_ranker_best_iteration_zero_uses_zero_not_tree_count(
+def test_train_catboost_ranker_refits_with_probe_tree_count_and_no_overfitting_detector(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """get_best_iteration() returning 0 must not fall back to tree_count_ (falsy-zero bug)."""
+    """The refit gets exactly the probe's tree count and no od_* params (it has no eval set);
+    a single-tree probe reports best_iteration 0, not the tree count."""
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -979,23 +985,29 @@ def test_train_catboost_ranker_best_iteration_zero_uses_zero_not_tree_count(
     })
     fake_model = MagicMock()
     fake_model.predict.return_value = np.array([0.9, 0.5])
-    fake_model.get_best_iteration.return_value = 0  # 0 is falsy — the bug returned tree_count_
-    fake_model.tree_count_ = 99
-    monkeypatch.setattr(subject, "CatBoost", MagicMock(return_value=fake_model))
+    fake_model.tree_count_ = 1
+    mock_catboost_cls = MagicMock(return_value=fake_model)
+    monkeypatch.setattr(subject, "CatBoost", mock_catboost_cls)
     monkeypatch.setattr(subject, "Pool", MagicMock())
     args = _make_args()
     result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
-    assert result["best_iteration"] == 0, "best_iteration=0 must not fall back to tree_count_"
+    assert result["best_iteration"] == 0
+    probe_params = cast(dict[str, object], mock_catboost_cls.call_args_list[0].args[0])
+    refit_params = cast(dict[str, object], mock_catboost_cls.call_args_list[1].args[0])
+    assert (probe_params["iterations"], probe_params["od_type"], probe_params["od_wait"]) == (10, "Iter", 5)
+    assert refit_params["iterations"] == 1
+    assert "od_type" not in refit_params
+    assert "od_wait" not in refit_params
 
 
 def test_train_catboost_ranker_sets_bayesian_bootstrap_when_bagging_temperature(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -1022,10 +1034,10 @@ def test_train_catboost_ranker_assigns_bottom_rank_to_nan_prediction(
     monkeypatch: pytest.MonkeyPatch,
 ):
     train_df = pl.DataFrame({
-        "race_id": ["r1", "r1"],
-        "umaban": [1.0, 2.0],
-        "finish_position": [1.0, 2.0],
-        "feature_a": [0.1, 0.2],
+        "race_id": ["r0", "r0", "r1", "r1"],
+        "umaban": [1.0, 2.0, 1.0, 2.0],
+        "finish_position": [1.0, 2.0, 2.0, 1.0],
+        "feature_a": [0.05, 0.15, 0.1, 0.2],
     })
     valid_df = pl.DataFrame({
         "race_id": ["r2", "r2"],
@@ -1044,6 +1056,106 @@ def test_train_catboost_ranker_assigns_bottom_rank_to_nan_prediction(
     preds = cast(pl.DataFrame, result["valid_predictions"])
     # NaN score (row 0) must get bottom rank; valid score 0.5 (row 1) gets rank 1
     assert preds["predicted_rank"].to_list() == [2, 1]
+
+
+def test_train_catboost_ranker_early_stops_on_train_tail_and_refits_on_full_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    """The fold year (valid_df) must never be the early-stopping eval set: the probe
+    early-stops on the latest training race (r3 by race_date, not by race_id), then
+    the returned model is refit on every training row with the probe's tree count."""
+    from catboost import CatBoost as RealCatBoost
+    from catboost import Pool as RealPool
+
+    monkeypatch.chdir(tmp_path)
+    train_df = pl.DataFrame({
+        "race_id": ["r1", "r1", "r1", "r2", "r2", "r2", "r3", "r3", "r3", "r4", "r4", "r4"],
+        "race_date": [
+            "20230105", "20230105", "20230105", "20230103", "20230103", "20230103",
+            "20230110", "20230110", "20230110", "20230101", "20230101", "20230101",
+        ],
+        "umaban": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+        "finish_position": [1.0, 2.0, 3.0, 3.0, 1.0, 2.0, 2.0, 3.0, 1.0, 1.0, 3.0, 2.0],
+        "feature_a": [0.9, 0.5, 0.1, 0.2, 0.8, 0.4, 0.5, 0.2, 0.9, 0.7, 0.1, 0.4],
+        "sample_weight": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0],
+    })
+    valid_df = pl.DataFrame({
+        "race_id": ["v1", "v1", "v1", "v2", "v2", "v2"],
+        "race_date": ["20240105", "20240105", "20240105", "20240201", "20240201", "20240201"],
+        "umaban": [1.0, 2.0, 3.0, 1.0, 2.0, 3.0],
+        "finish_position": [1.0, 2.0, 3.0, 2.0, 1.0, 3.0],
+        "feature_a": [0.8, 0.3, 0.1, 0.4, 0.9, 0.2],
+    })
+    pool_frames: dict[int, dict[str, object]] = {}
+    real_build = subject.build_ranking_pool
+
+    def recording_build(
+        df: pl.DataFrame,
+        feature_cols: list[str],
+        cat_indices: list[int],
+        args: argparse.Namespace,
+    ) -> RealPool:
+        pool = real_build(df, feature_cols, cat_indices, args)
+        pool_frames[id(pool)] = {
+            "race_ids": df["race_id"].to_list(),
+            "weighted": "sample_weight" in df.columns,
+        }
+        return pool
+
+    fit_calls: list[dict[str, object]] = []
+    models: list[RealCatBoost] = []
+
+    real_fit = RealCatBoost.fit
+
+    def recording_fit(
+        self: RealCatBoost, X: object, y: object = None, **kwargs: object,
+    ) -> RealCatBoost:
+        eval_set = kwargs.get("eval_set")
+        fit_calls.append({
+            "train": pool_frames[id(X)],
+            "eval_set": None if eval_set is None else pool_frames[id(eval_set)],
+            "iterations": self.get_params()["iterations"],
+            "od_type": self.get_params().get("od_type"),
+        })
+        models.append(self)
+        return real_fit(self, X, y, **kwargs)
+
+    monkeypatch.setattr(subject, "build_ranking_pool", recording_build)
+    monkeypatch.setattr(RealCatBoost, "fit", recording_fit)
+    args = _make_args(
+        iterations=50, early_stopping_rounds=3, no_cat_features=True, thread_count=1,
+    )
+
+    result = subject.train_catboost_ranker(train_df, valid_df, ["feature_a"], args)
+
+    assert fit_calls[0] == {
+        "train": {
+            "race_ids": ["r1", "r1", "r1", "r2", "r2", "r2", "r4", "r4", "r4"],
+            "weighted": True,
+        },
+        "eval_set": {"race_ids": ["r3", "r3", "r3"], "weighted": False},
+        "iterations": 50,
+        "od_type": "Iter",
+    }
+    assert fit_calls[1] == {
+        "train": {
+            "race_ids": ["r1", "r1", "r1", "r2", "r2", "r2", "r3", "r3", "r3", "r4", "r4", "r4"],
+            "weighted": True,
+        },
+        "eval_set": None,
+        "iterations": 2,
+        "od_type": None,
+    }
+    assert len(fit_calls) == 2
+    # use_best_model shrinks the probe to best_iteration + 1 trees.
+    assert models[0].get_best_iteration() == 1
+    assert models[0].tree_count_ == 2
+    assert models[1].tree_count_ == 2
+    assert result["model"] is models[1]
+    assert result["best_iteration"] == 1
+    preds = cast(pl.DataFrame, result["valid_predictions"])
+    assert preds["race_id"].to_list() == ["v1", "v1", "v1", "v2", "v2", "v2"]
+    assert preds["umaban"].to_list() == [1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
 
 
 # ---------------------------------------------------------------------------
