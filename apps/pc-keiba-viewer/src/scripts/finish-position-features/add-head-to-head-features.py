@@ -244,39 +244,41 @@ def stage_pair_history(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def stage_target_races(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
-    """入力 parquet から (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-    race_date) のユニーク race key を抽出し target_races テーブルに格納する。
+def stage_target_field(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
+    """Each input race's field (race key + horse) taken from the input card itself.
 
-    stage_current_pair_aggregates で current_field をこの race key に絞り込むことで、
-    推論時 (upcoming races, 数十行) の処理量を劇的に削減できる。
-    訓練時 (全期間 parquet, 数百万行) も同じ絞り込みを行うが、その場合 target_races
-    は race_history のほぼ全 race を含むため挙動は変わらない。
+    The field must come from the input, not from settled race_history: an upcoming
+    race has no settled rows (kakutei_chakujun '00' is dropped), so building it from
+    history left every h2h_* feature at 0/NULL at serving time while training rows
+    (finished races) were populated. It also keeps non-finishers in the training
+    field, so the field no longer depends on the race result.
+    current_date uses kaisai_nen || kaisai_tsukihi, the same format as race_history.
     """
     con.execute(
         f"""
-        create or replace temp table target_races as
+        create or replace temp table target_field as
         select distinct
           source,
           kaisai_nen,
           kaisai_tsukihi,
           keibajo_code,
           race_bango,
-          race_date
+          ketto_toroku_bango,
+          kaisai_nen || kaisai_tsukihi as current_date
         from read_parquet('{input_glob}', hive_partitioning=true)
+        where ketto_toroku_bango is not null
         """
     )
     con.execute(
-        f"create index target_races_idx on target_races ({RACE_PARTITION})"
+        f"create index target_field_idx on target_field ({RACE_PARTITION}, ketto_toroku_bango)"
     )
 
 
 def stage_current_pair_aggregates(con: duckdb.DuckDBPyConnection) -> None:
     """各 (current race, horse_a, horse_b) pair について、過去対戦時の集計。
 
-    current_field を target_races (入力 parquet の race key セット) に絞り込む。
-    これにより推論時は全 race_history ではなくその日の数十 race だけが対象になり、
-    O(全期間²) → O(当日レース²) の劇的なメモリ・時間削減を実現する。
+    current_field は入力 parquet の出走表 (target_field) そのもの。推論時は
+    当日の数十 race だけが対象になり O(当日レース²) で済む。
 
     current_pairs: 当該レース内の unique pair (a < b)
     × pair_history (race_date < current_race_date)
@@ -286,15 +288,9 @@ def stage_current_pair_aggregates(con: duckdb.DuckDBPyConnection) -> None:
         """
         create or replace temp table current_pair_aggregates as
         with current_field as (
-          select rh.source, rh.kaisai_nen, rh.kaisai_tsukihi, rh.keibajo_code, rh.race_bango,
-                 rh.ketto_toroku_bango, rh.race_date as current_date
-          from race_history rh
-          inner join target_races tr
-            on tr.source = rh.source
-            and tr.kaisai_nen = rh.kaisai_nen
-            and tr.kaisai_tsukihi = rh.kaisai_tsukihi
-            and tr.keibajo_code = rh.keibajo_code
-            and tr.race_bango = rh.race_bango
+          select source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                 ketto_toroku_bango, current_date
+          from target_field
         ),
         current_pairs as (
           select
@@ -427,7 +423,7 @@ def main() -> None:
     install_and_attach_pg(con, args.pg_url)
     stage_target_horses(con, input_glob)
     stage_race_history(con, args.from_date)
-    stage_target_races(con, input_glob)
+    stage_target_field(con, input_glob)
     stage_pair_history(con)
     stage_current_pair_aggregates(con)
     stage_h2h_horse_summary(con)

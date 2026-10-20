@@ -85,16 +85,16 @@ def _make_target_parquet(tmp_path: Path) -> str:
     return f"{tmp_path.as_posix()}/race_year=*/*.parquet"
 
 
-def test_stage_target_races_loads_distinct_race_keys(tmp_path: Path) -> None:
-    """stage_target_races must extract unique race keys from the input parquet."""
+def test_stage_target_field_loads_input_runners_with_history_date_format(tmp_path: Path) -> None:
+    """stage_target_field must take each race's runners from the input card."""
     input_glob = _make_target_parquet(tmp_path)
     con = duckdb.connect(":memory:")
-    subject.stage_target_races(con, input_glob)
+    subject.stage_target_field(con, input_glob)
     rows = con.execute(
-        "SELECT source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango FROM target_races"
+        "SELECT source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, "
+        "ketto_toroku_bango, current_date FROM target_field"
     ).fetchall()
-    assert len(rows) == 1
-    assert rows[0] == ("nar", "2026", "0619", "30", "01")
+    assert rows == [("nar", "2026", "0619", "30", "01", "HORSE1", "20260619")]
 
 
 def test_stage_target_horses_loads_distinct_input_horses(tmp_path: Path) -> None:
@@ -251,8 +251,8 @@ def test_stage_pair_history_keeps_only_pairs_needed_by_whole_day_input() -> None
     assert rows == [("HORSE1", "HORSE2", -1)]
 
 
-def test_stage_target_races_multiple_races(tmp_path: Path) -> None:
-    """stage_target_races deduplicates across horses in the same race."""
+def test_stage_target_field_keeps_every_runner_of_every_race(tmp_path: Path) -> None:
+    """stage_target_field keeps one row per (race, horse) across races."""
     race_year_dir = tmp_path / "race_year=2026"
     race_year_dir.mkdir(parents=True)
     # 3 horses in same race + 1 horse in different race
@@ -275,60 +275,50 @@ def test_stage_target_races_multiple_races(tmp_path: Path) -> None:
     pq.write_table(table, race_year_dir / "data.parquet")
     input_glob = f"{tmp_path.as_posix()}/race_year=*/*.parquet"
     con = duckdb.connect(":memory:")
-    subject.stage_target_races(con, input_glob)
-    row = con.execute("SELECT count(*) FROM target_races").fetchone()
-    assert row is not None
-    count = row[0]
-    assert count == 2  # 2 distinct (keibajo_code, race_bango) combos
+    subject.stage_target_field(con, input_glob)
+    rows = con.execute(
+        "SELECT keibajo_code, ketto_toroku_bango FROM target_field ORDER BY keibajo_code, ketto_toroku_bango"
+    ).fetchall()
+    assert rows == [("30", "HORSE1"), ("30", "HORSE2"), ("30", "HORSE3"), ("31", "HORSE4")]
 
 
-def test_stage_current_pair_aggregates_filters_to_target_races(tmp_path: Path) -> None:
-    """current_pair_aggregates must only compute pairs for races in target_races."""
-    input_glob = _make_target_parquet(tmp_path)
-    con = duckdb.connect(":memory:")
+def test_stage_current_pair_aggregates_scores_upcoming_race_from_input_field(tmp_path: Path) -> None:
+    """An upcoming race has no settled history rows; its field must still come from the input.
 
-    # race_history: 2 races — only race 01 is in target_races
-    con.execute(
-        """
-        CREATE TEMP TABLE race_history AS
-        SELECT
-          'nar' AS source,
-          '2026' AS kaisai_nen,
-          '0619' AS kaisai_tsukihi,
-          '30' AS keibajo_code,
-          '01' AS race_bango,
-          'HORSE1' AS ketto_toroku_bango,
-          CAST('2026-06-19' AS DATE) AS race_date,
-          1 AS finish_position
-        UNION ALL
-        SELECT 'nar','2026','0619','30','01','HORSE2','2026-06-19'::DATE, 2
-        UNION ALL
-        -- race 02 is NOT in target_races — should be excluded
-        SELECT 'nar','2026','0619','30','02','HORSE3','2026-06-19'::DATE, 1
-        UNION ALL
-        SELECT 'nar','2026','0619','30','02','HORSE4','2026-06-19'::DATE, 2
-        """
+    Regression: current_field used to be built from settled race_history, so at serving
+    time every h2h_* feature was 0/NULL.
+    """
+    race_year_dir = tmp_path / "race_year=2026"
+    race_year_dir.mkdir(parents=True)
+    pq.write_table(
+        pa.table(
+            {
+                "source": pa.array(["nar", "nar"], pa.string()),
+                "kaisai_nen": pa.array(["2026", "2026"], pa.string()),
+                "kaisai_tsukihi": pa.array(["0619", "0619"], pa.string()),
+                "keibajo_code": pa.array(["30", "30"], pa.string()),
+                "race_bango": pa.array(["01", "01"], pa.string()),
+                "race_date": pa.array(["20260619", "20260619"], pa.string()),
+                "ketto_toroku_bango": pa.array(["HORSE1", "HORSE2"], pa.string()),
+                "finish_position": pa.array([None, None], pa.float64()),
+            }
+        ),
+        race_year_dir / "data.parquet",
     )
-    # pair_history: empty (no prior encounters)
+    con = duckdb.connect(":memory:")
     con.execute(
         """
         CREATE TEMP TABLE pair_history AS
-        SELECT
-          'nar' AS source,
-          CAST('2026-06-01' AS DATE) AS race_date,
-          'HORSE_X' AS horse_a,
-          'HORSE_Y' AS horse_b,
-          -1 AS finish_diff_a_minus_b
-        WHERE false
+        SELECT 'nar' AS source, '20260501' AS race_date, 'HORSE1' AS horse_a,
+               'HORSE2' AS horse_b, -2 AS finish_diff_a_minus_b
+        UNION ALL
+        SELECT 'nar', '20260701', 'HORSE1', 'HORSE2', 3
         """
     )
-    subject.stage_target_races(con, input_glob)
+    subject.stage_target_field(con, f"{tmp_path.as_posix()}/race_year=*/*.parquet")
     subject.stage_current_pair_aggregates(con)
-
     rows = con.execute(
-        "SELECT race_bango, horse_a, horse_b FROM current_pair_aggregates ORDER BY race_bango"
+        "SELECT race_bango, horse_a, horse_b, enc_count, a_wins, b_wins, avg_diff_a_minus_b "
+        "FROM current_pair_aggregates"
     ).fetchall()
-    # Only race 01 pair (HORSE1, HORSE2) should appear; race 02 excluded
-    assert len(rows) == 1
-    assert rows[0][0] == "01"
-    assert set(rows[0][1:]) == {"HORSE1", "HORSE2"}
+    assert rows == [("01", "HORSE1", "HORSE2", 1, 1, 0, -2.0)]
