@@ -341,6 +341,8 @@ def train_one_fold(
     race_categorical_vocab_sizes = [
         race_categorical_vocab_size(stats, column) for column in stats["race_categorical_columns"]
     ]
+    # MLX weight init and dropout draw from the global MLX RNG, which numpy seeding does not reach.
+    mx.random.seed(params["seed"])
     model = RunningStyleTransformer(
         num_numeric_features=len(stats["numeric_columns"]),
         categorical_vocab_sizes=categorical_vocab_sizes,

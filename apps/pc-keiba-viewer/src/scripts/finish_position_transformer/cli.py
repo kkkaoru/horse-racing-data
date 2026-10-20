@@ -233,6 +233,7 @@ def _build_model_for_dataframe(
     num_layers: int = DEFAULT_NUM_LAYERS,
     num_heads: int = DEFAULT_NUM_HEADS,
     dropout: float = DEFAULT_DROPOUT,
+    seed: int = DEFAULT_SEED,
 ) -> tuple[RaceSetTransformer, ModelConfig, NormalizationStats]:
     columns = resolve_transformer_feature_columns(list(df.columns))
     stats = fit_normalization_stats(df, columns)
@@ -249,6 +250,8 @@ def _build_model_for_dataframe(
         num_heads=num_heads,
         dropout=dropout,
     )
+    # MLX weight init and dropout draw from the global MLX RNG, which numpy seeding does not reach.
+    mx.random.seed(seed)
     model = RaceSetTransformer(config)
     mx.eval(model.parameters())
     return model, config, stats
@@ -353,6 +356,7 @@ def run_train_command(args: argparse.Namespace) -> None:
         num_layers=int(args.num_layers),
         num_heads=int(args.num_heads),
         dropout=float(args.dropout),
+        seed=int(args.seed),
     )
     train_arrays = build_race_batches(train_df, stats)
     valid_arrays = build_race_batches(valid_df, stats) if valid_df is not None else None
@@ -389,6 +393,7 @@ def run_walk_forward_command(args: argparse.Namespace) -> None:
             num_layers=int(args.num_layers),
             num_heads=int(args.num_heads),
             dropout=float(args.dropout),
+            seed=int(args.seed),
         )
         train_arrays = build_race_batches(train_df, stats)
         valid_arrays = build_race_batches(valid_df, stats)

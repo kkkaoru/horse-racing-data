@@ -441,6 +441,18 @@ def test_save_and_load_checkpoint_round_trip(tmp_path: Path):
     assert scores.shape == (len(arrays["race_ids"]), MAX_RUNNERS)
 
 
+def test_build_model_for_dataframe_seed_controls_initial_weights():
+    df = _make_synthetic_frame()
+    model_a, _config_a, _stats_a = cli_module._build_model_for_dataframe(df, seed=11)
+    model_b, _config_b, _stats_b = cli_module._build_model_for_dataframe(df, seed=11)
+    model_c, _config_c, _stats_c = cli_module._build_model_for_dataframe(df, seed=12)
+    weight_a = np.array(model_a.numeric_projection.weight)
+    weight_b = np.array(model_b.numeric_projection.weight)
+    weight_c = np.array(model_c.numeric_projection.weight)
+    assert np.array_equal(weight_a, weight_b) is True
+    assert np.array_equal(weight_a, weight_c) is False
+
+
 def test_run_walk_forward_command_writes_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
