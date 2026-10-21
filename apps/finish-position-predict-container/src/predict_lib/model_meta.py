@@ -186,6 +186,10 @@ BANNED_MARKET_FEATURE_PATTERN: Final[re.Pattern[str]] = re.compile(
 
 
 MARKET_BAN_PENDING_CATEGORIES: Final[frozenset[str]] = frozenset()
+# Categories whose served models must not use the exotic market residuals either: they
+# are trained on final odds but served on live odds, and for JRA the serve-time values
+# hurt accuracy (816-race R2 snapshot replay, 2026-07..10; -noexo1 retrains).
+MARKET_DEVIATION_DISALLOWED_CATEGORIES: Final[frozenset[str]] = frozenset({"jra"})
 """Categories still serving their pre-ban models while the win-odds-free retrain
 is in progress. Empty once every category's retrained models are released."""
 
@@ -211,7 +215,10 @@ def assert_no_banned_market_features(
     """
     if category in MARKET_BAN_PENDING_CATEGORIES:
         return
-    banned = banned_market_features_in(feature_names)
+    names = list(feature_names)
+    banned = banned_market_features_in(names)
+    if category in MARKET_DEVIATION_DISALLOWED_CATEGORIES:
+        banned |= MARKET_DEVIATION_FEATURE_NAMES & frozenset(names)
     if banned:
         joined = ", ".join(sorted(banned))
         raise ValueError(f"{context} uses banned win-odds/popularity features: {joined}")

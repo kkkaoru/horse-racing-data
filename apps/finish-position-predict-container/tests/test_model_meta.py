@@ -945,3 +945,25 @@ def test_market_ban_pending_categories_is_empty_after_every_release() -> None:
     from predict_lib.model_meta import MARKET_BAN_PENDING_CATEGORIES
 
     assert frozenset() == MARKET_BAN_PENDING_CATEGORIES
+
+
+def test_assert_no_banned_market_features_rejects_deviation_columns_for_jra() -> None:
+    from predict_lib.model_meta import assert_no_banned_market_features
+
+    with pytest.raises(
+        ValueError,
+        match="variant=x uses banned win-odds/popularity features: exotic_umaren_p2_rank_residual",
+    ):
+        assert_no_banned_market_features(
+            ["exotic_umaren_p2_rank_residual", "kohan3f_avg_5"], context="variant=x", category="jra"
+        )
+
+
+def test_assert_no_banned_market_features_keeps_deviation_columns_for_nar() -> None:
+    from predict_lib.model_meta import assert_no_banned_market_features
+
+    assert_no_banned_market_features(
+        ["exotic_umaren_p2_rank_residual", "exotic_sanrenpuku_p3_rank_residual"],
+        context="variant=x",
+        category="nar",
+    )
