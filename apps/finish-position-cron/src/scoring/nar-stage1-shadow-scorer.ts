@@ -57,6 +57,8 @@ const comparePredictions = (
   right.predictedScore - left.predictedScore ||
   left.kettoTorokuBango.localeCompare(right.kettoTorokuBango);
 
+const isFiniteOrMissing = (value: number): boolean => Number.isNaN(value) || Number.isFinite(value);
+
 const requireIdentity = (entry: FeatureEntry, name: string): string => {
   const value = entry[name];
   if ((typeof value !== "string" && typeof value !== "number") || String(value).trim() === "") {
@@ -80,7 +82,8 @@ const scoreEntry = (entry: FeatureEntry, input: NarStage1ShadowInput): NarStage1
     }
   });
   const features = projectFeatureRow(entry, input.featureNames, "xgboost");
-  if (!features.every(Number.isFinite)) {
+  // NaN is a missing feature (XGBoost default_left); only +/-Infinity is an overflow.
+  if (!features.every(isFiniteOrMissing)) {
     throw new Error("NAR Stage1 shadow: float32 feature overflow");
   }
   const rawScore = scoreXgboostModel({ features, model: input.model });

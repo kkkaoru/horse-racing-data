@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import struct
 import sys
 from collections.abc import Sequence
@@ -29,14 +30,21 @@ def test_build_feature_row_catboost_order_preserved() -> None:
     assert row == [3.0, 1.0, 2.0]
 
 
-def test_build_feature_row_missing_defaults_to_zero() -> None:
+def test_build_feature_row_absent_feature_is_missing_nan() -> None:
     row = build_feature_row({"a": 5.0}, ["a", "missing"], "catboost")
-    assert row == [5.0, 0.0]
+    assert row[0] == 5.0
+    assert math.isnan(row[1]) is True
 
 
-def test_build_feature_row_none_is_zero() -> None:
+def test_build_feature_row_none_is_missing_nan() -> None:
     row = build_feature_row({"a": None}, ["a"], "catboost")
-    assert row == [0.0]
+    assert math.isnan(row[0]) is True
+
+
+def test_build_feature_row_xgboost_keeps_missing_as_nan_after_float32() -> None:
+    row = build_feature_row({"a": None, "b": 1.5}, ["a", "b"], "xgboost")
+    assert math.isnan(row[0]) is True
+    assert row[1] == 1.5
 
 
 def test_build_feature_row_bool_true_is_one() -> None:
@@ -54,9 +62,9 @@ def test_build_feature_row_string_number_coerced() -> None:
     assert row == [12.5]
 
 
-def test_build_feature_row_empty_string_is_zero() -> None:
+def test_build_feature_row_empty_string_is_missing_nan() -> None:
     row = build_feature_row({"x": "  "}, ["x"], "catboost")
-    assert row == [0.0]
+    assert math.isnan(row[0]) is True
 
 
 def test_build_feature_row_xgboost_float32_quantised() -> None:

@@ -6,12 +6,12 @@
 // drift silently mis-scores. The order MUST match the model's metadata.json
 // feature_names (= booster_pool's per-member ordered list).
 //
-// Coercion rules (scorer._coerce): None / undefined / "" -> 0.0; bool -> 1/0;
-// number -> itself; other -> Number(String(value).trim()). A cached parquet NULL
-// arrives as null/undefined and becomes 0.0 — so in the production path a
-// missing feature is 0.0, NOT NaN, and the CatBoost nan_value_treatment branch
-// is never reached for cached rows. XGBoost rows are float32-quantised for bit-
-// faithful parity with the native runtime (scorer._to_float32).
+// Coercion rules (scorer._coerce): None / undefined / "" -> missing (NaN); bool
+// -> 1/0; number -> itself; other -> Number(String(value).trim()). A cached
+// parquet NULL arrives as null/undefined and is projected as missing, as the
+// models saw it in training (nulls reached CatBoost / XGBoost as NaN), so the
+// CatBoost nan_value_treatment / XGBoost default_left branch is taken. XGBoost
+// rows are float32-quantised for bit-faithful parity (scorer._to_float32).
 
 import type { FeatureCell } from "catboost-json-tree";
 
@@ -46,6 +46,14 @@ export const coerceFeature = (value: unknown): number => {
 
 export type FeatureEntry = Record<string, unknown>;
 
+const isMissingFeature = (value: unknown): boolean =>
+  value === null || value === undefined || (typeof value === "string" && value.trim() === "");
+
+// Model-input value: missing cells are NaN (training's missing representation);
+// coerceFeature stays finite for null so callers can validate non-numeric input.
+const projectFeatureValue = (value: unknown): number =>
+  isMissingFeature(value) ? Number.NaN : coerceFeature(value);
+
 // Project one entry onto feature_names order as a float row. XGBoost rows are
 // float32-quantised; CatBoost rows stay float64. Mirrors build_feature_row.
 export const projectFeatureRow = (
@@ -53,21 +61,22 @@ export const projectFeatureRow = (
   featureNames: ReadonlyArray<string>,
   architecture: ScoringArchitecture,
 ): number[] => {
-  const raw = featureNames.map((name) => coerceFeature(entry[name]));
+  const raw = featureNames.map((name) => projectFeatureValue(entry[name]));
   if (architecture === "xgboost") return raw.map(toFloat32);
   return raw;
 };
 
-// CatBoost's TS scorer consumes FeatureCell{value, isMissing}. The container
-// feeds CatBoost coerced 0.0 (never NaN) for cached rows, so every cell is
-// non-missing — isMissing is always false here. Kept as a separate projection
-// so the CatBoost scorer API is satisfied without re-introducing a NaN path the
-// production container never takes.
+// CatBoost's TS scorer consumes FeatureCell{value, isMissing}; a missing cell is
+// flagged so the model's nan_value_treatment applies, as in training and in the
+// container (scorer._coerce -> NaN).
 export const projectCatBoostCells = (
   entry: FeatureEntry,
   featureNames: ReadonlyArray<string>,
 ): FeatureCell[] =>
-  featureNames.map((name) => ({ isMissing: false, value: coerceFeature(entry[name]) }));
+  featureNames.map((name) => ({
+    isMissing: isMissingFeature(entry[name]),
+    value: projectFeatureValue(entry[name]),
+  }));
 
 export const assertFeatureCount = (featureNames: ReadonlyArray<string>, expected: number): void => {
   if (featureNames.length !== expected) {

@@ -48,9 +48,18 @@ test("returns raw scores only, float32 projected in metadata order", () => {
     shadowOnly: true,
   });
 });
-test("accepts null features as Python zero without claiming rank or final scores", () => {
+test("accepts null features as missing without claiming rank or final scores", () => {
   expect(scoreNarStage1Shadow(INPUT).predictions).toStrictEqual([
     { kettoTorokuBango: "2023100624", rawScore: 1.75, umaban: 4 },
+  ]);
+});
+test("routes a null feature down the tree's default direction, not as zero", () => {
+  const rightByDefault: XgboostModel = {
+    ...MODEL,
+    trees: [{ ...MODEL.trees[0]!, default_left: [0, 0, 0] }],
+  };
+  expect(scoreNarStage1Shadow({ ...INPUT, model: rightByDefault }).predictions).toStrictEqual([
+    { kettoTorokuBango: "2023100624", rawScore: -1.75, umaban: 4 },
   ]);
 });
 test("validates the booster trained feature order when present", () => {

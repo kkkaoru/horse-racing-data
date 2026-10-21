@@ -17,6 +17,9 @@ from typing import Protocol, runtime_checkable
 
 from .model_meta import Architecture
 
+# What training saw for a null feature: the boosters treat NaN as missing.
+MISSING_VALUE: float = float("nan")
+
 
 @runtime_checkable
 class BoosterLike(Protocol):
@@ -40,8 +43,10 @@ def build_feature_row(
 ) -> list[float]:
     """Project one race entry onto ``feature_names`` order as a float row.
 
-    Missing features default to ``0.0`` (CatBoost / XGBoost / LightGBM treat
-    absent numeric inputs as 0 in this pipeline). ONLY XGBoost rows are
+    Missing features (None / empty / absent key) become NaN: the GBDT models were
+    trained on frames whose nulls reached CatBoost / XGBoost / LightGBM as NaN
+    (missing), so 0.0 sent splits with a border below 0 down the wrong branch.
+    ONLY XGBoost rows are
     float32-quantised for bit-faithful parity with the TS scorer; CatBoost and
     LightGBM ranking are robust at float64, so both keep the un-quantised path.
     """
@@ -52,16 +57,16 @@ def build_feature_row(
 
 
 def _coerce(value: object) -> float:
-    """Coerce an arbitrary cell to float, treating None/empty as 0.0."""
+    """Coerce an arbitrary cell to float, treating None/empty as missing (NaN)."""
     if value is None:
-        return 0.0
+        return MISSING_VALUE
     if isinstance(value, bool):
         return 1.0 if value else 0.0
     if isinstance(value, (int, float)):
         return float(value)
     text = str(value).strip()
     if text == "":
-        return 0.0
+        return MISSING_VALUE
     return float(text)
 
 

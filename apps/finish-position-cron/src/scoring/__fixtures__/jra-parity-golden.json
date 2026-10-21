@@ -150,13 +150,13 @@
     }
   ],
   "cbScores": [
-    -0.07968000783909854, 0.03879188932314729, -0.28737548488290293, -0.25860370596138393,
-    0.37957898912250376, -0.5125316283003938, -0.1863896592618412, 0.014808414252572961,
+    -0.07968000783909854, 0.038791889323147345, -0.19266514260107878, -0.2586037059613838,
+    0.37957898912250376, -0.996283951508192, -0.1863896592618412, -0.13748133572393773,
     0.5637698337515975
   ],
   "xgbScores": [
-    -0.3117314875125885, -0.3634774684906006, -0.888683557510376, -0.5342323780059814,
-    0.7292718887329102, -0.9663079977035522, 0.4533692002296448, 0.05801794305443764,
+    -0.3117314875125885, -0.3634774684906006, -0.9501993060112, -0.5342323780059814,
+    0.7292718887329102, -0.8971257209777832, 0.4533692002296448, 0.07424978911876678,
     0.08019557595252991
   ],
   "etop2Cases": {
@@ -283,19 +283,19 @@
         "ketto": "h01",
         "umaban": 2,
         "predictedRank": 3,
-        "predictedScore": 0.03879188932314729
-      },
-      {
-        "ketto": "h07",
-        "umaban": 8,
-        "predictedRank": 4,
-        "predictedScore": 0.014808414252572961
+        "predictedScore": 0.038791889323147345
       },
       {
         "ketto": "h00",
         "umaban": 1,
-        "predictedRank": 5,
+        "predictedRank": 4,
         "predictedScore": -0.07968000783909854
+      },
+      {
+        "ketto": "h07",
+        "umaban": 8,
+        "predictedRank": 5,
+        "predictedScore": -0.13748133572393773
       },
       {
         "ketto": "h06",
@@ -304,22 +304,22 @@
         "predictedScore": -0.1863896592618412
       },
       {
-        "ketto": "h03",
-        "umaban": 4,
-        "predictedRank": 7,
-        "predictedScore": -0.25860370596138393
-      },
-      {
         "ketto": "h02",
         "umaban": 3,
+        "predictedRank": 7,
+        "predictedScore": -0.19266514260107878
+      },
+      {
+        "ketto": "h03",
+        "umaban": 4,
         "predictedRank": 8,
-        "predictedScore": -0.28737548488290293
+        "predictedScore": -0.2586037059613838
       },
       {
         "ketto": "h05",
         "umaban": 6,
         "predictedRank": 9,
-        "predictedScore": -0.5125316283003938
+        "predictedScore": -0.996283951508192
       }
     ],
     "excluded": [
@@ -339,19 +339,19 @@
         "ketto": "h01",
         "umaban": 2,
         "predictedRank": 3,
-        "predictedScore": 0.03879188932314729
-      },
-      {
-        "ketto": "h07",
-        "umaban": 8,
-        "predictedRank": 4,
-        "predictedScore": 0.014808414252572961
+        "predictedScore": 0.038791889323147345
       },
       {
         "ketto": "h00",
         "umaban": 1,
-        "predictedRank": 5,
+        "predictedRank": 4,
         "predictedScore": -0.07968000783909854
+      },
+      {
+        "ketto": "h07",
+        "umaban": 8,
+        "predictedRank": 5,
+        "predictedScore": -0.13748133572393773
       },
       {
         "ketto": "h06",
@@ -360,22 +360,22 @@
         "predictedScore": -0.1863896592618412
       },
       {
-        "ketto": "h03",
-        "umaban": 4,
-        "predictedRank": 7,
-        "predictedScore": -0.25860370596138393
-      },
-      {
         "ketto": "h02",
         "umaban": 3,
+        "predictedRank": 7,
+        "predictedScore": -0.19266514260107878
+      },
+      {
+        "ketto": "h03",
+        "umaban": 4,
         "predictedRank": 8,
-        "predictedScore": -0.28737548488290293
+        "predictedScore": -0.2586037059613838
       },
       {
         "ketto": "h05",
         "umaban": 6,
         "predictedRank": 9,
-        "predictedScore": -0.5125316283003938
+        "predictedScore": -0.996283951508192
       }
     ]
   }
