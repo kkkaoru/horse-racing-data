@@ -128,6 +128,11 @@ jobs:
         working-directory: apps/pc-keiba-viewer
         run: bun run lint
 
+      # next-env.d.ts (image module types) is gitignored; generate it as .github/deploy/run.sh does.
+      - name: next typegen (pc-keiba-viewer)
+        working-directory: apps/pc-keiba-viewer
+        run: bunx next typegen
+
       - name: tsc (pc-keiba-viewer)
         working-directory: apps/pc-keiba-viewer
         run: bun run tsc
