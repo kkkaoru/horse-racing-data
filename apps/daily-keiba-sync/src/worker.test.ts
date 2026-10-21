@@ -17,6 +17,7 @@ import {
 import type { Env, RunRow, SyncJob } from "./types";
 
 const mocks = vi.hoisted(() => ({
+  syncRunningStyleCatalog: vi.fn(),
   acquireRun: vi.fn(),
   cachedCursor: vi.fn(),
   createRun: vi.fn(),
@@ -39,6 +40,9 @@ vi.mock("./cache", () => ({
   getCachedProviderCursor: mocks.cachedCursor,
   purgeAllProviderCursorCaches: mocks.purgeAllCaches,
   purgeProviderCursorCache: mocks.purgeCursorCache,
+}));
+vi.mock("./running-style-catalog", () => ({
+  syncRunningStyleCatalog: mocks.syncRunningStyleCatalog,
 }));
 vi.mock("./run-readiness", () => ({ getRunReadiness: mocks.getRunReadiness }));
 vi.mock("./state", () => ({
@@ -972,6 +976,25 @@ describe("daily sync Worker", () => {
     await expect(
       scheduled({ cron: "bad", noRetry: vi.fn(), scheduledTime: 0 }, env),
     ).rejects.toThrow("Unknown cron");
+  });
+
+  test("runs the running-style Catalog sync for the JST run date on its cron", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    mocks.syncRunningStyleCatalog.mockResolvedValueOnce({
+      appendedRows: 12,
+      objects: 3,
+      snapshotId: "77",
+    });
+    await scheduled(
+      { cron: "30 20 * * *", noRetry: vi.fn(), scheduledTime: Date.parse("2026-10-21T20:30:00Z") },
+      env,
+    );
+    expect(mocks.syncRunningStyleCatalog).toHaveBeenCalledWith(env, "20261022");
+    expect(log).toHaveBeenCalledWith(
+      '{"event":"running-style-catalog-sync","appendedRows":12,"objects":3,"snapshotId":"77"}',
+    );
+    expect(mocks.createRunWithDataSpec).not.toHaveBeenCalled();
+    log.mockRestore();
   });
 
   test("monitor creates missing runs, ignores success/recent work, and recovers stale work", async () => {

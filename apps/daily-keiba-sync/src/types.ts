@@ -132,6 +132,7 @@ export interface Env {
   ADMIN_TOKEN: string;
   CATALOG_BUCKET: R2Bucket;
   DB: D1Database;
+  FEATURES_ARCHIVE: R2Bucket;
   NEON_JOBS: Queue<NeonJob>;
   R2_CATALOG_JOBS: Queue<R2CatalogJob>;
   JRA_VAN_WORKER_API_TOKEN: string;

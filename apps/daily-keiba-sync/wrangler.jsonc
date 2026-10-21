@@ -19,6 +19,7 @@
       "0 17 * * *", // NV-Link monitor/recovery — JST 02:00
       "0 11 * * *", // JV-Link acquire/sync — JST 20:00
       "0 12 * * *", // JV-Link monitor/recovery — JST 21:00
+      "30 20 * * *", // Running-style predictions -> R2 Catalog — JST 05:30
     ],
   },
   "d1_databases": [
@@ -38,6 +39,11 @@
     {
       "binding": "CATALOG_BUCKET",
       "bucket_name": "pc-keiba-r2-catalog",
+    },
+    {
+      // Read-only source of the running-style prediction Parquet (sync-realtime-data).
+      "binding": "FEATURES_ARCHIVE",
+      "bucket_name": "pc-keiba-features-archive",
     },
     {
       "binding": "SOURCE_STAGING",

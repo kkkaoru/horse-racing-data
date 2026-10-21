@@ -5,6 +5,7 @@ export const CRON_NV_DAILY = "0 16 * * *";
 export const CRON_NV_MONITOR = "0 17 * * *";
 export const CRON_JV_DAILY = "0 11 * * *";
 export const CRON_JV_MONITOR = "0 12 * * *";
+export const CRON_RUNNING_STYLE_CATALOG = "30 20 * * *";
 export const DEFAULT_LOOKBACK_DAYS = 2;
 export const BOOTSTRAP_LOOKBACK_DAYS = 7;
 

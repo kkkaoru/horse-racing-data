@@ -122,7 +122,9 @@ const parsePhysicalRow = (value: unknown, columns: readonly string[]): RecordRow
   return row;
 };
 
-export const connectCatalog = async (env: CatalogSyncEnvironment) =>
+export const connectCatalog = async (
+  env: Pick<Env, "R2_CATALOG_TOKEN" | "R2_CATALOG_URI" | "R2_CATALOG_WAREHOUSE">,
+) =>
   await restCatalogConnect({
     requestInit: {
       headers: {

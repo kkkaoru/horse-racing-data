@@ -8,8 +8,10 @@ import {
 import { isPermanentJobError, PermanentJobError } from "./errors";
 import { acquireRun, handleJob, recordJobFailure } from "./jobs";
 import { layoutByTable } from "./layouts";
+import { syncRunningStyleCatalog } from "./running-style-catalog";
 import {
   BOOTSTRAP_LOOKBACK_DAYS,
+  CRON_RUNNING_STYLE_CATALOG,
   DEFAULT_LOOKBACK_DAYS,
   defaultAcquisitionWindow,
   jstDate,
@@ -200,6 +202,15 @@ const monitor = async (env: Env, provider: Provider, runDate: string, now: Date)
 };
 
 const scheduled = async (event: ScheduledController, env: Env): Promise<void> => {
+  if (event.cron === CRON_RUNNING_STYLE_CATALOG) {
+    console.log(
+      JSON.stringify({
+        event: "running-style-catalog-sync",
+        ...(await syncRunningStyleCatalog(env, jstDate(event.scheduledTime))),
+      }),
+    );
+    return;
+  }
   const action = scheduledAction(event.cron);
   if (action === undefined) throw new Error("Unknown cron trigger");
   const now = new Date(event.scheduledTime);
