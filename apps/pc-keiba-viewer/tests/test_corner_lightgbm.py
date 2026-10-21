@@ -581,3 +581,90 @@ def test_main_rejects_train_window_overlapping_test_window(
     )
     with pytest.raises(SystemExit, match="--train-to-date 20260101 must be before --test-from-date 20260101"):
         subject.main()
+
+
+def test_selection_tail_mask_marks_latest_training_race() -> None:
+    train = pl.DataFrame(
+        {
+            "race_date": ["20250101", "20250101", "20250102", "20250103", "20250103"],
+            "race_id": ["A", "A", "B", "C", "C"],
+        },
+    )
+
+    mask = subject.selection_tail_mask(train)
+
+    assert mask.tolist() == [False, False, False, True, True]
+
+
+def test_selection_tail_mask_rejects_single_training_race() -> None:
+    train = pl.DataFrame({"race_date": ["20250101", "20250101"], "race_id": ["A", "A"]})
+
+    with pytest.raises(SystemExit, match="blend selection needs at least 2 training races"):
+        _ = subject.selection_tail_mask(train)
+
+
+def test_score_prediction_scores_only_selection_rows() -> None:
+    frame = pl.DataFrame(
+        {
+            "race_id": ["S", "S", "T", "T"],
+            "horse_key": ["s1", "s2", "t1", "t2"],
+            "umaban": [1, 2, 1, 2],
+            "corner1_norm": [0.0, 1.0, 0.0, 1.0],
+            subject.SELECTION_ROW_COLUMN: [True, True, False, False],
+        },
+    )
+    # Correct order on the selection race, reversed on the test race.
+    prediction = pl.Series([0.1, 0.9, 0.9, 0.1])
+
+    score = subject.score_prediction(frame, "corner1_norm", prediction, "scratch")
+
+    assert score == subject.race_order_score(
+        frame.head(2).with_columns(prediction.head(2).alias("scratch")), "corner1_norm", "scratch"
+    )
+    assert score > subject.score_prediction(
+        frame.drop(subject.SELECTION_ROW_COLUMN), "corner1_norm", prediction, "scratch"
+    )
+
+
+def test_main_selects_blend_on_latest_training_races(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("PC_KEIBA_CORNER_FAST_GRID", "1")
+    monkeypatch.setattr(lgb, "LGBMRegressor", FakeRegressor)
+    monkeypatch.setattr(lgb, "LGBMRanker", FakeRanker)
+    monkeypatch.setattr(lgb, "LGBMClassifier", FakeClassifier)
+    scored_race_sets: set[tuple[str, ...]] = set()
+    original_score = subject.race_order_score
+
+    def recording_score(df: pl.DataFrame, target_column: str, prediction_column: str) -> float:
+        scored_race_sets.add(tuple(df["race_id"].unique(maintain_order=True).to_list()))
+        return original_score(df, target_column, prediction_column)
+
+    monkeypatch.setattr(subject, "race_order_score", recording_score)
+    input_path = tmp_path / "dataset.csv"
+    metrics_path = tmp_path / "metrics.json"
+    make_model_frame().write_csv(input_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "train-corner-lightgbm.py",
+            "--input", str(input_path),
+            "--train-to-date", "2025-12-31",
+            "--test-from-date", "2026-01-01",
+            "--test-to-date", "2026-12-31",
+            "--model-output", str(tmp_path / "models"),
+            "--predictions-output", str(tmp_path / "preds.csv"),
+            "--metrics-output", str(metrics_path),
+        ],
+    )
+
+    subject.main()
+
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    assert metrics["corner1_norm"]["ensemble_selection"] == "latest-training-races"
+    assert metrics["corner1_norm"]["selection_race_count"] == 1
+    # Candidates are only ever scored on the latest training race; the test races are
+    # scored once per target, for the reported metric of the already-chosen blend.
+    assert scored_race_sets == {("R1",), ("R2", "R3")}

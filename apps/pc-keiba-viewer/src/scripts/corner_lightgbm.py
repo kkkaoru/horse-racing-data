@@ -22,6 +22,11 @@ from sklearn.neighbors import NearestNeighbors
 
 
 TARGET_COLUMNS = ["corner1_norm", "corner2_norm", "corner3_norm", "corner4_norm"]
+# Ensemble candidates are scored only on these rows (latest training races predicted by
+# models fit on earlier races), never on the reported test window.
+SELECTION_ROW_COLUMN = "__ensemble_selection_row"
+SELECTION_TAIL_FRACTION = 0.15
+MIN_SELECTION_RACES = 2
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 BoolArray = NDArray[np.bool_]
@@ -1652,6 +1657,15 @@ def corner_weighted_structural_candidates(
     }
 
 
+def selection_tail_mask(train: pl.DataFrame) -> NDArray[np.bool_]:
+    """Rows of the latest ~SELECTION_TAIL_FRACTION of training races (blend-selection set)."""
+    races = train.select("race_date", "race_id").unique().sort(["race_date", "race_id"])
+    if races.height < MIN_SELECTION_RACES:
+        raise SystemExit(f"blend selection needs at least {MIN_SELECTION_RACES} training races")
+    tail_count = max(1, int(np.ceil(races.height * SELECTION_TAIL_FRACTION)))
+    return train["race_id"].is_in(races["race_id"].tail(tail_count).implode()).to_numpy()
+
+
 def score_prediction(
     test: pl.DataFrame,
     target_column: str,
@@ -1659,6 +1673,8 @@ def score_prediction(
     scratch_column: str,
 ) -> float:
     scored = test.with_columns(prediction.alias(scratch_column))
+    if SELECTION_ROW_COLUMN in scored.columns:
+        scored = scored.filter(pl.col(SELECTION_ROW_COLUMN))
     return race_order_score(scored, target_column, scratch_column)
 
 
@@ -1900,6 +1916,155 @@ def choose_ensemble_prediction(
     return best_prediction, best_alpha, scores
 
 
+def fit_and_predict_target(
+    fit_frame: pl.DataFrame,
+    evaluation: pl.DataFrame,
+    fit_sequences: FloatArray,
+    evaluation_sequences: FloatArray,
+    target_column: str,
+    model_dir: Path | None,
+) -> tuple[pl.DataFrame, str | None, str | None]:
+    """Fit every base model on ``fit_frame`` and add its predictions to ``evaluation``.
+
+    Returns the evaluation frame plus the LSTM / Transformer prediction columns that
+    were produced (None when that companion was skipped). Boosters are saved only
+    when ``model_dir`` is given, i.e. for the final full-window refit.
+    """
+    regression_column = f"regression_{target_column}"
+    ranker_score_column = f"ranker_score_{target_column}"
+    ranker_prediction_column = f"ranker_{target_column}"
+    pairwise_prediction_column = f"pairwise_{target_column}"
+    stacked_prediction_column = f"stacked_{target_column}"
+    lstm_prediction_column = f"lstm_{target_column}"
+    transformer_prediction_column = f"transformer_{target_column}"
+    model = train_model(fit_frame, target_column)
+    ranker = train_ranker(fit_frame, target_column)
+    pairwise_model = train_pairwise_model(fit_frame, target_column)
+    fit_frame = fit_frame.with_columns(
+        pl.Series(
+            regression_column,
+            np.clip(
+                np.asarray(model.predict(to_lgb_frame(fit_frame.select(FEATURE_COLUMNS))), dtype=float),
+                0,
+                1,
+            ),
+        ),
+        pl.Series(
+            ranker_score_column,
+            np.asarray(ranker.predict(to_lgb_frame(fit_frame.select(FEATURE_COLUMNS))), dtype=float),
+        ),
+    )
+    fit_frame = fit_frame.with_columns(
+        normalized_rank_prediction(fit_frame, ranker_score_column).alias(ranker_prediction_column),
+    )
+    fit_frame = fit_frame.with_columns(
+        apply_pairwise_model(fit_frame, pairwise_model, target_column).alias(pairwise_prediction_column),
+    )
+    stacker = train_stacking_model(
+        fit_frame,
+        target_column,
+        stacking_feature_frame(
+            fit_frame,
+            target_column,
+            regression_column,
+            ranker_prediction_column,
+            pairwise_prediction_column,
+        ),
+    )
+    if model_dir is not None:
+        model.booster_.save_model(str(model_dir / f"{target_column}.txt"))
+        ranker.booster_.save_model(str(model_dir / f"{target_column}.ranker.txt"))
+        pairwise_model.booster_.save_model(str(model_dir / f"{target_column}.pairwise.txt"))
+        stacker.booster_.save_model(str(model_dir / f"{target_column}.stacker.txt"))
+    evaluation = evaluation.with_columns(
+        pl.Series(
+            regression_column,
+            np.clip(
+                np.asarray(model.predict(to_lgb_frame(evaluation.select(FEATURE_COLUMNS))), dtype=float),
+                0,
+                1,
+            ),
+        ),
+        pl.Series(
+            ranker_score_column,
+            np.asarray(ranker.predict(to_lgb_frame(evaluation.select(FEATURE_COLUMNS))), dtype=float),
+        ),
+    )
+    evaluation = evaluation.with_columns(
+        normalized_rank_prediction(evaluation, ranker_score_column).alias(ranker_prediction_column),
+    )
+    evaluation = evaluation.with_columns(
+        apply_pairwise_model(evaluation, pairwise_model, target_column).alias(pairwise_prediction_column),
+    )
+    evaluation = evaluation.with_columns(
+        pl.Series(
+            stacked_prediction_column,
+            np.clip(
+                np.asarray(
+                    stacker.predict(
+                        to_lgb_frame(
+                            stacking_feature_frame(
+                                evaluation,
+                                target_column,
+                                regression_column,
+                                ranker_prediction_column,
+                                pairwise_prediction_column,
+                            ),
+                        ),
+                    ),
+                    dtype=float,
+                ),
+                0,
+                1,
+            ),
+        ),
+    )
+    # Train MLX neural models when available; skip gracefully on non-Apple-Silicon.
+    # Each model is guarded independently so a partial failure doesn't silently
+    # discard a successfully-trained companion model.
+    # Training failures (ImportError/OSError/RuntimeError/AttributeError) are caught;
+    # prediction errors (e.g. disk-full OSError) are intentionally not caught here.
+    _lstm_col: str | None
+    _transformer_col: str | None
+    try:
+        _lstm_model: object = train_lstm_model(fit_sequences, fit_frame[target_column])
+    except (ImportError, OSError, RuntimeError, AttributeError) as error:
+        print(f"corner_lightgbm: {target_column} LSTM companion skipped: {error!r}", file=sys.stderr)
+        _lstm_model = None
+    if _lstm_model is not None:
+        evaluation = evaluation.with_columns(
+            pl.Series(
+                lstm_prediction_column,
+                np.asarray(predict_neural_corner_model(_lstm_model, evaluation_sequences).to_numpy(), dtype=float),
+            ),
+        )
+        _lstm_col = lstm_prediction_column
+    else:
+        _lstm_col = None
+    try:
+        _transformer_model: object = train_transformer_model(fit_sequences, fit_frame[target_column])
+    except (ImportError, OSError, RuntimeError, AttributeError) as error:
+        print(
+            f"corner_lightgbm: {target_column} Transformer companion skipped: {error!r}",
+            file=sys.stderr,
+        )
+        _transformer_model = None
+    if _transformer_model is not None:
+        evaluation = evaluation.with_columns(
+            pl.Series(
+                transformer_prediction_column,
+                np.asarray(
+                    predict_neural_corner_model(_transformer_model, evaluation_sequences).to_numpy(),
+                    dtype=float,
+                ),
+            ),
+        )
+        _transformer_col = transformer_prediction_column
+    else:
+        _transformer_col = None
+    return evaluation, _lstm_col, _transformer_col
+
+
 def main() -> None:
     total_started_at = perf_counter()
     args = parse_args()
@@ -1944,155 +2109,54 @@ def main() -> None:
         },
     }
 
+    selection_mask = selection_tail_mask(train)
+    selection_head = train.filter(pl.Series(~selection_mask))
+    selection_tail = train.filter(pl.Series(selection_mask))
     for target_column in TARGET_COLUMNS:
         target_started_at = perf_counter()
-        model = train_model(train, target_column)
-        ranker = train_ranker(train, target_column)
-        pairwise_model = train_pairwise_model(train, target_column)
         prediction_column = f"predicted_{target_column}"
-        regression_column = f"regression_{target_column}"
-        ranker_score_column = f"ranker_score_{target_column}"
-        ranker_prediction_column = f"ranker_{target_column}"
-        pairwise_prediction_column = f"pairwise_{target_column}"
-        stacked_prediction_column = f"stacked_{target_column}"
-        lstm_prediction_column = f"lstm_{target_column}"
-        transformer_prediction_column = f"transformer_{target_column}"
-        train = train.with_columns(
-            pl.Series(
-                regression_column,
-                np.clip(
-                    np.asarray(model.predict(to_lgb_frame(train.select(FEATURE_COLUMNS))), dtype=float),
-                    0,
-                    1,
-                ),
-            ),
-            pl.Series(
-                ranker_score_column,
-                np.asarray(ranker.predict(to_lgb_frame(train.select(FEATURE_COLUMNS))), dtype=float),
-            ),
+        # Choose the blend on the latest training races scored by models fit on the
+        # earlier ones; the test window only receives the already-chosen blend.
+        selection, selection_lstm, selection_transformer = fit_and_predict_target(
+            selection_head,
+            selection_tail,
+            train_sequences[~selection_mask],
+            train_sequences[selection_mask],
+            target_column,
+            None,
         )
-        train = train.with_columns(
-            normalized_rank_prediction(train, ranker_score_column).alias(ranker_prediction_column),
-        )
-        train = train.with_columns(
-            apply_pairwise_model(train, pairwise_model, target_column).alias(pairwise_prediction_column),
-        )
-        stacker = train_stacking_model(
+        test, test_lstm, test_transformer = fit_and_predict_target(
             train,
-            target_column,
-            stacking_feature_frame(
-                train,
-                target_column,
-                regression_column,
-                ranker_prediction_column,
-                pairwise_prediction_column,
-            ),
-        )
-        model.booster_.save_model(str(model_dir / f"{target_column}.txt"))
-        ranker.booster_.save_model(str(model_dir / f"{target_column}.ranker.txt"))
-        pairwise_model.booster_.save_model(str(model_dir / f"{target_column}.pairwise.txt"))
-        stacker.booster_.save_model(str(model_dir / f"{target_column}.stacker.txt"))
-        test = test.with_columns(
-            pl.Series(
-                regression_column,
-                np.clip(
-                    np.asarray(model.predict(to_lgb_frame(test.select(FEATURE_COLUMNS))), dtype=float),
-                    0,
-                    1,
-                ),
-            ),
-            pl.Series(
-                ranker_score_column,
-                np.asarray(ranker.predict(to_lgb_frame(test.select(FEATURE_COLUMNS))), dtype=float),
-            ),
-        )
-        test = test.with_columns(
-            normalized_rank_prediction(test, ranker_score_column).alias(ranker_prediction_column),
-        )
-        test = test.with_columns(
-            apply_pairwise_model(test, pairwise_model, target_column).alias(pairwise_prediction_column),
-        )
-        test = test.with_columns(
-            pl.Series(
-                stacked_prediction_column,
-                np.clip(
-                    np.asarray(
-                        stacker.predict(
-                            to_lgb_frame(
-                                stacking_feature_frame(
-                                    test,
-                                    target_column,
-                                    regression_column,
-                                    ranker_prediction_column,
-                                    pairwise_prediction_column,
-                                ),
-                            ),
-                        ),
-                        dtype=float,
-                    ),
-                    0,
-                    1,
-                ),
-            ),
-        )
-        # Train MLX neural models when available; skip gracefully on non-Apple-Silicon.
-        # Each model is guarded independently so a partial failure doesn't silently
-        # discard a successfully-trained companion model.
-        # Training failures (ImportError/OSError/RuntimeError/AttributeError) are caught;
-        # prediction errors (e.g. disk-full OSError) are intentionally not caught here.
-        _lstm_col: str | None
-        _transformer_col: str | None
-        try:
-            _lstm_model: object = train_lstm_model(train_sequences, train[target_column])
-        except (ImportError, OSError, RuntimeError, AttributeError) as error:
-            print(f"corner_lightgbm: {target_column} LSTM companion skipped: {error!r}", file=sys.stderr)
-            _lstm_model = None
-        if _lstm_model is not None:
-            test = test.with_columns(
-                pl.Series(
-                    lstm_prediction_column,
-                    np.asarray(predict_neural_corner_model(_lstm_model, test_sequences).to_numpy(), dtype=float),
-                ),
-            )
-            _lstm_col = lstm_prediction_column
-        else:
-            _lstm_col = None
-        try:
-            _transformer_model: object = train_transformer_model(train_sequences, train[target_column])
-        except (ImportError, OSError, RuntimeError, AttributeError) as error:
-            print(
-                f"corner_lightgbm: {target_column} Transformer companion skipped: {error!r}",
-                file=sys.stderr,
-            )
-            _transformer_model = None
-        if _transformer_model is not None:
-            test = test.with_columns(
-                pl.Series(
-                    transformer_prediction_column,
-                    np.asarray(
-                        predict_neural_corner_model(_transformer_model, test_sequences).to_numpy(),
-                        dtype=float,
-                    ),
-                ),
-            )
-            _transformer_col = transformer_prediction_column
-        else:
-            _transformer_col = None
-        prediction, alpha, alpha_scores = choose_ensemble_prediction(
             test,
+            train_sequences,
+            test_sequences,
             target_column,
-            regression_column,
-            ranker_prediction_column,
-            pairwise_prediction_column,
-            stacked_prediction_column,
-            _lstm_col,
-            _transformer_col,
+            model_dir,
         )
-        test = test.with_columns(prediction.alias(prediction_column))
+        combined = pl.concat(
+            [
+                selection.with_columns(pl.lit(True).alias(SELECTION_ROW_COLUMN)),
+                test.with_columns(pl.lit(False).alias(SELECTION_ROW_COLUMN)),
+            ],
+            how="diagonal_relaxed",
+        )
+        prediction, alpha, alpha_scores = choose_ensemble_prediction(
+            combined,
+            target_column,
+            f"regression_{target_column}",
+            f"ranker_{target_column}",
+            f"pairwise_{target_column}",
+            f"stacked_{target_column}",
+            selection_lstm if selection_lstm == test_lstm else None,
+            selection_transformer if selection_transformer == test_transformer else None,
+        )
+        test = test.with_columns(prediction.filter(~combined[SELECTION_ROW_COLUMN]).alias(prediction_column))
         metrics[target_column] = {
             "mae": float(mean_absolute_error(test[target_column], test[prediction_column])),
             "ranker_alpha": alpha,
             "ranker_alpha_scores": alpha_scores,
+            "ensemble_selection": "latest-training-races",
+            "selection_race_count": selection_tail["race_id"].n_unique(),
             "race_order_score": race_order_score(test, target_column, prediction_column),
         }
         cast(dict[str, object], metrics["timing"])["targets"] = {
