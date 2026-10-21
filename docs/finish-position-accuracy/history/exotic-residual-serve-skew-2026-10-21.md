@@ -56,3 +56,12 @@ JRA で約 1pp)。手法間の比較は同じ条件なので結論は変わら�
   登録する (`.github/deploy/README.md`)。未登録だと CI の `models.py` が 404 で止まり、全 Worker のデプロイが止まる。
 - 作業ディレクトリ: `.cache/noexotic-retrain` (JRA/NAR/ばんえい の residual 無し再学習)、
   `.cache/exoaug-retrain` (NAR ずれ注入)、`.cache/control-retrain` (NAR 対照)。
+
+## 追記: 2026 年の rs\_\* 欠損
+
+2026 年の特徴量 store では rs*\*（脚質予測確率）が約 98% 欠損している（ローカル PG の
+`race_running_style_model_predictions` は 2026-05〜07 の一部のみで、本番は Neon に書く）。上の 2026 年の比較は
+両方とも rs*\_ 欠損のまま採点した。Neon の配信済み脚質予測から rs\_\_ を再構築して JRA を再比較しても
+（`add-pacestyle-features.py --pg-url duckdb://<served snapshot>`）、`-noexo1` は 1着馬3着内 +1.59pp
+（CI95 +0.12〜+3.06）、top1 +0.61pp で結論は変わらない。2026 年の行を学習に含める前に、2026 年の脚質予測を
+ローカル PG に取り込むこと。そうしないと学習では rs\_\* が欠損、配信では埋まっている状態になる。
