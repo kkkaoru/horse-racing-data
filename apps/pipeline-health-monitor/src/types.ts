@@ -8,6 +8,8 @@ export interface Env {
   FINISH_POSITION_CRON: { fetch: typeof fetch };
   ALERT_QUEUE: Queue<AlertMessage>;
   STATE_KV: KVNamespace;
+  // daily-keiba-sync's SYNC_CACHE, read for the running-style Catalog health record.
+  DAILY_KEIBA_SYNC_CACHE: KVNamespace;
   REALTIME_ADMIN_TOKEN: string;
   FINISH_POSITION_CRON_TOKEN: string;
   ALERT_ACK_TOKEN: string;

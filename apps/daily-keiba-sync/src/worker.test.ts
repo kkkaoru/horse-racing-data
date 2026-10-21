@@ -989,7 +989,11 @@ describe("daily sync Worker", () => {
       { cron: "30 20 * * *", noRetry: vi.fn(), scheduledTime: Date.parse("2026-10-21T20:30:00Z") },
       env,
     );
-    expect(mocks.syncRunningStyleCatalog).toHaveBeenCalledWith(env, "20261022");
+    expect(mocks.syncRunningStyleCatalog).toHaveBeenCalledWith(
+      env,
+      "20261022",
+      new Date("2026-10-21T20:30:00.000Z"),
+    );
     expect(log).toHaveBeenCalledWith(
       '{"event":"running-style-catalog-sync","appendedRows":12,"objects":3,"snapshotId":"77"}',
     );

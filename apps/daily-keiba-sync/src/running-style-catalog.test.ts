@@ -244,7 +244,11 @@ test("syncRunningStyleCatalog appends every row of objects whose etag changed", 
         ],
   );
 
-  const result = await syncRunningStyleCatalog(env, "20261021");
+  const result = await syncRunningStyleCatalog(
+    env,
+    "20261021",
+    new Date("2026-10-20T20:30:00.000Z"),
+  );
 
   expect(result).toStrictEqual({ appendedRows: 3, objects: 3, snapshotId: "41" });
   expect(mocks.transaction).toHaveBeenCalledWith(
@@ -273,6 +277,9 @@ test("syncRunningStyleCatalog appends every row of objects whose etag changed", 
       "running-style-catalog:v2:running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/jra-v3.parquet",
     ),
   ).toBe("7a573ccf96fc7bbc034dabf9f65618ef");
+  expect(await env.SYNC_CACHE.get("running-style-catalog:last-success")).toBe(
+    '{"at":"2026-10-20T20:30:00.000Z","appendedRows":3,"objects":3,"snapshotId":"41"}',
+  );
 });
 
 test("syncRunningStyleCatalog skips the commit when no object changed", async () => {
@@ -287,13 +294,18 @@ test("syncRunningStyleCatalog skips the commit when no object changed", async ()
     ),
   ]);
 
-  expect(await syncRunningStyleCatalog(env, "20261021")).toStrictEqual({
+  expect(
+    await syncRunningStyleCatalog(env, "20261021", new Date("2026-10-20T20:30:00.000Z")),
+  ).toStrictEqual({
     appendedRows: 0,
     objects: 1,
     snapshotId: null,
   });
   expect(mocks.readObjects).not.toHaveBeenCalled();
   expect(mocks.transaction).not.toHaveBeenCalled();
+  expect(await env.SYNC_CACHE.get("running-style-catalog:last-success")).toBe(
+    '{"at":"2026-10-20T20:30:00.000Z","appendedRows":0,"objects":1,"snapshotId":null}',
+  );
 });
 
 test("syncRunningStyleCatalog keeps the markers when the commit has no snapshot", async () => {
@@ -324,14 +336,15 @@ test("syncRunningStyleCatalog keeps the markers when the commit has no snapshot"
   ]);
   mocks.transaction.mockImplementation(async () => ({}));
 
-  await expect(syncRunningStyleCatalog(env, "20261021")).rejects.toThrow(
-    "Iceberg commit returned no current snapshot",
-  );
+  await expect(
+    syncRunningStyleCatalog(env, "20261021", new Date("2026-10-20T20:30:00.000Z")),
+  ).rejects.toThrow("Iceberg commit returned no current snapshot");
   expect(
     await env.SYNC_CACHE.get(
       "running-style-catalog:v2:running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/jra-v3.parquet",
     ),
   ).toBe(null);
+  expect(await env.SYNC_CACHE.get("running-style-catalog:last-success")).toBe(null);
 });
 
 test("readObjectRecords fails when the listed object is gone", async () => {
@@ -354,7 +367,9 @@ test("syncRunningStyleCatalog fails on a truncated listing", async () => {
     },
   };
 
-  await expect(syncRunningStyleCatalog(truncated, "20261021")).rejects.toThrow(
+  await expect(
+    syncRunningStyleCatalog(truncated, "20261021", new Date("2026-10-20T20:30:00.000Z")),
+  ).rejects.toThrow(
     "Running-style Parquet listing is truncated: running-style/predictions/by-day/raw-iceberg-v1/2026/10/18/",
   );
 });

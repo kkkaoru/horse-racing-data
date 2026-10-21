@@ -64,6 +64,8 @@ export interface RunningStyleCatalogSyncResult {
 export const RUNNING_STYLE_CATALOG_TABLE = "race_running_style_model_predictions";
 export const RUNNING_STYLE_PARQUET_PREFIX = "running-style/predictions/by-day/raw-iceberg-v1/";
 export const RUNNING_STYLE_CATALOG_LOOKBACK_DAYS = 3;
+// Read by pipeline-health-monitor to alert when the daily sync stops succeeding.
+export const RUNNING_STYLE_CATALOG_HEALTH_KEY = "running-style-catalog:last-success";
 // v2 markers hold object etags (v1 held predicted_at watermarks and is ignored).
 const MARKER_KEY_PREFIX = "running-style-catalog:v2:";
 const MS_PER_DAY = 86_400_000;
@@ -199,7 +201,7 @@ const appendRecords = async (
 // the next run; readers de-duplicate by key, so that is harmless. An object rewritten
 // between the listing and the read is appended at its newer content and re-appended
 // on the next run because its marker holds the listed etag.
-export const syncRunningStyleCatalog = async (
+const appendChangedObjects = async (
   env: RunningStyleCatalogEnvironment,
   runDate: string,
 ): Promise<RunningStyleCatalogSyncResult> => {
@@ -221,4 +223,17 @@ export const syncRunningStyleCatalog = async (
     changed.map((object) => env.SYNC_CACHE.put(`${MARKER_KEY_PREFIX}${object.key}`, object.etag)),
   );
   return { appendedRows: records.length, objects: objects.length, snapshotId };
+};
+
+export const syncRunningStyleCatalog = async (
+  env: RunningStyleCatalogEnvironment,
+  runDate: string,
+  now: Date,
+): Promise<RunningStyleCatalogSyncResult> => {
+  const result = await appendChangedObjects(env, runDate);
+  await env.SYNC_CACHE.put(
+    RUNNING_STYLE_CATALOG_HEALTH_KEY,
+    JSON.stringify({ at: now.toISOString(), ...result }),
+  );
+  return result;
 };

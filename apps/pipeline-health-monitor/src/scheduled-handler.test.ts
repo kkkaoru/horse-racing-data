@@ -36,11 +36,16 @@ import type { AlertMessage, Env, QueueHealthMetrics } from "./types";
 interface KvState {
   store: Map<string, string>;
   send: ReturnType<typeof vi.fn>;
+  dailyKeibaSyncGet: ReturnType<typeof vi.fn>;
 }
 
 const buildKvState = (preload: Record<string, string> = {}): KvState => {
   const store = new Map<string, string>(Object.entries(preload));
-  return { store, send: vi.fn(async () => undefined) };
+  return {
+    store,
+    send: vi.fn(async () => undefined),
+    dailyKeibaSyncGet: vi.fn(async () => null),
+  };
 };
 
 const buildEnv = (state: KvState): Env =>
@@ -48,6 +53,7 @@ const buildEnv = (state: KvState): Env =>
     REALTIME: { fetch: vi.fn() },
     REALTIME_ADMIN_TOKEN: "test-token",
     ALERT_QUEUE: { send: state.send },
+    DAILY_KEIBA_SYNC_CACHE: { get: state.dailyKeibaSyncGet },
     STATE_KV: {
       get: vi.fn(async (key: string) => state.store.get(key) ?? null),
       put: vi.fn(async (key: string, value: string) => {
@@ -297,4 +303,47 @@ it("runScheduled skips processing for checks outside their JST window", async ()
   expect(state.send).not.toHaveBeenCalled();
   expect(state.store.has("failures:fetch-results-staleness")).toBe(false);
   expect(state.store.has("failures:fetch-weights-staleness")).toBe(false);
+});
+
+it("raises the running-style Catalog signal on a quarter-hour tick", async () => {
+  vi.mocked(fetchQueueHealth).mockResolvedValue(HEALTHY_METRICS);
+  const state = buildKvState();
+  state.dailyKeibaSyncGet.mockResolvedValue('{"at":"2026-06-27T20:30:00.000Z","objects":3}');
+  const env = buildEnv(state);
+  await runScheduled({ env, now: ON_WINDOW_NOW });
+  expect(state.dailyKeibaSyncGet).toHaveBeenCalledWith("running-style-catalog:last-success");
+  expect(processIncidentSignal).toHaveBeenCalledWith(
+    env,
+    {
+      description: "The running-style Catalog sync succeeded within the last 26 hours.",
+      fields: [{ name: "KV key", value: "running-style-catalog:last-success" }],
+      key: "running-style-catalog-sync",
+      ok: true,
+      severity: "critical",
+      stage: "healthy",
+      title: "running-style Catalog sync recovered",
+    },
+    ON_WINDOW_NOW,
+  );
+});
+
+it("raises an endpoint failure when the running-style Catalog health record cannot be read", async () => {
+  vi.mocked(fetchQueueHealth).mockResolvedValue(HEALTHY_METRICS);
+  const state = buildKvState();
+  state.dailyKeibaSyncGet.mockRejectedValue(new Error("kv down"));
+  const env = buildEnv(state);
+  await runScheduled({ env, now: ON_WINDOW_NOW });
+  expect(processIncidentSignal).toHaveBeenCalledWith(
+    env,
+    {
+      description: "Monitor endpoint failed and cannot be evaluated: Error: kv down",
+      fields: [{ name: "Endpoint", value: "running-style-catalog-health" }],
+      key: "finish-position-monitor-endpoint:running-style-catalog-health",
+      ok: false,
+      severity: "critical",
+      stage: "endpoint-failure",
+      title: "monitor endpoint unavailable: running-style-catalog-health",
+    },
+    ON_WINDOW_NOW,
+  );
 });

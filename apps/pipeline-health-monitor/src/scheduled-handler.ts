@@ -18,6 +18,10 @@ import {
 } from "./incident-engine";
 import { listOpenIncidentsBySignalPrefix, type IncidentState } from "./incident-state";
 import { fetchQueueHealth } from "./queue-health-client";
+import {
+  buildRunningStyleCatalogSignal,
+  RUNNING_STYLE_CATALOG_HEALTH_KEY,
+} from "./running-style-catalog-signal";
 import type { AlertSeverity, Env, HealthCheck } from "./types";
 
 interface RunScheduledInput {
@@ -267,6 +271,23 @@ const processExistingChecks = async (input: RunScheduledInput): Promise<void> =>
   }
 };
 
+const processRunningStyleCatalog = async (input: RunScheduledInput): Promise<void> => {
+  try {
+    const raw = await input.env.DAILY_KEIBA_SYNC_CACHE.get(RUNNING_STYLE_CATALOG_HEALTH_KEY);
+    await processIncidentSafely({
+      env: input.env,
+      now: input.now,
+      signal: buildRunningStyleCatalogSignal(raw, input.now),
+    });
+  } catch (error) {
+    await processIncidentSafely({
+      env: input.env,
+      now: input.now,
+      signal: buildEndpointFailureSignal("running-style-catalog-health", error),
+    });
+  }
+};
+
 export const runScheduled = async (input: RunScheduledInput): Promise<void> => {
   try {
     await drainIncidentOutbox(input.env);
@@ -280,5 +301,9 @@ export const runScheduled = async (input: RunScheduledInput): Promise<void> => {
   }
   await processCanary(input);
   if (!isQuarterHourTick(input.now)) return;
-  await Promise.all([processExistingChecks(input), processReadiness(input)]);
+  await Promise.all([
+    processExistingChecks(input),
+    processReadiness(input),
+    processRunningStyleCatalog(input),
+  ]);
 };

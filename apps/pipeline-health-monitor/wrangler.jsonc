@@ -49,5 +49,10 @@
       "binding": "STATE_KV",
       "id": "512eb391768544eb9184f930fb6c0f3e",
     },
+    // daily-keiba-sync SYNC_CACHE: read-only use for the running-style Catalog health record.
+    {
+      "binding": "DAILY_KEIBA_SYNC_CACHE",
+      "id": "3984400443dd4e52b2330c1bee9a2a1c",
+    },
   ],
 }

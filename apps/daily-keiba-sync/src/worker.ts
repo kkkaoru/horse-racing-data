@@ -206,7 +206,11 @@ const scheduled = async (event: ScheduledController, env: Env): Promise<void> =>
     console.log(
       JSON.stringify({
         event: "running-style-catalog-sync",
-        ...(await syncRunningStyleCatalog(env, jstDate(event.scheduledTime))),
+        ...(await syncRunningStyleCatalog(
+          env,
+          jstDate(event.scheduledTime),
+          new Date(event.scheduledTime),
+        )),
       }),
     );
     return;
