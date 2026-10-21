@@ -272,7 +272,8 @@ def merge_bucket_weights_into_train(
         )
     merge_cols = ["race_id", "is_weak_bucket_score"]
     deduped = bucket_df.select(merge_cols).unique(subset="race_id", maintain_order=True)
-    return train_df.join(deduped, on="race_id", how="left")
+    # Rows must keep their race-contiguous order: the trainer builds group sizes with presorted=True.
+    return train_df.join(deduped, on="race_id", how="left", maintain_order="left")
 
 
 def attach_sample_weights(train_df: pl.DataFrame, alpha: float) -> pl.DataFrame:

@@ -975,3 +975,11 @@ def test_split_train_valid_filters_dates_and_labels():
     train_df, valid_df = subject.split_train_valid(df, "20220101", 2024)
     assert train_df["race_id"].to_list() == ["r1", "r2"]
     assert valid_df["race_id"].to_list() == ["r3"]
+
+
+def test_merge_bucket_weights_keeps_train_row_order():
+    train_df = pl.DataFrame({"race_id": ["r9", "r9", "r1", "r5", "r5"], "umaban": [1, 2, 1, 1, 2]})
+    bucket_df = pl.DataFrame({"race_id": ["r1", "r5", "r9"], "is_weak_bucket_score": [0.1, 0.5, 0.9]})
+    out = subject.merge_bucket_weights_into_train(train_df, bucket_df)
+    assert out["race_id"].to_list() == ["r9", "r9", "r1", "r5", "r5"]
+    assert out["is_weak_bucket_score"].to_list() == [0.9, 0.9, 0.1, 0.5, 0.5]
