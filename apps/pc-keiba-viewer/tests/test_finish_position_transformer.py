@@ -1013,3 +1013,28 @@ def test_train_transformer_raises_when_parameters_are_non_finite():
     train_cfg["batch_size"] = 4
     with pytest.raises(TrainingDivergedError, match="non-finite parameters after epoch 1"):
         _ = train_transformer(model, arrays, arrays, train_cfg)
+
+
+def test_emit_mlflow_run_uses_category_flag_when_the_frame_has_no_category_column(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    monkeypatch.setenv("HORSE_RACING_MLFLOW_ENABLED", "1")
+    spy = MagicMock(return_value=True)
+    monkeypatch.setattr(mlflow_hook, "safe_emit_training_run", spy)
+    args = cli_module.parse_args(
+        [
+            "train",
+            "--train-parquet",
+            str(tmp_path / "train.parquet"),
+            "--output-model-dir",
+            str(tmp_path / "ckpt" / "seed1"),
+            "--category",
+            "nar",
+        ]
+    )
+    cli_module.emit_mlflow_run(
+        pl.DataFrame({"race_id": ["r1"]}),
+        args,
+        {"best_epoch": 1, "best_valid_ndcg_at_3": 0.5, "elapsed_seconds": 1.0, "history": []},
+    )
+    assert spy.call_args.kwargs["category"] == "nar"

@@ -81,6 +81,9 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
+MLFLOW_CATEGORIES: tuple[str, ...] = ("jra", "nar", "ban-ei")
+
+
 class CheckpointPaths(TypedDict):
     model_weights: Path
     stats: Path
@@ -121,6 +124,12 @@ def _build_train_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--output-model-dir", type=Path, required=True)
     parser.add_argument("--output-metadata", type=Path)
     parser.add_argument("--output-predictions", type=Path)
+    parser.add_argument(
+        "--category",
+        choices=MLFLOW_CATEGORIES,
+        default=None,
+        help="MLflow run category; defaults to the training frame's category column",
+    )
     _add_training_hparam_args(parser)
 
 
@@ -321,13 +330,13 @@ def emit_mlflow_run(
 ) -> None:
     """Best-effort MLflow logging of this transformer training run (never affects CLI output).
 
-    Unlike the CatBoost/XGBoost walk-forward trainers, this CLI has no
-    ``--category`` / ``--walk-forward-namespace`` flags of its own, so
-    ``category`` is read off the training frame's ``category`` column (a
-    required column on every finish-position features parquet) and
-    ``model_version`` is derived from the output model directory name.
+    ``category`` is ``--category`` when given, else the training frame's
+    ``category`` column. Slimmed retrain parquets drop that column, and the
+    tracking CLI rejects the "unknown" fallback, so those runs were silently not
+    logged unless ``--category`` is passed. ``model_version`` is derived from the
+    output model directory name.
     """
-    category = (
+    category = getattr(args, "category", None) or (
         str(train_df["category"][0])
         if train_df.height > 0 and "category" in train_df.columns
         else "unknown"
