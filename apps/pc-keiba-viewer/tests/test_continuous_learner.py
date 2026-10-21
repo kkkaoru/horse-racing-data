@@ -6658,3 +6658,33 @@ def test_check_deploy_readiness_skips_when_active_is_deployed_set() -> None:
         ):
             assert learner._check_deploy_readiness() is False
         mock_blind.assert_not_called()
+
+
+def test_main_drops_exotic_residuals_from_jra_training_frame(tmp_path: Path) -> None:
+    parquet_path = tmp_path / "features.parquet"
+    _make_df().with_columns(
+        pl.lit(0.1).alias("exotic_umaren_p2_rank_residual"),
+        pl.lit(0.2).alias("exotic_sanrenpuku_p3_rank_residual"),
+    ).write_parquet(parquet_path)
+    seen_columns: list[list[str]] = []
+
+    def fake_explore(self: subject.ContinuousLearner, round_num: int, n_trials: int) -> None:
+        seen_columns.append(sorted(c for c in self._df.columns if c.startswith("exotic_")))
+
+    with (
+        patch.object(subject.ContinuousLearner, "_explore_round", autospec=True, side_effect=fake_explore),
+        patch.object(subject.ContinuousLearner, "_check_deploy_readiness"),
+        patch.object(subject.AdaptiveLoadController, "_cpu_percent", return_value=60.0),
+        patch.object(subject.AdaptiveLoadController, "_mem_percent", return_value=70.0),
+    ):
+        subject.main(
+            [
+                "--features-parquet", str(parquet_path),
+                "--category", "jra",
+                "--repo-root", str(tmp_path),
+                "--registry-path", str(tmp_path / "reg.duckdb"),
+                "--max-rounds", "1",
+            ]
+        )
+
+    assert seen_columns == [[]]

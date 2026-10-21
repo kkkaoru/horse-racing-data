@@ -106,6 +106,17 @@ banned outright so the ranking cannot follow the win market; raw exotic implied
 probabilities are banned because they re-encode the same popularity order."""
 
 
+CATEGORY_DISALLOWED_FEATURES: Final[dict[str, frozenset[str]]] = {"jra": MARKET_DEVIATION_FEATURES}
+"""Per-category inputs served models must not use. JRA serves without the exotic
+residuals: they are trained on final odds but served on live odds, and the serve-time
+values hurt JRA accuracy (the container rejects them for JRA models)."""
+
+
+def category_disallowed_features(category: str) -> frozenset[str]:
+    """Columns a ``category`` model must never be trained on (empty when none)."""
+    return CATEGORY_DISALLOWED_FEATURES.get(category, frozenset())
+
+
 def is_banned_market_feature(column: str) -> bool:
     """True when ``column`` is an odds/popularity input finish models must not use."""
     return column not in MARKET_DEVIATION_FEATURES and bool(BANNED_MARKET_PATTERN.search(column))

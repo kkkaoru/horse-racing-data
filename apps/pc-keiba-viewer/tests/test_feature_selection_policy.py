@@ -98,3 +98,10 @@ def test_build_feature_selection_spec_normalizes_names() -> None:
     assert spec.prediction_target == "running_style"
     assert spec.feature_names == ("a", "z")
     assert spec.feature_set_hash == subject.compute_feature_set_hash(["a", "z"])
+
+
+def test_category_disallowed_features_bans_exotic_residuals_for_jra_only() -> None:
+    assert subject.category_disallowed_features("jra") == frozenset(
+        {"exotic_umaren_p2_rank_residual", "exotic_sanrenpuku_p3_rank_residual"}
+    )
+    assert subject.category_disallowed_features("nar") == frozenset()

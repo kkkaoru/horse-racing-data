@@ -42,6 +42,7 @@ from learning.feature_explorer import (
 )
 from learning.feature_registry import INVERSE_APPROACH_TYPES, FeatureEntry, FeatureRegistry
 from learning.feature_selection_policy import (
+    category_disallowed_features,
     compute_feature_set_hash as compute_normalized_feature_set_hash,
 )
 from learning.subgroup_diagnostics import SubgroupMetrics, compute_subgroup_diagnostics
@@ -2242,6 +2243,7 @@ def main(argv: list[str] | None = None) -> None:
         else _CATEGORY_TRAIN_START.get(category, DEFAULT_TRAIN_START)
     )
     df = _load_features_dataframe(args.features_parquet, train_start)
+    df = df.drop([c for c in category_disallowed_features(category) if c in df.columns])
     cell_filter: CellFilter | None = None
     if args.keibajo_codes or args.season_bands:
         cell_filter = CellFilter()
