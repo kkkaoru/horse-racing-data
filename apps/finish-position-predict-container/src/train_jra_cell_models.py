@@ -257,8 +257,10 @@ def load_feature_rows(
 
 
 def feature_matrix(frame: pd.DataFrame, feature_names: Sequence[str]) -> npt.NDArray[np.float64]:
+    # Missing stays NaN (CatBoost "missing"), the serving contract of
+    # predict_lib.scorer._coerce; a 0.0 fill trained a different model than serves.
     values = frame.loc[:, list(feature_names)].apply(pd.to_numeric, errors="coerce")
-    return values.fillna(0.0).to_numpy(dtype=np.float64)
+    return values.to_numpy(dtype=np.float64)
 
 
 def validate_target_feature_coverage(

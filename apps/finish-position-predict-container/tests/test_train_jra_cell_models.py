@@ -425,9 +425,11 @@ def test_empty_feature_load_has_schema(dataset: trainer.DatasetLike) -> None:
     ]
 
 
-def test_feature_matrix_preserves_existing_serving_contract() -> None:
+def test_feature_matrix_keeps_missing_as_nan_like_the_serving_scorer() -> None:
     frame = pd.DataFrame({"speed": pd.Series(["2", None, "invalid"], dtype=object)})
-    np.testing.assert_array_equal(trainer.feature_matrix(frame, ["speed"]), [[2], [0], [0]])
+    np.testing.assert_array_equal(
+        trainer.feature_matrix(frame, ["speed"]), [[2.0], [np.nan], [np.nan]]
+    )
     assert frame["speed"].tolist() == ["2", None, "invalid"]
 
 
