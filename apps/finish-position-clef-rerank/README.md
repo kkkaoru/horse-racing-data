@@ -113,3 +113,22 @@ also dropped: on 132 cohort races it gains box3 (5.30→6.82) but loses exacta (
 is significant (bootstrap P(no gain) ≥ 0.12), and selecting on months ≤6 then testing months 7–9 kept box5 (+1.4
 pt) but not box3 / exacta, so treat the approved list as provisional. On 2026-10-18 this covers 8 races: Tokyo
 1/2/7R, Niigata 1/3/6R, Kyoto 1/3R.
+
+### v4 (2026-10-21): re-approval on the `-noexo1` JRA base models
+
+JRA now serves `-noexo1` models (no 馬連/3連複 rank residuals), so every served base rank changed. Because the request
+injects the served rank (`br`), all 2,610 JRA races of 2026 were re-asked to hosted clef-flash with the `-noexo1`
+ranks (`STATE=v5`, `data-noexo1/v5_jra.jsonl`), then `eval_cv.py` and `eval_per_model.py` were rerun unchanged.
+Overall the deployed PL b+f+clef no longer beats the new served base (sum3 18.81 vs 18.91 on 2,052 CV races), so
+the per-model gate matters more than before. Same criterion as v3:
+
+| Served base model (approved)                          | CV races | Δbox5 | Δbox3 | Δexacta | P(no gain) |
+| ----------------------------------------------------- | -------- | ----- | ----- | ------- | ---------- |
+| jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1   | 118      | 0.00  | +3.39 | +0.85   | 0.034      |
+| jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1 | 62       | +1.61 | 0.00  | 0.00    | 0.394      |
+| jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1   | 48       | 0.00  | 0.00  | +2.08   | 0.366      |
+| jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1    | 35       | 0.00  | 0.00  | +5.71   | 0.132      |
+| jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1        | 33       | 0.00  | +3.03 | 0.00    | 0.348      |
+
+The fusion weights were not refit. `per_model_jra.json` in the work directory now holds this list (the v3 file is
+kept as `per_model_jra.nowin1-20261018.json`); bundles built from 2026-10-21 on use it.
