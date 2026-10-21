@@ -477,6 +477,9 @@ const main = async () => {
             count(*) over venue_course_number_history venue_course_number_start_count
           from race_entry_corner_features
           where source = $1
+          -- Entity and course windows count strictly earlier race days: a row-grain
+          -- "1 preceding" frame saw stablemates' results in the same race and same-day
+          -- races at lower venue codes, none of which exist when a race is predicted.
           window
             horse_history as (
               partition by source, ketto_toroku_bango
@@ -495,28 +498,28 @@ const main = async () => {
             ),
             jockey_history as (
               partition by source, kishumei_ryakusho
-              order by race_date, keibajo_code, race_bango
-              rows between unbounded preceding and 1 preceding
+              order by to_date(race_date, 'YYYYMMDD')
+              range between unbounded preceding and interval '1 day' preceding
             ),
             trainer_history as (
               partition by source, chokyoshimei_ryakusho
-              order by race_date, keibajo_code, race_bango
-              rows between unbounded preceding and 1 preceding
+              order by to_date(race_date, 'YYYYMMDD')
+              range between unbounded preceding and interval '1 day' preceding
             ),
             owner_history as (
               partition by source, banushimei
-              order by race_date, keibajo_code, race_bango
-              rows between unbounded preceding and 1 preceding
+              order by to_date(race_date, 'YYYYMMDD')
+              range between unbounded preceding and interval '1 day' preceding
             ),
             course_number_history as (
               partition by source, track_code, kyori, shusso_tosu, umaban
-              order by race_date, keibajo_code, race_bango
-              rows between unbounded preceding and 1 preceding
+              order by to_date(race_date, 'YYYYMMDD')
+              range between unbounded preceding and interval '1 day' preceding
             ),
             venue_course_number_history as (
               partition by source, keibajo_code, track_code, kyori, shusso_tosu, umaban
-              order by race_date, keibajo_code, race_bango
-              rows between unbounded preceding and 1 preceding
+              order by to_date(race_date, 'YYYYMMDD')
+              range between unbounded preceding and interval '1 day' preceding
             )
         )
         select
