@@ -347,3 +347,46 @@ it("raises an endpoint failure when the running-style Catalog health record cann
     ON_WINDOW_NOW,
   );
 });
+
+it("raises the NV-Link daily sync signal on a quarter-hour tick", async () => {
+  vi.mocked(fetchQueueHealth).mockResolvedValue(HEALTHY_METRICS);
+  const state = buildKvState();
+  state.dailyKeibaSyncGet.mockResolvedValue('{"at":"2026-06-27T16:01:00.000Z","runId":"r1"}');
+  const env = buildEnv(state);
+  await runScheduled({ env, now: ON_WINDOW_NOW });
+  expect(state.dailyKeibaSyncGet).toHaveBeenCalledWith("provider-sync:last-success:nv");
+  expect(processIncidentSignal).toHaveBeenCalledWith(
+    env,
+    {
+      description: "The scheduled NV-Link sync succeeded within the last 26 hours.",
+      fields: [{ name: "KV key", value: "provider-sync:last-success:nv" }],
+      key: "provider-sync:nv",
+      ok: true,
+      severity: "critical",
+      stage: "healthy",
+      title: "NV-Link daily sync recovered",
+    },
+    ON_WINDOW_NOW,
+  );
+});
+
+it("raises an endpoint failure when a provider sync health record cannot be read", async () => {
+  vi.mocked(fetchQueueHealth).mockResolvedValue(HEALTHY_METRICS);
+  const state = buildKvState();
+  state.dailyKeibaSyncGet.mockRejectedValue(new Error("kv down"));
+  const env = buildEnv(state);
+  await runScheduled({ env, now: ON_WINDOW_NOW });
+  expect(processIncidentSignal).toHaveBeenCalledWith(
+    env,
+    {
+      description: "Monitor endpoint failed and cannot be evaluated: Error: kv down",
+      fields: [{ name: "Endpoint", value: "provider-sync-health:jv" }],
+      key: "finish-position-monitor-endpoint:provider-sync-health:jv",
+      ok: false,
+      severity: "critical",
+      stage: "endpoint-failure",
+      title: "monitor endpoint unavailable: provider-sync-health:jv",
+    },
+    ON_WINDOW_NOW,
+  );
+});
