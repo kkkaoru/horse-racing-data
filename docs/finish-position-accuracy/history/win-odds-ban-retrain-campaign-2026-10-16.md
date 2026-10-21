@@ -171,3 +171,7 @@ high-payout-specialist235、NAR stage1-marketfree-184、NAR consensus pedigree/p
   - The runner's Node 20 lacks `node:sqlite`; the deploy job now uses Node 24.
   - The wine-staging pin conflicted after WineHQ published 11.19; all three wine packages
     are now pinned.
+
+## 後続 (2026-10-21)
+
+配信時点の residual の再現と JRA の `-noexo1` 差し替え: [exotic-residual-serve-skew-2026-10-21.md](exotic-residual-serve-skew-2026-10-21.md)
