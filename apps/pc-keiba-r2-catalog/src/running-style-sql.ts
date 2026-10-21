@@ -14,7 +14,8 @@ const CODE_PATTERN = /^\d{2}$/u;
 // the product. Neither is a semantic truncation.
 const MAX_RUNNERS_PER_RACE = 18;
 const MAX_RACES_PER_VENUE_DAY = 12;
-const WIDE_HISTORY_GRADE_CODES = new Set(["A", "B", "C", "D", "G", "H"]);
+const JRA_HISTORY_LOOKBACK_YEARS = 5;
+const NAR_HISTORY_LOOKBACK_YEARS = 3;
 const RACE_ORDER_BY_COLUMNS = "umaban";
 const VENUE_ORDER_BY_COLUMNS = "race_bango, umaban";
 
@@ -90,11 +91,11 @@ const validateFilters = (filters: RunningStyleFeatureFilters): void => {
 const tableName = (env: R2SqlCatalogConfig, table: string): string =>
   `${requireIdentifier(env.R2_SQL_NAMESPACE)}.${table}`;
 
-const historyLookbackYears = (filters: RunningStyleFeatureFilters): number => {
-  if (filters.source === "jra") return 5;
-  const gradeCode = filters.gradeCode?.trim().toUpperCase() ?? "";
-  return WIDE_HISTORY_GRADE_CODES.has(gradeCode) ? 10 : 3;
-};
+// Same windows as the running-style training batch SQL (sync-realtime-data
+// buildRunningStyleBatchFeatureSql): 5y JRA, 3y NAR. Graded NAR races were served
+// with a 10y window that training never used.
+const historyLookbackYears = (filters: RunningStyleFeatureFilters): number =>
+  filters.source === "jra" ? JRA_HISTORY_LOOKBACK_YEARS : NAR_HISTORY_LOOKBACK_YEARS;
 
 const historyStart = (filters: RunningStyleFeatureFilters): string =>
   `${String(Number(filters.date.slice(0, 4)) - historyLookbackYears(filters)).padStart(4, "0")}${filters.date.slice(4)}`;

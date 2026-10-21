@@ -17,16 +17,13 @@ const RECENT_WINDOW_SIZE = 5;
 const SAME_DISTANCE_TOLERANCE = 200;
 const DEFAULT_NAR_HISTORY_LOOKBACK_YEARS = 3;
 const JRA_HISTORY_LOOKBACK_YEARS = 5;
-const GRADED_NAR_HISTORY_LOOKBACK_YEARS = 10;
-const WIDE_HISTORY_GRADE_CODES = new Set(["A", "B", "C", "D", "G", "H"]);
-
-const historyLookbackYears = (params: RunningStyleRaceParams): number => {
-  if (params.source === "jra") return JRA_HISTORY_LOOKBACK_YEARS;
-  const gradeCode = params.gradeCode?.trim().toUpperCase() ?? "";
-  return WIDE_HISTORY_GRADE_CODES.has(gradeCode)
-    ? GRADED_NAR_HISTORY_LOOKBACK_YEARS
-    : DEFAULT_NAR_HISTORY_LOOKBACK_YEARS;
-};
+// Same windows as the batch (training) SQL below: the running-style models were
+// trained on 3y NAR / 5y JRA history. Graded NAR races used to be served with a
+// 10y window the batch never used, so their rs features were built differently
+// in training and serving; the batch cannot mirror it because its pedigree
+// aggregates span the whole prefetched window.
+const historyLookbackYears = (params: RunningStyleRaceParams): number =>
+  params.source === "jra" ? JRA_HISTORY_LOOKBACK_YEARS : DEFAULT_NAR_HISTORY_LOOKBACK_YEARS;
 const CONSECUTIVE_RACE_WINDOW_DAYS = 30;
 const JOCKEY_RECENT_DAYS = 60;
 const TRACK_BIAS_WINDOW_DAYS = 5;

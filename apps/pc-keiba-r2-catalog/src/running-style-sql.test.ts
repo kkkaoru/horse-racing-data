@@ -159,7 +159,7 @@ it("drops the target race filter and widens the cap when raceBango is omitted", 
   expect(venue).toMatch("kaisai_nen = '2021' AND kaisai_tsukihi >= '0715'");
 });
 
-it("uses narrow NAR history for regular races and wide history for graded races", () => {
+it("uses the training batch's 3y NAR history for regular and graded races alike", () => {
   const regular = buildRunningStyleFeaturesQuery(
     config(),
     { date: "20260715", keibajoCode: "43", raceBango: "01", source: "nar" },
@@ -171,7 +171,7 @@ it("uses narrow NAR history for regular races and wide history for graded races"
     false,
   );
   expect(regular).toMatch("kaisai_nen = '2023' AND kaisai_tsukihi >= '0715'");
-  expect(graded).toMatch("kaisai_nen = '2016' AND kaisai_tsukihi >= '0715'");
+  expect(graded).toMatch("kaisai_nen = '2023' AND kaisai_tsukihi >= '0715'");
   expect(
     buildRunningStyleFeaturesQuery(
       config(),

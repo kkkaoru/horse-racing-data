@@ -172,7 +172,7 @@ it("buildRunningStyleBatchFeatureSql derives history_start from fromDate", () =>
   expect(sql.includes("to_date('20050101', 'YYYYMMDD') - interval '5 years'")).toBe(true);
 });
 
-it("selects source and grade-specific per-race history windows", () => {
+it("selects source-specific per-race history windows, graded NAR races included", () => {
   expect(
     buildRunningStylePostgresFeatureSql({
       source: "jra",
@@ -191,7 +191,7 @@ it("selects source and grade-specific per-race history windows", () => {
       raceBango: "01",
       gradeCode: "A",
     }),
-  ).toContain("interval '10 years'");
+  ).toContain("interval '3 years'");
 });
 
 it("buildRunningStyleBatchFeatureSql shares the same suffix CTE list as the per-race builder", () => {
