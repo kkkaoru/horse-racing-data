@@ -3,8 +3,9 @@
 // `race_running_style_model_predictions`, so training reads them from the Catalog
 // instead of Neon. Source: the per-day per-model Parquet that sync-realtime-data
 // exports from D1 to `pc-keiba-features-archive` (a full-day snapshot, rewritten
-// after every race). Each object's appended watermark (max predicted_at) is kept in
-// KV, so a rerun appends only rows that are new or re-predicted since the last run.
+// after every race). The etag of each appended object is kept in KV; an object whose
+// etag changed is appended whole. predicted_at is the job's planned time, not its
+// write time, so a timestamp watermark would drop late-landing rows for good.
 // The table is append-only: readers keep the newest prediction_generated_at per
 // key (finish-position `_catalog_attach.py`), and `backfill_running_style_catalog.py`
 // compacts it offline.
@@ -49,10 +50,9 @@ export interface RunningStyleCatalogRecord {
   prediction_generated_at: Date;
 }
 
-export interface RunningStyleObjectBatch {
+export interface RunningStyleObjectRef {
+  etag: string;
   key: string;
-  records: readonly RunningStyleCatalogRecord[];
-  watermark: string;
 }
 
 export interface RunningStyleCatalogSyncResult {
@@ -64,7 +64,8 @@ export interface RunningStyleCatalogSyncResult {
 export const RUNNING_STYLE_CATALOG_TABLE = "race_running_style_model_predictions";
 export const RUNNING_STYLE_PARQUET_PREFIX = "running-style/predictions/by-day/raw-iceberg-v1/";
 export const RUNNING_STYLE_CATALOG_LOOKBACK_DAYS = 3;
-const WATERMARK_KEY_PREFIX = "running-style-catalog:v1:";
+// v2 markers hold object etags (v1 held predicted_at watermarks and is ignored).
+const MARKER_KEY_PREFIX = "running-style-catalog:v2:";
 const MS_PER_DAY = 86_400_000;
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -130,48 +131,48 @@ const formatDayPrefix = (timestamp: number): string => {
   return `${RUNNING_STYLE_PARQUET_PREFIX}${iso.slice(0, 4)}/${iso.slice(5, 7)}/${iso.slice(8, 10)}/`;
 };
 
-// runDate (JST YYYYMMDD) and the preceding lookback days, oldest first.
+// The lookback days before runDate (JST YYYYMMDD), oldest first. The run date is
+// left out because its races (and so its Parquet) are not finished yet.
 export const runningStyleDayPrefixes = (runDate: string, lookbackDays: number): string[] => {
-  const end = Date.UTC(
-    Number(runDate.slice(0, 4)),
-    Number(runDate.slice(4, 6)) - 1,
-    Number(runDate.slice(6, 8)),
-  );
-  return Array.from({ length: lookbackDays + 1 }, (_, index) =>
-    formatDayPrefix(end - (lookbackDays - index) * MS_PER_DAY),
+  const end =
+    Date.UTC(
+      Number(runDate.slice(0, 4)),
+      Number(runDate.slice(4, 6)) - 1,
+      Number(runDate.slice(6, 8)),
+    ) - MS_PER_DAY;
+  return Array.from({ length: lookbackDays }, (_, index) =>
+    formatDayPrefix(end - (lookbackDays - 1 - index) * MS_PER_DAY),
   );
 };
 
-const listParquetKeys = async (bucket: R2Bucket, prefix: string): Promise<string[]> => {
+const listParquetObjects = async (
+  bucket: R2Bucket,
+  prefix: string,
+): Promise<RunningStyleObjectRef[]> => {
   const listed = await bucket.list({ prefix });
   if (listed.truncated) throw new Error(`Running-style Parquet listing is truncated: ${prefix}`);
-  return listed.objects.map((object) => object.key).filter((key) => key.endsWith(".parquet"));
+  return listed.objects
+    .filter((object) => object.key.endsWith(".parquet"))
+    .map((object) => ({ etag: object.etag, key: object.key }));
 };
 
-const latestTimestamp = (records: readonly RunningStyleCatalogRecord[], floor: string): string =>
-  records.reduce(
-    (latest, record) =>
-      record.prediction_generated_at.toISOString() > latest
-        ? record.prediction_generated_at.toISOString()
-        : latest,
-    floor,
-  );
+const isChanged = async (
+  env: RunningStyleCatalogEnvironment,
+  object: RunningStyleObjectRef,
+): Promise<boolean> =>
+  (await env.SYNC_CACHE.get(`${MARKER_KEY_PREFIX}${object.key}`)) !== object.etag;
 
-export const readObjectBatch = async (
+export const readObjectRecords = async (
   env: RunningStyleCatalogEnvironment,
   key: string,
-): Promise<RunningStyleObjectBatch> => {
+): Promise<RunningStyleCatalogRecord[]> => {
   const object = await env.FEATURES_ARCHIVE.get(key);
   if (object === null) throw new Error(`Running-style Parquet object disappeared: ${key}`);
   const rows: readonly unknown[] = await parquetReadObjects({
     compressors,
     file: await object.arrayBuffer(),
   });
-  const previous = (await env.SYNC_CACHE.get(`${WATERMARK_KEY_PREFIX}${key}`)) ?? "";
-  const records = rows
-    .map(toRunningStyleCatalogRecord)
-    .filter((record) => record.prediction_generated_at.toISOString() > previous);
-  return { key, records, watermark: latestTimestamp(records, previous) };
+  return rows.map(toRunningStyleCatalogRecord);
 };
 
 const appendRecords = async (
@@ -194,28 +195,30 @@ const appendRecords = async (
   return String(snapshotId);
 };
 
-// A crash between the commit and the watermark writes re-appends the same rows on
-// the next run; readers de-duplicate by key, so that is harmless.
+// A crash between the commit and the marker writes re-appends the same objects on
+// the next run; readers de-duplicate by key, so that is harmless. An object rewritten
+// between the listing and the read is appended at its newer content and re-appended
+// on the next run because its marker holds the listed etag.
 export const syncRunningStyleCatalog = async (
   env: RunningStyleCatalogEnvironment,
   runDate: string,
 ): Promise<RunningStyleCatalogSyncResult> => {
-  const keys = (
+  const objects = (
     await Promise.all(
       runningStyleDayPrefixes(runDate, RUNNING_STYLE_CATALOG_LOOKBACK_DAYS).map((prefix) =>
-        listParquetKeys(env.FEATURES_ARCHIVE, prefix),
+        listParquetObjects(env.FEATURES_ARCHIVE, prefix),
       ),
     )
   ).flat();
-  const batches = await Promise.all(keys.map((key) => readObjectBatch(env, key)));
-  const changed = batches.filter((batch) => batch.records.length > 0);
-  const records = changed.flatMap((batch) => batch.records);
-  if (records.length === 0) return { appendedRows: 0, objects: keys.length, snapshotId: null };
+  const flags = await Promise.all(objects.map((object) => isChanged(env, object)));
+  const changed = objects.filter((_, index) => flags[index]);
+  const records = (
+    await Promise.all(changed.map((object) => readObjectRecords(env, object.key)))
+  ).flat();
+  if (records.length === 0) return { appendedRows: 0, objects: objects.length, snapshotId: null };
   const snapshotId = await appendRecords(env, records);
   await Promise.all(
-    changed.map((batch) =>
-      env.SYNC_CACHE.put(`${WATERMARK_KEY_PREFIX}${batch.key}`, batch.watermark),
-    ),
+    changed.map((object) => env.SYNC_CACHE.put(`${MARKER_KEY_PREFIX}${object.key}`, object.etag)),
   );
-  return { appendedRows: records.length, objects: keys.length, snapshotId };
+  return { appendedRows: records.length, objects: objects.length, snapshotId };
 };

@@ -2,7 +2,7 @@
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import {
-  readObjectBatch,
+  readObjectRecords,
   runningStyleDayPrefixes,
   syncRunningStyleCatalog,
   toRunningStyleCatalogRecord,
@@ -168,42 +168,53 @@ test("toRunningStyleCatalogRecord rejects rows that do not match the export cont
   );
 });
 
-test("runningStyleDayPrefixes lists the run date and the lookback days across a month edge", () => {
+test("runningStyleDayPrefixes lists the lookback days before the run date across a month edge", () => {
   expect(runningStyleDayPrefixes("20261002", 3)).toStrictEqual([
     "running-style/predictions/by-day/raw-iceberg-v1/2026/09/29/",
     "running-style/predictions/by-day/raw-iceberg-v1/2026/09/30/",
     "running-style/predictions/by-day/raw-iceberg-v1/2026/10/01/",
-    "running-style/predictions/by-day/raw-iceberg-v1/2026/10/02/",
   ]);
 });
 
-test("syncRunningStyleCatalog appends only rows newer than each object's watermark", async () => {
+test("syncRunningStyleCatalog appends every row of objects whose etag changed", async () => {
   await Promise.all([
     env.FEATURES_ARCHIVE.put(
-      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/nar/nar-v3.parquet",
+      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/19/nar/nar-v3.parquet",
       "nar",
     ),
     env.FEATURES_ARCHIVE.put(
-      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/21/jra/jra-v3.parquet",
+      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/jra-v3.parquet",
       "jra",
     ),
     env.FEATURES_ARCHIVE.put(
-      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/21/jra/readme.txt",
+      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/unchanged.parquet",
+      "jra2",
+    ),
+    env.FEATURES_ARCHIVE.put(
+      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/readme.txt",
       "ignored",
+    ),
+    env.FEATURES_ARCHIVE.put(
+      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/21/jra/today.parquet",
+      "not finished",
     ),
     env.FEATURES_ARCHIVE.put(
       "running-style/predictions/by-day/raw-iceberg-v1/2026/10/14/jra/old.parquet",
       "outside the window",
     ),
     env.SYNC_CACHE.put(
-      "running-style-catalog:v1:running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/nar/nar-v3.parquet",
-      "2026-10-20T09:00:00.000Z",
+      "running-style-catalog:v2:running-style/predictions/by-day/raw-iceberg-v1/2026/10/19/nar/nar-v3.parquet",
+      "stale-etag",
+    ),
+    env.SYNC_CACHE.put(
+      "running-style-catalog:v2:running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/unchanged.parquet",
+      "fd3787db3ff987997694edce4cb28693",
     ),
   ]);
   const row = {
     source: "nar",
     kaisai_nen: "2026",
-    kaisai_tsukihi: "1020",
+    kaisai_tsukihi: "1019",
     keibajo_code: "42",
     race_bango: "11",
     umaban: 3,
@@ -220,22 +231,22 @@ test("syncRunningStyleCatalog appends only rows newer than each object's waterma
   mocks.readObjects.mockImplementation(async ({ file }: { file: ArrayBuffer }) =>
     new TextDecoder().decode(file) === "nar"
       ? [
-          { ...row, ketto_toroku_bango: "H1", predicted_at: "2026-10-20T08:00:00.000Z" },
-          { ...row, ketto_toroku_bango: "H2", predicted_at: "2026-10-20T10:30:00.000Z" },
+          { ...row, ketto_toroku_bango: "H1", predicted_at: "2026-10-19T10:30:00.000Z" },
+          { ...row, ketto_toroku_bango: "H2", predicted_at: "2026-10-19T08:00:00.000Z" },
         ]
       : [
           {
             ...row,
             source: "jra",
             ketto_toroku_bango: "J1",
-            predicted_at: "2026-10-21T01:00:00.000Z",
+            predicted_at: "2026-10-20T01:00:00.000Z",
           },
         ],
   );
 
   const result = await syncRunningStyleCatalog(env, "20261021");
 
-  expect(result).toStrictEqual({ appendedRows: 2, objects: 2, snapshotId: "41" });
+  expect(result).toStrictEqual({ appendedRows: 3, objects: 3, snapshotId: "41" });
   expect(mocks.transaction).toHaveBeenCalledWith(
     {
       catalog: { type: "rest" },
@@ -246,54 +257,34 @@ test("syncRunningStyleCatalog appends only rows newer than each object's waterma
     expect.any(Function),
   );
   expect(mocks.createResolver).toHaveBeenCalledWith(env.CATALOG_BUCKET, "pc-keiba-r2-catalog");
+  expect(mocks.readObjects).toHaveBeenCalledTimes(2);
   expect(
     mocks.append.mock.calls[0]?.[0].records.map(
       (record: { ketto_toroku_bango: string }) => record.ketto_toroku_bango,
     ),
-  ).toStrictEqual(["H2", "J1"]);
+  ).toStrictEqual(["H1", "H2", "J1"]);
   expect(
     await env.SYNC_CACHE.get(
-      "running-style-catalog:v1:running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/nar/nar-v3.parquet",
+      "running-style-catalog:v2:running-style/predictions/by-day/raw-iceberg-v1/2026/10/19/nar/nar-v3.parquet",
     ),
-  ).toBe("2026-10-20T10:30:00.000Z");
+  ).toBe("c0c669570f0dd6c896db86e0447802e8");
   expect(
     await env.SYNC_CACHE.get(
-      "running-style-catalog:v1:running-style/predictions/by-day/raw-iceberg-v1/2026/10/21/jra/jra-v3.parquet",
+      "running-style-catalog:v2:running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/jra-v3.parquet",
     ),
-  ).toBe("2026-10-21T01:00:00.000Z");
+  ).toBe("7a573ccf96fc7bbc034dabf9f65618ef");
 });
 
-test("syncRunningStyleCatalog skips the commit when nothing is new", async () => {
+test("syncRunningStyleCatalog skips the commit when no object changed", async () => {
   await Promise.all([
     env.FEATURES_ARCHIVE.put(
-      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/21/jra/jra-v3.parquet",
+      "running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/jra-v3.parquet",
       "jra",
     ),
     env.SYNC_CACHE.put(
-      "running-style-catalog:v1:running-style/predictions/by-day/raw-iceberg-v1/2026/10/21/jra/jra-v3.parquet",
-      "2026-10-21T01:00:00.000Z",
+      "running-style-catalog:v2:running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/jra-v3.parquet",
+      "7a573ccf96fc7bbc034dabf9f65618ef",
     ),
-  ]);
-  mocks.readObjects.mockResolvedValue([
-    {
-      source: "jra",
-      kaisai_nen: "2026",
-      kaisai_tsukihi: "1021",
-      keibajo_code: "05",
-      race_bango: "01",
-      ketto_toroku_bango: "J1",
-      umaban: 1,
-      p_nige: 0.25,
-      p_senkou: 0.25,
-      p_sashi: 0.25,
-      p_oikomi: 0.25,
-      predicted_label: "nige",
-      predicted_class: 0,
-      cell_model_key: null,
-      cell_variant_id: null,
-      model_version: "jra-v3",
-      predicted_at: "2026-10-21T01:00:00.000Z",
-    },
   ]);
 
   expect(await syncRunningStyleCatalog(env, "20261021")).toStrictEqual({
@@ -301,19 +292,20 @@ test("syncRunningStyleCatalog skips the commit when nothing is new", async () =>
     objects: 1,
     snapshotId: null,
   });
+  expect(mocks.readObjects).not.toHaveBeenCalled();
   expect(mocks.transaction).not.toHaveBeenCalled();
 });
 
-test("syncRunningStyleCatalog keeps the watermarks when the commit has no snapshot", async () => {
+test("syncRunningStyleCatalog keeps the markers when the commit has no snapshot", async () => {
   await env.FEATURES_ARCHIVE.put(
-    "running-style/predictions/by-day/raw-iceberg-v1/2026/10/21/jra/jra-v3.parquet",
+    "running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/jra-v3.parquet",
     "jra",
   );
   mocks.readObjects.mockResolvedValue([
     {
       source: "jra",
       kaisai_nen: "2026",
-      kaisai_tsukihi: "1021",
+      kaisai_tsukihi: "1020",
       keibajo_code: "05",
       race_bango: "01",
       ketto_toroku_bango: "J1",
@@ -327,7 +319,7 @@ test("syncRunningStyleCatalog keeps the watermarks when the commit has no snapsh
       cell_model_key: null,
       cell_variant_id: null,
       model_version: "jra-v3",
-      predicted_at: "2026-10-21T01:00:00.000Z",
+      predicted_at: "2026-10-20T01:00:00.000Z",
     },
   ]);
   mocks.transaction.mockImplementation(async () => ({}));
@@ -337,14 +329,14 @@ test("syncRunningStyleCatalog keeps the watermarks when the commit has no snapsh
   );
   expect(
     await env.SYNC_CACHE.get(
-      "running-style-catalog:v1:running-style/predictions/by-day/raw-iceberg-v1/2026/10/21/jra/jra-v3.parquet",
+      "running-style-catalog:v2:running-style/predictions/by-day/raw-iceberg-v1/2026/10/20/jra/jra-v3.parquet",
     ),
   ).toBe(null);
 });
 
-test("readObjectBatch fails when the listed object is gone", async () => {
+test("readObjectRecords fails when the listed object is gone", async () => {
   await expect(
-    readObjectBatch(
+    readObjectRecords(
       env,
       "running-style/predictions/by-day/raw-iceberg-v1/2026/10/21/jra/gone.parquet",
     ),
