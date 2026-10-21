@@ -60,7 +60,7 @@ def test_build_prediction_rows_columns_jra_no_entry() -> None:
     rows = build_prediction_rows("jra:2024:0101:45:08", "jra", ranked)
     assert rows == [
         [
-            "jra-cb-v9-sim-2013-clean-nowin1",
+            "jra-cb-v9-sim-2013-clean-noexo1",
             "jra",
             "2024",
             "0101",
@@ -101,7 +101,7 @@ def test_build_prediction_rows_jra_with_entry_populates_subgroups() -> None:
     rows = build_prediction_rows("jra:2024:0405:05:08", "jra", ranked, None, entries[0])
     assert rows == [
         [
-            "jra-cb-v9-sim-2013-clean-nowin1",
+            "jra-cb-v9-sim-2013-clean-noexo1",
             "jra",
             "2024",
             "0405",
@@ -181,7 +181,7 @@ def test_build_prediction_rows_falls_back_to_category_when_none_passed() -> None
     entries = [{"ketto_toroku_bango": "111", "umaban": 1}]
     ranked = rank_race_entries(entries, [0.42])
     rows = build_prediction_rows("jra:2024:0101:45:08", "jra", ranked, None)
-    assert rows[0][0] == "jra-cb-v9-sim-2013-clean-nowin1"
+    assert rows[0][0] == "jra-cb-v9-sim-2013-clean-noexo1"
 
 
 def test_build_prediction_rows_entry_string_kyori_coerced() -> None:

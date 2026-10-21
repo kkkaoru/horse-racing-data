@@ -36,7 +36,7 @@ from predict_lib.dynamic_market_shadow import selected_artifact_versions
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "815147204240742454b62126a941ac8011a5963b33f004a9549efc7e8dc2ea4b"
+EXPECTED_MANIFEST_ROOT = "41aff142ad09397bf46d1a9f444c10b724d5443853cd035c9b43cfba5881c9fb"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -110,37 +110,37 @@ def test_manifest_is_deterministic_and_selector_complete() -> None:
     manifested = {artifact.serving_key for artifact in manifest.artifacts}
     assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/metadata.json" in manifested
     assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v1/model.json" in manifested
-    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2-nowin1/metadata.json" in selected
-    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2-nowin1/model.json" in selected
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2-noexo1/metadata.json" in selected
+    assert "finish-position/jra/jra-named-chukyo-nisai-stakes-v2-noexo1/model.json" in selected
     assert (
-        "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3-nowin1/metadata.json"
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3-noexo1/metadata.json"
         in selected
     )
     assert (
-        "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3-nowin1/model.json" in selected
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-focal-v3-noexo1/model.json" in selected
     )
     assert (
-        "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3-nowin1/metadata.json"
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3-noexo1/metadata.json"
         in selected
     )
     assert (
-        "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3-nowin1/model.json"
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-largefield-v3-noexo1/model.json"
         in selected
     )
     assert (
-        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1/metadata.json"
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1/metadata.json"
         in selected
     )
     assert (
-        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1/model.json"
+        "finish-position/jra/jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1/model.json"
         in selected
     )
     assert "finish-position/jra/jra-named-niigata-kinen-v1/metadata.json" in manifested
     assert "finish-position/jra/jra-named-niigata-kinen-v1/model.json" in manifested
-    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2-nowin1/metadata.json" in selected
-    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2-nowin1/model.json" in selected
-    assert "finish-position/jra/jra-named-niigata-kinen-going-v2-nowin1/metadata.json" in selected
-    assert "finish-position/jra/jra-named-niigata-kinen-going-v2-nowin1/model.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2-noexo1/metadata.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-draw-v2-noexo1/model.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-going-v2-noexo1/metadata.json" in selected
+    assert "finish-position/jra/jra-named-niigata-kinen-going-v2-noexo1/model.json" in selected
 
 
 def test_manifest_records_exact_jra_running_style_pair() -> None:
@@ -1111,7 +1111,7 @@ def test_main_stages_only_after_successful_verification(
         item
         for item in manifest.artifacts
         if item.serving_key
-        == "finish-position/jra/jra-cb-v10-prior-corner274-2013-nowin1/model.json"
+        == "finish-position/jra/jra-cb-v10-prior-corner274-2013-noexo1/model.json"
     )
     artifact_root = tmp_path / "models"
     stage_root = tmp_path / "staged"
@@ -1158,7 +1158,7 @@ def test_main_stages_only_after_successful_verification(
         (
             artifact_root,
             stage_root,
-            frozenset({"finish-position/jra/jra-cb-v10-prior-corner274-2013-nowin1/model.json"}),
+            frozenset({"finish-position/jra/jra-cb-v10-prior-corner274-2013-noexo1/model.json"}),
         )
     ]
 

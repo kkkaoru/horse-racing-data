@@ -150,30 +150,30 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
     default_variant: "sim",
     variants: {
       sim: {
-        model_version: "jra-cb-v9-sim-2013-clean-nowin1",
-        feature_count: 236,
+        model_version: "jra-cb-v9-sim-2013-clean-noexo1",
+        feature_count: 234,
         architecture: "catboost",
       },
       jockey_pedigree_703: {
-        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
-        feature_count: 255,
+        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1",
+        feature_count: 253,
         architecture: "catboost",
-        feature_set_hash: "c13f8450bb37e3f76280c247fc571f675de8e32a8394abae0411c99a46fe9e8b",
+        feature_set_hash: "e1184e3d9e0726a29f6d44641e1b38be83289ffb1dae7ed1000d7a9da9c412f2",
       },
       prior_corner_dirt_smallfield_005: {
-        model_version: "jra-cb-v10-prior-corner274-2013-nowin1",
-        feature_count: 260,
+        model_version: "jra-cb-v10-prior-corner274-2013-noexo1",
+        feature_count: 258,
         architecture: "catboost",
-        feature_set_hash: "9e075666e9cdaf51edb4a536e7797744cf4aac75414aec8b4b089cbcbd6653a2",
+        feature_set_hash: "f57455f3a48def70f7e352db0078441ce56954ecb897aed824c782a0d79994cf",
       },
       joken_005: {
-        model_version: "jra-joken-005-pooled-yetirank-v2-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-pooled-yetirank-v2-noexo1",
+        feature_count: 111,
         architecture: "catboost",
       },
       joken_005_dirt_mile_autumn_yeti_gated_top1: {
-        model_version: "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_005",
@@ -182,8 +182,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_005_turf_mile_yeti_gated_top1: {
-        model_version: "jra-joken-005-turf-mile-yeti-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-turf-mile-yeti-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_005",
@@ -191,8 +191,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         minimum_candidate_top_z: 1.25,
       },
       joken_005_turf_long_yeti_gated_top1: {
-        model_version: "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_005",
@@ -201,23 +201,23 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_010: {
-        model_version: "jra-joken-010-pooled-yetirank-v2-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-010-pooled-yetirank-v2-noexo1",
+        feature_count: 111,
         architecture: "catboost",
       },
       joken_016: {
-        model_version: "jra-joken-016-pooled-yetirank-v2-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-016-pooled-yetirank-v2-noexo1",
+        feature_count: 111,
         architecture: "catboost",
       },
       joken_701: {
-        model_version: "jra-joken-701-pooled-yetirank-v2-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-701-pooled-yetirank-v2-noexo1",
+        feature_count: 111,
         architecture: "catboost",
       },
       joken_010_dirt_intermediate_yeti_gated_top1: {
-        model_version: "jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-010-dirt-intermediate-yeti-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_010",
@@ -226,8 +226,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_701_turf_mile_qsm_gated_top1: {
-        model_version: "jra-joken-701-turf-mile-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-701-turf-mile-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_701",
@@ -236,8 +236,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_701_turf_intermediate_qsm_gated_top1: {
-        model_version: "jra-joken-701-turf-intermediate-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-701-turf-intermediate-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_701",
@@ -246,8 +246,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_701_turf_long_qsm_gated_top1: {
-        model_version: "jra-joken-701-turf-long-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-701-turf-long-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_701",
@@ -255,13 +255,13 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         minimum_candidate_top_z: 1.5,
       },
       joken_703: {
-        model_version: "jra-joken-703-pooled-yetirank-v2-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-pooled-yetirank-v2-noexo1",
+        feature_count: 111,
         architecture: "catboost",
       },
       joken_703_turf_long_spring_qsm_gated_top1: {
-        model_version: "jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-turf-long-spring-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_703",
@@ -270,8 +270,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 2,
       },
       joken_703_turf_intermediate_qsm_gated_top1: {
-        model_version: "jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_703",
@@ -280,8 +280,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 2,
       },
       joken_703_other_extended_qsm_gated_top1: {
-        model_version: "jra-joken-703-other-extended-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-other-extended-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_703",
@@ -290,8 +290,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 2,
       },
       joken_703_dirt_sprint_yeti_gated_top1: {
-        model_version: "jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_703",
@@ -300,8 +300,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_703_dirt_intermediate_qsm_gated_top1: {
-        model_version: "jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_703",
@@ -310,20 +310,20 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 2,
       },
       joken_703_dirt_mile_summer_qsm_top1: {
-        model_version: "jra-joken-703-querysoftmax-maxrange-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-querysoftmax-maxrange-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_703",
       },
       joken_999: {
-        model_version: "jra-joken-999-pooled-yetirank-v2-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-999-pooled-yetirank-v2-noexo1",
+        feature_count: 111,
         architecture: "catboost",
       },
       joken_005_turf_intermediate_spring_qsm_gated_top1: {
-        model_version: "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_005",
@@ -332,8 +332,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_005_dirt_mile_spring_qsm_gated_top1: {
-        model_version: "jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-dirt-mile-spring-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_005",
@@ -342,8 +342,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_005_dirt_intermediate_autumn_yeti_gated_top1: {
-        model_version: "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_005",
@@ -352,8 +352,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_703_turf_long_summer_yeti_gated_top1: {
-        model_version: "jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_703",
@@ -362,8 +362,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_005_dirt_1700_summer_qsm_gated_top1: {
-        model_version: "jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_005",
@@ -372,8 +372,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_005_dirt_1200_winter_summer_qsm_gated_top1: {
-        model_version: "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_005",
@@ -382,8 +382,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_703_turf_1400_qsm_gated_top1: {
-        model_version: "jra-joken-703-turf-1400-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-turf-1400-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_703",
@@ -392,8 +392,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 20,
       },
       joken_005_dirt_1800_nonautumn_qsm_gated_top1: {
-        model_version: "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_005",
@@ -402,8 +402,8 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         maximum_candidate_v2_rank: 2,
       },
       joken_703_turf_1200_largefield_yeti_gated_top1: {
-        model_version: "jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1",
-        feature_count: 113,
+        model_version: "jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1",
+        feature_count: 111,
         architecture: "catboost",
         routing_mode: "jra_variant_top1_swap",
         base_variant: "joken_703",
@@ -1710,7 +1710,7 @@ export const resolveFinishPositionDisplayPriorityModelVersion = (
 /**
  * Every distinct model_version referenced by any category's variants,
  * deduped -- each category's own default_variant included (e.g.
- * "jra-cb-v9-sim-2013-clean-nowin1" / "banei-cb-v9-sim-2011-nowin1" today, since
+ * "jra-cb-v9-sim-2013-clean-noexo1" / "banei-cb-v9-sim-2011-nowin1" today, since
  * cell_routing.json lists the default alongside every rule-only variant in
  * the same `variants` map). That inclusiveness is intentional here: this
  * backs a broad ALLOW-list (FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS in
@@ -1741,7 +1741,7 @@ export const getAllFinishPositionCellRoutingModelVersions = (): string[] => {
  *
  * Deliberately narrower than getAllFinishPositionCellRoutingModelVersions()
  * above: reusing that broader set as an exclusion list would sweep in each
- * category's plain default (jra-cb-v9-sim-2013-clean-nowin1 / banei-cb-v9-sim-2011-nowin1
+ * category's plain default (jra-cb-v9-sim-2013-clean-noexo1 / banei-cb-v9-sim-2011-nowin1
  * today) and wrongly block queries.ts's priority-3 fallback from ever
  * selecting that same default/base model_version again once it stops being
  * the "active" row (priority 2) -- even though

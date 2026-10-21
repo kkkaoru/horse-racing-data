@@ -823,7 +823,7 @@ _DEGENERATE_SCORES = [0.501, 0.500, 0.499]
 def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> None:
     assert (
         is_named_race_cell_score(
-            model_version="jra-named-niigata-kinen-draw-v2-nowin1",
+            model_version="jra-named-niigata-kinen-draw-v2-noexo1",
             resolved_variant="niigata_kinen",
             named_race_variants=("niigata_kinen",),
         )
@@ -831,7 +831,7 @@ def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> N
     )
     assert (
         is_named_race_cell_score(
-            model_version="jra-named-niigata-kinen-draw-v2-nowin1",
+            model_version="jra-named-niigata-kinen-draw-v2-noexo1",
             resolved_variant="joken_999",
             named_race_variants=("niigata_kinen",),
         )
@@ -839,7 +839,7 @@ def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> N
     )
     assert (
         is_named_race_cell_score(
-            model_version="jra-joken-999-pooled-yetirank-v2-nowin1",
+            model_version="jra-joken-999-pooled-yetirank-v2-noexo1",
             resolved_variant="joken_999",
             named_race_variants=("niigata_kinen",),
         )
@@ -847,7 +847,7 @@ def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> N
     )
     assert (
         is_named_race_cell_score(
-            model_version="jra-named-niigata-kinen-draw-v2-nowin1",
+            model_version="jra-named-niigata-kinen-draw-v2-noexo1",
             resolved_variant=None,
             named_race_variants=(),
         )
@@ -855,7 +855,7 @@ def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> N
     )
     assert (
         is_named_race_cell_score(
-            model_version="jra-joken-999-pooled-yetirank-v2-nowin1",
+            model_version="jra-joken-999-pooled-yetirank-v2-noexo1",
             resolved_variant=None,
             named_race_variants=(),
         )

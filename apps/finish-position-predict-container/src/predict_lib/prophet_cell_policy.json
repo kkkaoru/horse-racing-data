@@ -182,7 +182,7 @@
               "2026": 21
             }
           },
-          "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1": {
+          "jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -212,7 +212,7 @@
               "2026": 124
             }
           },
-          "jra-joken-005-pooled-yetirank-v2-nowin1": {
+          "jra-joken-005-pooled-yetirank-v2-noexo1": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -233,7 +233,7 @@
               "2026": 13
             }
           },
-          "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1": {
+          "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.02811069064531458,
             "reason": "served-branch-event-sweep",
@@ -263,7 +263,7 @@
               "2026": 9
             }
           },
-          "jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1": {
+          "jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -284,7 +284,7 @@
               "2026": 74
             }
           },
-          "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1": {
+          "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -296,7 +296,7 @@
           }
         },
         "joken_005_dirt_intermediate_autumn_yeti_gated_top1": {
-          "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1": {
+          "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -308,7 +308,7 @@
           }
         },
         "joken_005_dirt_mile_autumn_yeti_gated_top1": {
-          "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1": {
+          "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.12396029551178184,
             "reason": "served-branch-event-sweep",
@@ -329,7 +329,7 @@
               "2026": 54
             }
           },
-          "jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1": {
+          "jra-joken-005-dirt-mile-spring-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.003048016986279845,
             "reason": "served-branch-event-sweep",
@@ -359,7 +359,7 @@
               "2026": 30
             }
           },
-          "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1": {
+          "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -389,7 +389,7 @@
               "2026": 35
             }
           },
-          "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1": {
+          "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -419,7 +419,7 @@
               "2026": 47
             }
           },
-          "jra-joken-005-turf-mile-yeti-gated-v1-nowin1": {
+          "jra-joken-005-turf-mile-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.01526767108287262,
             "reason": "served-branch-event-sweep",
@@ -449,7 +449,7 @@
               "2026": 64
             }
           },
-          "jra-joken-010-pooled-yetirank-v2-nowin1": {
+          "jra-joken-010-pooled-yetirank-v2-noexo1": {
             "enabled": true,
             "weight": 0.045935658590402106,
             "reason": "served-branch-event-sweep",
@@ -470,7 +470,7 @@
               "2026": 25
             }
           },
-          "jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1": {
+          "jra-joken-010-dirt-intermediate-yeti-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -491,7 +491,7 @@
               "2026": 189
             }
           },
-          "jra-joken-703-pooled-yetirank-v2-nowin1": {
+          "jra-joken-703-pooled-yetirank-v2-noexo1": {
             "enabled": true,
             "weight": 0.0009222501647436795,
             "reason": "served-branch-event-sweep",
@@ -521,7 +521,7 @@
               "2026": 194
             }
           },
-          "jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1": {
+          "jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.0016940061335651959,
             "reason": "served-branch-event-sweep",
@@ -542,7 +542,7 @@
               "2026": 8
             }
           },
-          "jra-joken-703-querysoftmax-maxrange-v1-nowin1": {
+          "jra-joken-703-querysoftmax-maxrange-v1-noexo1": {
             "enabled": true,
             "weight": 0.03333099916088966,
             "reason": "served-branch-event-sweep",
@@ -563,7 +563,7 @@
               "2026": 20
             }
           },
-          "jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1": {
+          "jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.005189060258757984,
             "reason": "served-branch-event-sweep",
@@ -584,7 +584,7 @@
               "2026": 36
             }
           },
-          "jra-joken-703-other-extended-qsm-gated-v1-nowin1": {
+          "jra-joken-703-other-extended-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.020338756000875972,
             "reason": "served-branch-event-sweep",
@@ -614,7 +614,7 @@
               "2026": 33
             }
           },
-          "jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1": {
+          "jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.017269996650439372,
             "reason": "served-branch-event-sweep",
@@ -635,7 +635,7 @@
               "2026": 17
             }
           },
-          "jra-joken-703-turf-1400-qsm-gated-v1-nowin1": {
+          "jra-joken-703-turf-1400-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -665,7 +665,7 @@
               "2026": 87
             }
           },
-          "jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1": {
+          "jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.008985626212536117,
             "reason": "served-branch-event-sweep",
@@ -686,7 +686,7 @@
               "2026": 46
             }
           },
-          "jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1": {
+          "jra-joken-703-turf-long-spring-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.024921818155946254,
             "reason": "served-branch-event-sweep",
@@ -716,7 +716,7 @@
               "2026": 7
             }
           },
-          "jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1": {
+          "jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.09420309433970757,
             "reason": "served-branch-event-sweep",
@@ -737,7 +737,7 @@
               "2026": 13
             }
           },
-          "jra-joken-999-pooled-yetirank-v2-nowin1": {
+          "jra-joken-999-pooled-yetirank-v2-noexo1": {
             "enabled": true,
             "weight": 0.32850488793153476,
             "reason": "served-branch-event-sweep",
@@ -788,7 +788,7 @@
               "2026": 401
             }
           },
-          "jra-cb-v9-sim-2013-clean-nowin1": {
+          "jra-cb-v9-sim-2013-clean-noexo1": {
             "enabled": true,
             "weight": 0.0046599436142443695,
             "reason": "served-branch-event-sweep",
@@ -802,413 +802,413 @@
       },
       "signatures": {
         "jockey_pedigree_703": {
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1;stage1=fresh;final=jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1;stage1=fresh;final=jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_005": {
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-005-pooled-yetirank-v2-nowin1;stage1=fresh;final=jra-joken-005-pooled-yetirank-v2-nowin1": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-005-pooled-yetirank-v2-noexo1;stage1=fresh;final=jra-joken-005-pooled-yetirank-v2-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-005-pooled-yetirank-v2-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-005-pooled-yetirank-v2-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-005-pooled-yetirank-v2-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-005-pooled-yetirank-v2-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_005_dirt_1200_winter_summer_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.03533640895046754
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_005_dirt_1700_summer_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.48058996775189355
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_005_dirt_1800_nonautumn_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.22298748891189035
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_005_dirt_intermediate_autumn_yeti_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.38746502633811164
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_005_dirt_mile_autumn_yeti_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-mile-autumn-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-mile-autumn-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.15796813305873675
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-mile-autumn-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-mile-autumn-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.011987983931470856
           }
         },
         "joken_005_dirt_mile_spring_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-mile-spring-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-mile-spring-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-dirt-mile-spring-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-mile-spring-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-dirt-mile-spring-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.003048016986279845
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-dirt-mile-spring-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_005_turf_intermediate_spring_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_005_turf_long_yeti_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1;stage1=fresh;final=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1;stage1=fresh;final=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1": {
             "enabled": true,
             "weight": 0.3044944802759066
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1;stage1=fresh;final=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1;stage1=fresh;final=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_005_turf_mile_yeti_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-turf-mile-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-turf-mile-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.5533377242317921
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-005-turf-mile-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-005-turf-mile-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.01526767108287262
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-005-turf-mile-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_010": {
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-010-pooled-yetirank-v2-nowin1;stage1=fresh;final=jra-joken-010-pooled-yetirank-v2-nowin1": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-010-pooled-yetirank-v2-noexo1;stage1=fresh;final=jra-joken-010-pooled-yetirank-v2-noexo1": {
             "enabled": true,
             "weight": 0.045935658590402106
           },
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-010-pooled-yetirank-v2-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-010-pooled-yetirank-v2-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-010-pooled-yetirank-v2-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-010-pooled-yetirank-v2-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_010_dirt_intermediate_yeti_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-010-dirt-intermediate-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-010-dirt-intermediate-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.3333906168529641
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-010-dirt-intermediate-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-010-dirt-intermediate-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-010-dirt-intermediate-yeti-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-010-dirt-intermediate-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703": {
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-703-pooled-yetirank-v2-nowin1;stage1=fresh;final=jra-joken-703-pooled-yetirank-v2-nowin1": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-703-pooled-yetirank-v2-noexo1;stage1=fresh;final=jra-joken-703-pooled-yetirank-v2-noexo1": {
             "enabled": true,
             "weight": 0.0009222501647436795
           },
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-703-pooled-yetirank-v2-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-703-pooled-yetirank-v2-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703_dirt_intermediate_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.9107842596669311
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703_dirt_mile_summer_qsm_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-querysoftmax-maxrange-v1-nowin1;stage1=fresh;final=jra-joken-703-querysoftmax-maxrange-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-querysoftmax-maxrange-v1-noexo1;stage1=fresh;final=jra-joken-703-querysoftmax-maxrange-v1-noexo1": {
             "enabled": true,
             "weight": 0.03333099916088966
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-querysoftmax-maxrange-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-querysoftmax-maxrange-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703_dirt_sprint_yeti_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.3977522769407785
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703_other_extended_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-other-extended-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-other-extended-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-other-extended-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-other-extended-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.6241115838023399
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-other-extended-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-other-extended-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-other-extended-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-other-extended-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-other-extended-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-other-extended-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-other-extended-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-other-extended-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703_turf_1200_largefield_yeti_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.29138986746654016
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703_turf_1400_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1400-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-1400-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1400-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-1400-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.7320319521402445
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1400-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-1400-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-1400-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-1400-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-1400-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-1400-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-1400-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-1400-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703_turf_intermediate_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.1518677538856536
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.008985626212536117
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703_turf_long_spring_qsm_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-spring-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-long-spring-qsm-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.9863934139696899
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-spring-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-long-spring-qsm-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-long-spring-qsm-gated-v1-noexo1": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-long-spring-qsm-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_703_turf_long_summer_yeti_gated_top1": {
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.8194316792322827
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1;stage1=fresh;final=jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1;stage1=fresh;final=jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1": {
             "enabled": true,
             "weight": 0.013846930303906754
           },
-          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-swap;stage2-model=jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "joken_999": {
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-999-pooled-yetirank-v2-nowin1;stage1=fresh;final=jra-joken-999-pooled-yetirank-v2-nowin1": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-999-pooled-yetirank-v2-noexo1;stage1=fresh;final=jra-joken-999-pooled-yetirank-v2-noexo1": {
             "enabled": true,
             "weight": 0.32850488793153476
           },
-          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-999-pooled-yetirank-v2-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=direct;stage2=direct-cell;stage2-model=jra-joken-999-pooled-yetirank-v2-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }
@@ -1224,15 +1224,15 @@
           }
         },
         "sim": {
-          "v1;mode=direct-default;stage2=direct-default;stage2-model=jra-cb-v9-sim-2013-clean-nowin1;stage1=fresh;final=jra-cb-v9-sim-2013-clean-nowin1": {
+          "v1;mode=direct-default;stage2=direct-default;stage2-model=jra-cb-v9-sim-2013-clean-noexo1;stage1=fresh;final=jra-cb-v9-sim-2013-clean-noexo1": {
             "enabled": true,
             "weight": 0.0046599436142443695
           },
-          "v1;mode=direct-default;stage2=direct-default;stage2-model=jra-cb-v9-sim-2013-clean-nowin1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
+          "v1;mode=direct-default;stage2=direct-default;stage2-model=jra-cb-v9-sim-2013-clean-noexo1;stage1=odds-missing:weather-gate-kept-base;final=jra-cb-stage1-marketfree235-2013": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=direct-default;stage2=direct-default;stage2-model=jra-cb-v9-sim-2013-clean-nowin1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
+          "v1;mode=direct-default;stage2=direct-default;stage2-model=jra-cb-v9-sim-2013-clean-noexo1;stage1=odds-missing:weather-gate-swap;final=jra-cb-stage1-marketfree235-iter500-top1swap-2013": {
             "enabled": false,
             "weight": 0.05
           }

@@ -282,28 +282,28 @@ def test_load_cell_router_routes_named_open_races() -> None:
 
 def test_load_cell_router_named_race_variants_inherit_open_class_model() -> None:
     routing = load_cell_router().routing_for("jra")
-    assert routing.variants["niigata_bsn"].model_version == "jra-named-niigata-bsn-v1-nowin1"
-    assert routing.variants["niigata_bsn"].feature_count == 113
+    assert routing.variants["niigata_bsn"].model_version == "jra-named-niigata-bsn-v1-noexo1"
+    assert routing.variants["niigata_bsn"].feature_count == 111
     assert routing.variants["niigata_bsn"].architecture == "catboost"
     assert routing.variants["niigata_bsn"].base_variant == "joken_999"
     assert (
-        routing.variants["sapporo_suzuran"].model_version == "jra-named-sapporo-suzuran-v2-nowin1"
+        routing.variants["sapporo_suzuran"].model_version == "jra-named-sapporo-suzuran-v2-noexo1"
     )
     assert routing.variants["chukyo_nisai_stakes"].model_version == (
-        "jra-named-chukyo-nisai-stakes-focal-v3-nowin1"
+        "jra-named-chukyo-nisai-stakes-focal-v3-noexo1"
     )
-    assert routing.variants["chukyo_nisai_stakes"].feature_count == 113
+    assert routing.variants["chukyo_nisai_stakes"].feature_count == 111
     assert routing.variants["chukyo_nisai_stakes"].architecture == "catboost"
     assert routing.variants["chukyo_nisai_stakes"].base_variant == "joken_999"
     assert routing.variants["chukyo_nisai_stakes"].routing_mode == LOCK1_RERANK_REST_ROUTING_MODE
     assert routing.variants["chukyo_nisai_stakes"].rerank_variant == "chukyo_nisai_stakes_rerank"
     assert routing.variants["chukyo_nisai_stakes_rerank"].model_version == (
-        "jra-named-chukyo-nisai-stakes-v2-nowin1"
+        "jra-named-chukyo-nisai-stakes-v2-noexo1"
     )
-    assert routing.variants["chukyo_nisai_stakes_rerank"].feature_count == 113
+    assert routing.variants["chukyo_nisai_stakes_rerank"].feature_count == 111
     assert routing.variants["chukyo_nisai_stakes_rerank"].routing_mode == "direct"
     assert routing.variants["chukyo_nisai_stakes_jul1600_ninki2"].model_version == (
-        "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1"
+        "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1"
     )
     assert routing.variants["chukyo_nisai_stakes_jul1600_ninki2"].routing_mode == (
         LOCK1_RERANK_REST_ROUTING_MODE
@@ -312,7 +312,7 @@ def test_load_cell_router_named_race_variants_inherit_open_class_model() -> None
         "chukyo_nisai_stakes_rerank"
     )
     assert routing.variants["chukyo_nisai_stakes_largefield"].model_version == (
-        "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1"
+        "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1"
     )
     assert routing.variants["chukyo_nisai_stakes_largefield"].routing_mode == (
         LOCK1_RERANK_REST_ROUTING_MODE
@@ -321,17 +321,17 @@ def test_load_cell_router_named_race_variants_inherit_open_class_model() -> None
         "chukyo_nisai_stakes_rerank"
     )
     assert (
-        routing.variants["niigata_kinen"].model_version == "jra-named-niigata-kinen-draw-v2-nowin1"
+        routing.variants["niigata_kinen"].model_version == "jra-named-niigata-kinen-draw-v2-noexo1"
     )
-    assert routing.variants["niigata_kinen"].feature_count == 113
+    assert routing.variants["niigata_kinen"].feature_count == 111
     assert routing.variants["niigata_kinen"].architecture == "catboost"
     assert routing.variants["niigata_kinen"].base_variant == "joken_999"
     assert routing.variants["niigata_kinen"].routing_mode == LOCK1_RERANK_REST_ROUTING_MODE
     assert routing.variants["niigata_kinen"].rerank_variant == "niigata_kinen_rerank"
     assert routing.variants["niigata_kinen_rerank"].model_version == (
-        "jra-named-niigata-kinen-going-v2-nowin1"
+        "jra-named-niigata-kinen-going-v2-noexo1"
     )
-    assert routing.variants["niigata_kinen_rerank"].feature_count == 114
+    assert routing.variants["niigata_kinen_rerank"].feature_count == 112
     assert routing.variants["niigata_kinen_rerank"].routing_mode == "direct"
     assert ("04", "BSN賞") in routing.named_race_index
     assert ("01", "すずらん賞") in routing.named_race_index
@@ -365,7 +365,7 @@ def test_apply_named_race_cells_overrides_model_fields() -> None:
         variants={
             "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
             "joken_999": VariantSpec(
-                model_version="jra-joken-999-pooled-yetirank-v2-nowin1",
+                model_version="jra-joken-999-pooled-yetirank-v2-noexo1",
                 feature_count=113,
                 architecture="catboost",
             ),
@@ -380,14 +380,14 @@ def test_apply_named_race_cells_overrides_model_fields() -> None:
                 venue="04",
                 race_name_token="BSN賞",
                 base_variant="joken_999",
-                model_version="jra-named-niigata-bsn-v1-nowin1",
+                model_version="jra-named-niigata-bsn-v1-noexo1",
                 feature_count=200,
                 architecture="lightgbm",
             ),
         ),
     )
     assert applied.variants["niigata_bsn"] == VariantSpec(
-        model_version="jra-named-niigata-bsn-v1-nowin1",
+        model_version="jra-named-niigata-bsn-v1-noexo1",
         feature_count=200,
         architecture="lightgbm",
         base_variant="joken_999",
@@ -433,7 +433,7 @@ def test_apply_named_race_cells_injects_lock1_rerank_variant() -> None:
         variants={
             "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
             "joken_999": VariantSpec(
-                model_version="jra-joken-999-pooled-yetirank-v2-nowin1",
+                model_version="jra-joken-999-pooled-yetirank-v2-noexo1",
                 feature_count=113,
                 architecture="catboost",
             ),
@@ -448,17 +448,17 @@ def test_apply_named_race_cells_injects_lock1_rerank_variant() -> None:
                 venue="04",
                 race_name_token="新潟記念",
                 base_variant="joken_999",
-                model_version="jra-named-niigata-kinen-draw-v2-nowin1",
+                model_version="jra-named-niigata-kinen-draw-v2-noexo1",
                 feature_count=113,
                 architecture="catboost",
                 rerank_feature_count=114,
-                rerank_model_version="jra-named-niigata-kinen-going-v2-nowin1",
+                rerank_model_version="jra-named-niigata-kinen-going-v2-noexo1",
                 routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
             ),
         ),
     )
     assert applied.variants["niigata_kinen"] == VariantSpec(
-        model_version="jra-named-niigata-kinen-draw-v2-nowin1",
+        model_version="jra-named-niigata-kinen-draw-v2-noexo1",
         feature_count=113,
         architecture="catboost",
         routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
@@ -466,7 +466,7 @@ def test_apply_named_race_cells_injects_lock1_rerank_variant() -> None:
         rerank_variant="niigata_kinen_rerank",
     )
     assert applied.variants["niigata_kinen_rerank"] == VariantSpec(
-        model_version="jra-named-niigata-kinen-going-v2-nowin1",
+        model_version="jra-named-niigata-kinen-going-v2-noexo1",
         feature_count=114,
         architecture="catboost",
         routing_mode="direct",
@@ -483,7 +483,7 @@ def test_apply_named_race_cells_injects_prerace_lock_variant() -> None:
         variants={
             "sim": VariantSpec(model_version="sim-v", feature_count=1, architecture="catboost"),
             "joken_999": VariantSpec(
-                model_version="jra-joken-999-pooled-yetirank-v2-nowin1",
+                model_version="jra-joken-999-pooled-yetirank-v2-noexo1",
                 feature_count=113,
                 architecture="catboost",
             ),
@@ -498,11 +498,11 @@ def test_apply_named_race_cells_injects_prerace_lock_variant() -> None:
                 venue="07",
                 race_name_token="中京2歳ステークス",
                 base_variant="joken_999",
-                model_version="jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
+                model_version="jra-named-chukyo-nisai-stakes-focal-v3-noexo1",
                 feature_count=113,
                 architecture="catboost",
                 rerank_feature_count=113,
-                rerank_model_version="jra-named-chukyo-nisai-stakes-v2-nowin1",
+                rerank_model_version="jra-named-chukyo-nisai-stakes-v2-noexo1",
                 routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
                 prerace_router=NamedRacePreraceRouter(
                     routes=(
@@ -515,7 +515,7 @@ def test_apply_named_race_cells_injects_prerace_lock_variant() -> None:
                             when=NamedRacePreraceWhen(
                                 kyori=frozenset({"1200"}), month=frozenset({"12"})
                             ),
-                            model_version="jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+                            model_version="jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
                             variant="chukyo_nisai_stakes_largefield",
                         ),
                     )
@@ -524,7 +524,7 @@ def test_apply_named_race_cells_injects_prerace_lock_variant() -> None:
         ),
     )
     assert applied.variants["chukyo_nisai_stakes_largefield"] == VariantSpec(
-        model_version="jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+        model_version="jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
         feature_count=113,
         architecture="catboost",
         routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
@@ -589,15 +589,15 @@ def test_apply_named_race_cells_rejects_prerace_lock_variant_collision() -> None
                     venue="07",
                     race_name_token="中京2歳ステークス",
                     base_variant="joken_999",
-                    model_version="jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
-                    rerank_model_version="jra-named-chukyo-nisai-stakes-v2-nowin1",
+                    model_version="jra-named-chukyo-nisai-stakes-focal-v3-noexo1",
+                    rerank_model_version="jra-named-chukyo-nisai-stakes-v2-noexo1",
                     prerace_router=NamedRacePreraceRouter(
                         routes=(
                             NamedRacePreraceRoute(
                                 when=NamedRacePreraceWhen(
                                     kyori=frozenset({"1200"}), month=frozenset({"12"})
                                 ),
-                                model_version="jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+                                model_version="jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
                                 variant="chukyo_nisai_stakes_largefield",
                             ),
                         )
@@ -634,7 +634,7 @@ def test_apply_named_race_cells_rejects_lock1_rerank_variant_collision() -> None
                     venue="04",
                     race_name_token="新潟記念",
                     base_variant="joken_999",
-                    rerank_model_version="jra-named-niigata-kinen-going-v2-nowin1",
+                    rerank_model_version="jra-named-niigata-kinen-going-v2-noexo1",
                 ),
             ),
         )
@@ -1038,7 +1038,7 @@ def test_load_named_race_cells_rejects_missing_prerace_when(tmp_path: Path) -> N
                             "routes": [
                                 {
                                     "model_version": (
-                                        "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1"
+                                        "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1"
                                     ),
                                     "variant": "chukyo_nisai_stakes_largefield",
                                 }
@@ -1092,7 +1092,7 @@ def test_load_named_race_cells_accepts_scalar_prerace_when(tmp_path: Path) -> No
                                 {"when": {"kyori": 1200, "month": 12}},
                                 {
                                     "model_version": (
-                                        "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1"
+                                        "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1"
                                     ),
                                     "variant": "chukyo_nisai_stakes_largefield",
                                     "when": {"kyori": ["1200"], "month": ["12"]},
@@ -1138,25 +1138,25 @@ def test_apply_named_race_cells_reuses_identical_prerace_lock_variant() -> None:
                 venue="07",
                 race_name_token="中京2歳ステークス",
                 base_variant="joken_999",
-                model_version="jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
-                rerank_model_version="jra-named-chukyo-nisai-stakes-v2-nowin1",
+                model_version="jra-named-chukyo-nisai-stakes-focal-v3-noexo1",
+                rerank_model_version="jra-named-chukyo-nisai-stakes-v2-noexo1",
                 prerace_router=NamedRacePreraceRouter(
                     routes=(
                         NamedRacePreraceRoute(
                             when=NamedRacePreraceWhen(kyori=frozenset({"1200"})),
-                            model_version="jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+                            model_version="jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
                             variant="chukyo_nisai_stakes_largefield",
                         ),
                         NamedRacePreraceRoute(
                             when=NamedRacePreraceWhen(month=frozenset({"12"})),
-                            model_version="jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+                            model_version="jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
                             variant="chukyo_nisai_stakes_largefield",
                         ),
                         NamedRacePreraceRoute(
                             when=NamedRacePreraceWhen(
                                 kyori=frozenset({"1400"}), month=frozenset({"07", "08"})
                             ),
-                            model_version="jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
+                            model_version="jra-named-chukyo-nisai-stakes-focal-v3-noexo1",
                             variant="chukyo_nisai_stakes",
                         ),
                     )
@@ -1165,7 +1165,7 @@ def test_apply_named_race_cells_reuses_identical_prerace_lock_variant() -> None:
         ),
     )
     assert applied.variants["chukyo_nisai_stakes_largefield"].model_version == (
-        "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1"
+        "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1"
     )
     router = CellRouter({"jra": applied})
     assert (
@@ -1474,15 +1474,15 @@ def test_load_cell_router_real_config_has_jra_703_routing() -> None:
     assert router.has_routing("jra") is True
     routing = router.routing_for("jra")
     assert routing.default_variant == "sim"
-    assert routing.variants["sim"].model_version == "jra-cb-v9-sim-2013-clean-nowin1"
+    assert routing.variants["sim"].model_version == "jra-cb-v9-sim-2013-clean-noexo1"
     assert (
         routing.variants["jockey_pedigree_703"].model_version
-        == "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1"
+        == "jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1"
     )
-    assert routing.variants["jockey_pedigree_703"].feature_count == 255
+    assert routing.variants["jockey_pedigree_703"].feature_count == 253
     assert (
         routing.variants["jockey_pedigree_703"].feature_set_hash
-        == "c13f8450bb37e3f76280c247fc571f675de8e32a8394abae0411c99a46fe9e8b"
+        == "e1184e3d9e0726a29f6d44641e1b38be83289ffb1dae7ed1000d7a9da9c412f2"
     )
     assert (
         router.resolve_variant("jra", [{"grade_code": "", "kyoso_joken_code": "703"}])
@@ -1497,7 +1497,7 @@ def test_load_cell_router_real_config_has_jra_703_routing() -> None:
 def test_load_cell_router_real_config_prioritizes_703_dirt_mile_summer() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_703_dirt_mile_summer_qsm_top1"]
-    assert specialist.model_version == "jra-joken-703-querysoftmax-maxrange-v1-nowin1"
+    assert specialist.model_version == "jra-joken-703-querysoftmax-maxrange-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_703"
     summer_dirt_mile = {
@@ -1527,7 +1527,7 @@ def test_load_cell_router_real_config_prioritizes_703_dirt_mile_summer() -> None
 def test_load_cell_router_real_config_prioritizes_005_dirt_mile_autumn_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_005_dirt_mile_autumn_yeti_gated_top1"]
-    assert specialist.model_version == "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-005-dirt-mile-autumn-yeti-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_005"
     assert specialist.minimum_candidate_margin == 0.05
@@ -1567,7 +1567,7 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_mile_autumn_gate() ->
 def test_load_cell_router_real_config_prioritizes_005_dirt_mile_spring_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_005_dirt_mile_spring_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-005-dirt-mile-spring-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-005-dirt-mile-spring-qsm-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_005"
     assert specialist.minimum_candidate_margin == 0.02
@@ -1603,7 +1603,7 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_intermediate_autumn_g
     specialist = router.routing_for("jra").variants[
         "joken_005_dirt_intermediate_autumn_yeti_gated_top1"
     ]
-    assert specialist.model_version == "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-005-dirt-intermediate-autumn-yeti-gated-v1-noexo1"
     assert specialist.minimum_candidate_margin == 0.2
     assert specialist.minimum_candidate_top_z == 1.25
     assert specialist.maximum_candidate_v2_rank == 20
@@ -1633,7 +1633,7 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_intermediate_autumn_g
 def test_load_cell_router_real_config_prioritizes_005_dirt_1700_summer_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_005_dirt_1700_summer_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-005-dirt-1700-summer-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-005-dirt-1700-summer-qsm-gated-v1-noexo1"
     assert specialist.minimum_candidate_margin == 0.2
     assert specialist.minimum_candidate_top_z == 1.25
     assert specialist.maximum_candidate_v2_rank == 20
@@ -1665,7 +1665,7 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_1200_winter_summer_ga
     specialist = router.routing_for("jra").variants[
         "joken_005_dirt_1200_winter_summer_qsm_gated_top1"
     ]
-    assert specialist.model_version == "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1"
     assert specialist.minimum_candidate_margin == 0.15
     assert specialist.minimum_candidate_top_z == 1.25
     assert specialist.maximum_candidate_v2_rank == 20
@@ -1699,7 +1699,7 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_1200_winter_summer_ga
 def test_load_cell_router_real_config_prioritizes_005_dirt_1800_nonautumn_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_005_dirt_1800_nonautumn_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-005-dirt-1800-nonautumn-qsm-gated-v1-noexo1"
     assert specialist.minimum_candidate_margin == 0.2
     assert specialist.minimum_candidate_top_z == 1.25
     assert specialist.maximum_candidate_v2_rank == 2
@@ -1728,7 +1728,7 @@ def test_load_cell_router_real_config_prioritizes_005_turf_intermediate_spring_g
     specialist = router.routing_for("jra").variants[
         "joken_005_turf_intermediate_spring_qsm_gated_top1"
     ]
-    assert specialist.model_version == "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-005-turf-intermediate-spring-qsm-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_005"
     assert specialist.minimum_candidate_margin == 0.0
@@ -1763,13 +1763,13 @@ def test_load_cell_router_real_config_prioritizes_005_turf_cells_with_confidence
     router = load_cell_router()
     routing = router.routing_for("jra")
     mile_specialist = routing.variants["joken_005_turf_mile_yeti_gated_top1"]
-    assert mile_specialist.model_version == "jra-joken-005-turf-mile-yeti-gated-v1-nowin1"
+    assert mile_specialist.model_version == "jra-joken-005-turf-mile-yeti-gated-v1-noexo1"
     assert mile_specialist.routing_mode == "jra_variant_top1_swap"
     assert mile_specialist.base_variant == "joken_005"
     assert mile_specialist.minimum_candidate_margin == 0.1
     assert mile_specialist.minimum_candidate_top_z == 1.25
     specialist = routing.variants["joken_005_turf_long_yeti_gated_top1"]
-    assert specialist.model_version == "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1"
+    assert specialist.model_version == "jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_005"
     assert specialist.minimum_candidate_margin == 0.3
@@ -1798,7 +1798,7 @@ def test_load_cell_router_real_config_prioritizes_005_turf_cells_with_confidence
 def test_load_cell_router_real_config_prioritizes_010_dirt_intermediate_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_010_dirt_intermediate_yeti_gated_top1"]
-    assert specialist.model_version == "jra-joken-010-dirt-intermediate-yeti-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-010-dirt-intermediate-yeti-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_010"
     assert specialist.minimum_candidate_margin == 0.2
@@ -1826,7 +1826,7 @@ def test_load_cell_router_real_config_prioritizes_010_dirt_intermediate_gate() -
 def test_load_cell_router_real_config_prioritizes_701_turf_long_confidence_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_701_turf_long_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-701-turf-long-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-701-turf-long-qsm-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_701"
     assert specialist.minimum_candidate_margin == 0.5
@@ -1853,7 +1853,7 @@ def test_load_cell_router_real_config_prioritizes_701_turf_long_confidence_gate(
 def test_load_cell_router_real_config_prioritizes_703_dirt_intermediate_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_703_dirt_intermediate_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_703"
     assert specialist.minimum_candidate_margin == 0.01
@@ -1887,7 +1887,7 @@ def test_load_cell_router_real_config_prioritizes_703_dirt_intermediate_gate() -
 def test_load_cell_router_real_config_prioritizes_701_turf_mile_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_701_turf_mile_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-701-turf-mile-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-701-turf-mile-qsm-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_701"
     assert specialist.minimum_candidate_margin == 0.5
@@ -1915,7 +1915,7 @@ def test_load_cell_router_real_config_prioritizes_701_turf_mile_gate() -> None:
 def test_load_cell_router_real_config_prioritizes_701_turf_intermediate_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_701_turf_intermediate_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-701-turf-intermediate-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-701-turf-intermediate-qsm-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_701"
     assert specialist.minimum_candidate_margin == 0.5
@@ -1948,7 +1948,7 @@ def test_load_cell_router_real_config_prioritizes_703_turf_1200_largefield_gate(
     specialist = router.routing_for("jra").variants[
         "joken_703_turf_1200_largefield_yeti_gated_top1"
     ]
-    assert specialist.model_version == "jra-joken-703-turf-1200-largefield-yeti-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-703-turf-1200-largefield-yeti-gated-v1-noexo1"
     assert specialist.minimum_candidate_margin == 0.15
     assert specialist.minimum_candidate_top_z == 1.5
     assert specialist.maximum_candidate_v2_rank == 20
@@ -1976,7 +1976,7 @@ def test_load_cell_router_real_config_prioritizes_703_turf_1200_largefield_gate(
 def test_load_cell_router_real_config_prioritizes_703_turf_1400_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_703_turf_1400_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-703-turf-1400-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-703-turf-1400-qsm-gated-v1-noexo1"
     assert specialist.minimum_candidate_margin == 0.1
     assert specialist.minimum_candidate_top_z == 1.5
     assert specialist.maximum_candidate_v2_rank == 20
@@ -1999,7 +1999,7 @@ def test_load_cell_router_real_config_prioritizes_703_turf_1400_gate() -> None:
 def test_load_cell_router_real_config_prioritizes_703_turf_long_summer_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_703_turf_long_summer_yeti_gated_top1"]
-    assert specialist.model_version == "jra-joken-703-turf-long-summer-yeti-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-703-turf-long-summer-yeti-gated-v1-noexo1"
     assert specialist.minimum_candidate_margin == 0.2
     assert specialist.minimum_candidate_top_z == 1.5
     assert specialist.maximum_candidate_v2_rank == 20
@@ -2023,7 +2023,7 @@ def test_load_cell_router_real_config_prioritizes_703_turf_long_summer_gate() ->
 def test_load_cell_router_real_config_prioritizes_703_turf_long_spring_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_703_turf_long_spring_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-703-turf-long-spring-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-703-turf-long-spring-qsm-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_703"
     assert specialist.minimum_candidate_margin == 0.1
@@ -2057,7 +2057,7 @@ def test_load_cell_router_real_config_prioritizes_703_turf_long_spring_gate() ->
 def test_load_cell_router_real_config_prioritizes_703_turf_intermediate_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_703_turf_intermediate_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_703"
     assert specialist.minimum_candidate_margin == 0.05
@@ -2094,7 +2094,7 @@ def test_load_cell_router_real_config_prioritizes_703_turf_intermediate_gate() -
 def test_load_cell_router_real_config_prioritizes_703_other_extended_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_703_other_extended_qsm_gated_top1"]
-    assert specialist.model_version == "jra-joken-703-other-extended-qsm-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-703-other-extended-qsm-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_703"
     assert specialist.minimum_candidate_margin == 0.15
@@ -2124,7 +2124,7 @@ def test_load_cell_router_real_config_prioritizes_703_other_extended_gate() -> N
 def test_load_cell_router_real_config_prioritizes_703_dirt_sprint_gate() -> None:
     router = load_cell_router()
     specialist = router.routing_for("jra").variants["joken_703_dirt_sprint_yeti_gated_top1"]
-    assert specialist.model_version == "jra-joken-703-dirt-sprint-yeti-gated-v1-nowin1"
+    assert specialist.model_version == "jra-joken-703-dirt-sprint-yeti-gated-v1-noexo1"
     assert specialist.routing_mode == "jra_variant_top1_swap"
     assert specialist.base_variant == "joken_703"
     assert specialist.minimum_candidate_margin == 0.02
@@ -2154,9 +2154,9 @@ def test_load_cell_router_real_config_routes_every_ungraded_joken_code() -> None
     for code in ("005", "010", "016", "701", "703", "999"):
         variant = f"joken_{code}"
         assert (
-            routing.variants[variant].model_version == f"jra-joken-{code}-pooled-yetirank-v2-nowin1"
+            routing.variants[variant].model_version == f"jra-joken-{code}-pooled-yetirank-v2-noexo1"
         )
-        assert routing.variants[variant].feature_count == 113
+        assert routing.variants[variant].feature_count == 111
         entry = {"grade_code": None, "kyoso_joken_code": code}
         assert router.resolve_variant("jra", [entry]) == variant
 
@@ -2166,12 +2166,12 @@ def test_load_cell_router_real_config_has_jra_prior_corner_routing() -> None:
     routing = router.routing_for("jra")
     assert (
         routing.variants["prior_corner_dirt_smallfield_005"].model_version
-        == "jra-cb-v10-prior-corner274-2013-nowin1"
+        == "jra-cb-v10-prior-corner274-2013-noexo1"
     )
-    assert routing.variants["prior_corner_dirt_smallfield_005"].feature_count == 260
+    assert routing.variants["prior_corner_dirt_smallfield_005"].feature_count == 258
     assert (
         routing.variants["prior_corner_dirt_smallfield_005"].feature_set_hash
-        == "9e075666e9cdaf51edb4a536e7797744cf4aac75414aec8b4b089cbcbd6653a2"
+        == "f57455f3a48def70f7e352db0078441ce56954ecb897aed824c782a0d79994cf"
     )
     # field_band is derived from len(entries) -- the actual count of rows
     # being scored -- not from any entry's own "shusso_tosu" (that column is
@@ -2333,17 +2333,17 @@ def _jra_prior_corner_router() -> CellRouter:
         default_variant="sim",
         variants={
             "sim": VariantSpec(
-                model_version="jra-cb-v9-sim-2013-clean-nowin1",
+                model_version="jra-cb-v9-sim-2013-clean-noexo1",
                 feature_count=250,
                 architecture="catboost",
             ),
             "jockey_pedigree_703": VariantSpec(
-                model_version="jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+                model_version="jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1",
                 feature_count=269,
                 architecture="catboost",
             ),
             "prior_corner_dirt_smallfield_005": VariantSpec(
-                model_version="jra-cb-v10-prior-corner274-2013-nowin1",
+                model_version="jra-cb-v10-prior-corner274-2013-noexo1",
                 feature_count=274,
                 architecture="catboost",
             ),

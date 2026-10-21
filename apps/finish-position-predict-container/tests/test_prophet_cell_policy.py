@@ -149,7 +149,7 @@ def test_baked_policy_covers_every_production_variant() -> None:
         0.0662293792416862
     )
     gated_cell = "joken_005_dirt_1200_winter_summer_qsm_gated_top1"
-    gated_branch = "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-nowin1"
+    gated_branch = "jra-joken-005-dirt-1200-winter-summer-qsm-gated-v1-noexo1"
     kept_signature = (
         "v1;mode=jra_variant_top1_swap;stage2=confidence-gate-kept-base;"
         f"stage2-model={gated_branch};stage1=fresh;final={gated_branch}"

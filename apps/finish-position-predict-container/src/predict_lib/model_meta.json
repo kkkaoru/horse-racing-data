@@ -1,11 +1,11 @@
 {
   "model_versions": {
-    "jra": "jra-cb-v9-sim-2013-clean-nowin1",
+    "jra": "jra-cb-v9-sim-2013-clean-noexo1",
     "nar": "iter12-nar-xgb-hpo-v8-clean188-nowin1",
     "ban-ei": "banei-cb-v9-sim-2011-nowin1"
   },
   "feature_counts": {
-    "jra": 236,
+    "jra": 234,
     "nar": 186,
     "ban-ei": 127
   }

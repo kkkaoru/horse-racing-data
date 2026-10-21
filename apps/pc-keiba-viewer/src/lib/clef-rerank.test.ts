@@ -6,7 +6,7 @@ import { applyClefRerank, applyClefRerankToSection, clefRerankResultKey } from "
 const feature = (horseNumber: string, norm: number) => ({
   confidenceTier: null,
   horseNumber,
-  modelVersion: "jra-joken-703-pooled-yetirank-v2-nowin1",
+  modelVersion: "jra-joken-703-pooled-yetirank-v2-noexo1",
   predictedFinishNorm: norm,
   predictionGeneratedAt: "2026-10-17T16:11:03.882Z",
   showProbability: null,

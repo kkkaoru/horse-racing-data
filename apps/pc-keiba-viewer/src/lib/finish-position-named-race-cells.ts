@@ -70,8 +70,8 @@ export const NAMED_RACE_CELLS_BY_CATEGORY: Record<string, NamedRaceCell[]> = {
     {
       architecture: "catboost",
       base_variant: "joken_999",
-      feature_count: 113,
-      model_version: "jra-named-niigata-bsn-v1-nowin1",
+      feature_count: 111,
+      model_version: "jra-named-niigata-bsn-v1-noexo1",
       race_name_token: "BSN賞",
       variant: "niigata_bsn",
       venue: "04",
@@ -79,8 +79,8 @@ export const NAMED_RACE_CELLS_BY_CATEGORY: Record<string, NamedRaceCell[]> = {
     {
       architecture: "catboost",
       base_variant: "joken_999",
-      feature_count: 113,
-      model_version: "jra-named-sapporo-suzuran-v2-nowin1",
+      feature_count: 111,
+      model_version: "jra-named-sapporo-suzuran-v2-noexo1",
       race_name_token: "すずらん賞",
       variant: "sapporo_suzuran",
       venue: "01",
@@ -88,14 +88,14 @@ export const NAMED_RACE_CELLS_BY_CATEGORY: Record<string, NamedRaceCell[]> = {
     {
       architecture: "catboost",
       base_variant: "joken_999",
-      feature_count: 113,
-      model_version: "jra-named-chukyo-nisai-stakes-focal-v3-nowin1",
+      feature_count: 111,
+      model_version: "jra-named-chukyo-nisai-stakes-focal-v3-noexo1",
       race_name_token: "中京2歳ステークス",
-      rerank_feature_count: 113,
+      rerank_feature_count: 111,
       prerace_router: {
         routes: [
           {
-            model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1",
+            model_version: "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1",
             variant: "chukyo_nisai_stakes_jul1600_ninki2",
             when: {
               kyori: ["1600"],
@@ -103,7 +103,7 @@ export const NAMED_RACE_CELLS_BY_CATEGORY: Record<string, NamedRaceCell[]> = {
             },
           },
           {
-            model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1",
+            model_version: "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
             variant: "chukyo_nisai_stakes_largefield",
             when: {
               kyori: ["1200"],
@@ -118,7 +118,7 @@ export const NAMED_RACE_CELLS_BY_CATEGORY: Record<string, NamedRaceCell[]> = {
           },
         ],
       },
-      rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-nowin1",
+      rerank_model_version: "jra-named-chukyo-nisai-stakes-v2-noexo1",
       routing_mode: "jra_lock1_rerank_rest",
       variant: "chukyo_nisai_stakes",
       venue: "07",
@@ -126,11 +126,11 @@ export const NAMED_RACE_CELLS_BY_CATEGORY: Record<string, NamedRaceCell[]> = {
     {
       architecture: "catboost",
       base_variant: "joken_999",
-      feature_count: 113,
-      model_version: "jra-named-niigata-kinen-draw-v2-nowin1",
+      feature_count: 111,
+      model_version: "jra-named-niigata-kinen-draw-v2-noexo1",
       race_name_token: "新潟記念",
-      rerank_feature_count: 114,
-      rerank_model_version: "jra-named-niigata-kinen-going-v2-nowin1",
+      rerank_feature_count: 112,
+      rerank_model_version: "jra-named-niigata-kinen-going-v2-noexo1",
       routing_mode: "jra_lock1_rerank_rest",
       variant: "niigata_kinen",
       venue: "04",

@@ -2927,13 +2927,13 @@ def test_score_one_race_jra_variant_top1_swap_preserves_base_order_below_winner(
         booster=_ScoreByUmaban([0.9, 0.5, 0.1]),
         feature_names=["feat"],
         architecture="catboost",
-        model_version="jra-joken-703-pooled-yetirank-v2-nowin1",
+        model_version="jra-joken-703-pooled-yetirank-v2-noexo1",
     )
     companion = VariantModel(
         booster=_ScoreByUmaban([0.1, 0.2, 0.9]),
         feature_names=["feat"],
         architecture="catboost",
-        model_version="jra-joken-703-querysoftmax-maxrange-v1-nowin1",
+        model_version="jra-joken-703-querysoftmax-maxrange-v1-noexo1",
         top1_swap_base=base,
         routing_mode="jra_variant_top1_swap",
     )
@@ -2947,7 +2947,7 @@ def test_score_one_race_jra_variant_top1_swap_preserves_base_order_below_winner(
 
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank == {1: 3, 2: 2, 3: 1}
-    assert {row[0] for row in rows} == {"jra-joken-703-querysoftmax-maxrange-v1-nowin1"}
+    assert {row[0] for row in rows} == {"jra-joken-703-querysoftmax-maxrange-v1-noexo1"}
 
 
 def test_score_one_race_jra_variant_top1_swap_fails_closed_when_confidence_is_low() -> None:
@@ -2959,13 +2959,13 @@ def test_score_one_race_jra_variant_top1_swap_fails_closed_when_confidence_is_lo
         booster=_ScoreByUmaban([0.9, 0.5, 0.1]),
         feature_names=["feat"],
         architecture="catboost",
-        model_version="jra-joken-005-pooled-yetirank-v2-nowin1",
+        model_version="jra-joken-005-pooled-yetirank-v2-noexo1",
     )
     companion = VariantModel(
         booster=_ScoreByUmaban([0.1, 0.2, 0.25]),
         feature_names=["feat"],
         architecture="catboost",
-        model_version="jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1",
+        model_version="jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1",
         top1_swap_base=base,
         routing_mode="jra_variant_top1_swap",
         minimum_candidate_margin=0.15,
@@ -2986,13 +2986,13 @@ def test_score_one_race_jra_variant_top1_swap_applies_when_confidence_is_high() 
         booster=_ScoreByUmaban([0.9, 0.5, 0.1]),
         feature_names=["feat"],
         architecture="catboost",
-        model_version="jra-joken-005-pooled-yetirank-v2-nowin1",
+        model_version="jra-joken-005-pooled-yetirank-v2-noexo1",
     )
     companion = VariantModel(
         booster=_ScoreByUmaban([0.1, 0.2, 1.0]),
         feature_names=["feat"],
         architecture="catboost",
-        model_version="jra-joken-005-turf-long-hierarchical-qsm-gated-v2-nowin1",
+        model_version="jra-joken-005-turf-long-hierarchical-qsm-gated-v2-noexo1",
         top1_swap_base=base,
         routing_mode="jra_variant_top1_swap",
         minimum_candidate_margin=0.15,
@@ -3013,13 +3013,13 @@ def test_score_one_race_jra_variant_top1_swap_gates_candidate_base_rank() -> Non
         booster=_ScoreByUmaban([0.9, 0.5, 0.1]),
         feature_names=["feat"],
         architecture="catboost",
-        model_version="jra-joken-703-pooled-yetirank-v2-nowin1",
+        model_version="jra-joken-703-pooled-yetirank-v2-noexo1",
     )
     rejected = VariantModel(
         booster=_ScoreByUmaban([0.1, 0.2, 1.0]),
         feature_names=["feat"],
         architecture="catboost",
-        model_version="jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1",
+        model_version="jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1",
         top1_swap_base=base,
         routing_mode="jra_variant_top1_swap",
         minimum_candidate_margin=0.01,
@@ -3030,7 +3030,7 @@ def test_score_one_race_jra_variant_top1_swap_gates_candidate_base_rank() -> Non
         booster=_ScoreByUmaban([0.1, 1.0, 0.2]),
         feature_names=["feat"],
         architecture="catboost",
-        model_version="jra-joken-703-dirt-intermediate-qsm-gated-v1-nowin1",
+        model_version="jra-joken-703-dirt-intermediate-qsm-gated-v1-noexo1",
         top1_swap_base=base,
         routing_mode="jra_variant_top1_swap",
         minimum_candidate_margin=0.01,
@@ -3197,13 +3197,13 @@ def test_score_one_race_nar_top2_consensus_preserves_order_on_one_vote() -> None
 
 
 def test_score_races_routes_jra_variant_top1_swap(tmp_path: Path) -> None:
-    base_version = "jra-joken-703-pooled-yetirank-v2-nowin1"
-    companion_version = "jra-joken-703-querysoftmax-maxrange-v1-nowin1"
+    base_version = "jra-joken-703-pooled-yetirank-v2-noexo1"
+    companion_version = "jra-joken-703-querysoftmax-maxrange-v1-noexo1"
     _write_variant_metadata(tmp_path, "jra", base_version, ["feat"])
     _write_variant_metadata(tmp_path, "jra", companion_version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
             "joken_703": _FakeVariantSpec(base_version, 1, "catboost"),
             "cell": _FakeVariantSpec(
                 companion_version,
@@ -3242,13 +3242,13 @@ def test_score_races_routes_jra_variant_top1_swap(tmp_path: Path) -> None:
 
 
 def test_score_races_routes_jra_lock1_rerank_rest(tmp_path: Path) -> None:
-    lock_version = "jra-named-niigata-kinen-draw-v2-nowin1"
-    rest_version = "jra-named-niigata-kinen-going-v2-nowin1"
+    lock_version = "jra-named-niigata-kinen-draw-v2-noexo1"
+    rest_version = "jra-named-niigata-kinen-going-v2-noexo1"
     _write_variant_metadata(tmp_path, "jra", rest_version, ["feat"])
     _write_variant_metadata(tmp_path, "jra", lock_version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
             "niigata_kinen_rerank": _FakeVariantSpec(rest_version, 1, "catboost"),
             "niigata_kinen": _FakeVariantSpec(
                 lock_version,
@@ -3778,13 +3778,13 @@ def test_variant_model_holds_booster_and_feature_contract() -> None:
 
 
 def test_score_races_reuses_complete_model_bundle(tmp_path: Path) -> None:
-    variant_version = "jra-cb-v10-prior-corner274-2013-nowin1"
+    variant_version = "jra-cb-v10-prior-corner274-2013-noexo1"
     stage1_version = "jra-cb-stage1-marketfree235-2013"
     _write_variant_metadata(tmp_path, "jra", variant_version, ["feat"])
     _write_variant_metadata(tmp_path, "jra", stage1_version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
             "prior": _FakeVariantSpec(variant_version, 1, "catboost"),
         },
         default_variant="sim",
@@ -4135,7 +4135,7 @@ def test_score_one_race_direct_skips_write_for_degenerate_feature_matrix() -> No
         degenerate_entries,
         ["a", "b", "c", "d"],
         "catboost",
-        "jra-cb-v9-sim-2013-clean-nowin1",
+        "jra-cb-v9-sim-2013-clean-noexo1",
     )
     assert rows == []
 
@@ -4156,7 +4156,7 @@ def test_score_one_race_direct_scores_healthy_feature_matrix() -> None:
         healthy_entries,
         ["a", "b"],
         "catboost",
-        "jra-cb-v9-sim-2013-clean-nowin1",
+        "jra-cb-v9-sim-2013-clean-noexo1",
     )
     assert len(rows) == 2
 
@@ -4585,7 +4585,7 @@ def test_score_races_stage1_gate_keeps_champion_when_odds_fresh_and_spread_healt
         scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
 
     rows = scored[0]
-    assert all(row[0] == "jra-cb-v9-sim-2013-clean-nowin1" for row in rows)
+    assert all(row[0] == "jra-cb-v9-sim-2013-clean-noexo1" for row in rows)
 
 
 def test_score_races_stage1_stddev_safety_net_trips_despite_fresh_odds(tmp_path: Path) -> None:
@@ -4623,7 +4623,7 @@ def test_score_races_stage1_disabled_config_never_overrides_champion(tmp_path: P
         scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
 
     rows = scored[0]
-    assert all(row[0] == "jra-cb-v9-sim-2013-clean-nowin1" for row in rows)
+    assert all(row[0] == "jra-cb-v9-sim-2013-clean-noexo1" for row in rows)
 
 
 def test_score_races_stage1_absent_category_config_never_overrides(tmp_path: Path) -> None:
@@ -4640,7 +4640,7 @@ def test_score_races_stage1_absent_category_config_never_overrides(tmp_path: Pat
         scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
 
     rows = scored[0]
-    assert all(row[0] == "jra-cb-v9-sim-2013-clean-nowin1" for row in rows)
+    assert all(row[0] == "jra-cb-v9-sim-2013-clean-noexo1" for row in rows)
 
 
 def test_score_races_stage1_gate_does_not_clobber_named_race_cell(
@@ -4648,12 +4648,12 @@ def test_score_races_stage1_gate_does_not_clobber_named_race_cell(
 ) -> None:
     """A successful named-race cell must keep its dedicated model_version even
     when the freshness gate would otherwise replace the race with Stage-1."""
-    named_version = "jra-named-niigata-bsn-v1-nowin1"
+    named_version = "jra-named-niigata-bsn-v1-noexo1"
     _write_variant_metadata(tmp_path, "jra", named_version, ["feat"])
     _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
             "niigata_bsn": _FakeVariantSpec(named_version, 1, "catboost"),
         },
         default_variant="sim",
@@ -4684,19 +4684,19 @@ def test_score_races_stage1_gate_does_not_clobber_named_race_cell(
         scored = score_races({"jra:20260829:04:08:01": entries}, "jra", tmp_path, ["feat"])
 
     rows = scored[0]
-    assert all(row[0] == "jra-named-niigata-bsn-v1-nowin1" for row in rows)
+    assert all(row[0] == "jra-named-niigata-bsn-v1-noexo1" for row in rows)
 
 
 def test_score_races_stage1_gate_still_replaces_pooled_joken_999(
     tmp_path: Path,
 ) -> None:
     """Uncatalogued open-class pooling stays eligible for the Stage-1 floor."""
-    joken_version = "jra-joken-999-pooled-yetirank-v2-nowin1"
+    joken_version = "jra-joken-999-pooled-yetirank-v2-noexo1"
     _write_variant_metadata(tmp_path, "jra", joken_version, ["feat"])
     _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
             "joken_999": _FakeVariantSpec(joken_version, 1, "catboost"),
         },
         default_variant="sim",
@@ -4706,7 +4706,7 @@ def test_score_races_stage1_gate_still_replaces_pooled_joken_999(
                 venue="04",
                 race_name_token="BSN賞",
                 base_variant="joken_999",
-                model_version="jra-named-niigata-bsn-v1-nowin1",
+                model_version="jra-named-niigata-bsn-v1-noexo1",
             )
         },
     )
@@ -4733,12 +4733,12 @@ def test_score_races_stage1_gate_still_replaces_pooled_joken_999(
 def test_score_races_stage1_gate_does_not_clobber_suzuran_named_cell(
     tmp_path: Path,
 ) -> None:
-    named_version = "jra-named-sapporo-suzuran-v2-nowin1"
+    named_version = "jra-named-sapporo-suzuran-v2-noexo1"
     _write_variant_metadata(tmp_path, "jra", named_version, ["feat"])
     _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
             "sapporo_suzuran": _FakeVariantSpec(named_version, 1, "catboost"),
         },
         default_variant="sim",
@@ -4769,7 +4769,7 @@ def test_score_races_stage1_gate_does_not_clobber_suzuran_named_cell(
         scored = score_races({"jra:20260829:01:10:01": entries}, "jra", tmp_path, ["feat"])
 
     rows = scored[0]
-    assert all(row[0] == "jra-named-sapporo-suzuran-v2-nowin1" for row in rows)
+    assert all(row[0] == "jra-named-sapporo-suzuran-v2-noexo1" for row in rows)
 
 
 def test_score_races_stage1_gate_replaces_unloaded_named_variant_fallback(
@@ -4777,12 +4777,12 @@ def test_score_races_stage1_gate_replaces_unloaded_named_variant_fallback(
 ) -> None:
     """Routing to a named cell that is not in the variant pool is not a
     successful named-cell score, so Stage-1 may still replace the fallback."""
-    _write_variant_metadata(tmp_path, "jra", "jra-joken-999-pooled-yetirank-v2-nowin1", ["feat"])
+    _write_variant_metadata(tmp_path, "jra", "jra-joken-999-pooled-yetirank-v2-noexo1", ["feat"])
     _write_variant_metadata(tmp_path, "jra", _STAGE1_TEST_CONFIG.model_version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-nowin1", 1, "catboost"),
-            "joken_999": _FakeVariantSpec("jra-joken-999-pooled-yetirank-v2-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
+            "joken_999": _FakeVariantSpec("jra-joken-999-pooled-yetirank-v2-noexo1", 1, "catboost"),
         },
         default_variant="sim",
         named_race_index={
@@ -4791,7 +4791,7 @@ def test_score_races_stage1_gate_replaces_unloaded_named_variant_fallback(
                 venue="01",
                 race_name_token="すずらん賞",
                 base_variant="joken_999",
-                model_version="jra-named-sapporo-suzuran-v2-nowin1",
+                model_version="jra-named-sapporo-suzuran-v2-noexo1",
             )
         },
     )
@@ -4816,11 +4816,11 @@ def test_score_races_stage1_gate_replaces_unloaded_named_variant_fallback(
 
 
 def test_score_races_overlays_race_name_before_resolve_variant(tmp_path: Path) -> None:
-    named_version = "jra-named-niigata-bsn-v1-nowin1"
+    named_version = "jra-named-niigata-bsn-v1-noexo1"
     _write_variant_metadata(tmp_path, "jra", named_version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
             "niigata_bsn": _FakeVariantSpec(named_version, 1, "catboost"),
         },
         default_variant="sim",
@@ -4877,8 +4877,8 @@ def test_score_races_overlays_race_name_before_resolve_variant(tmp_path: Path) -
             race_names_by_race_id={"jra:2026:0829:04:08": {"kyosomei_hondai": "ＢＳＮ賞"}},
         )
 
-    assert scored[0][0][0] == "jra-named-niigata-bsn-v1-nowin1"
-    assert scored[0][1][0] == "jra-named-niigata-bsn-v1-nowin1"
+    assert scored[0][0][0] == "jra-named-niigata-bsn-v1-noexo1"
+    assert scored[0][1][0] == "jra-named-niigata-bsn-v1-noexo1"
 
 
 def test_expected_model_version_uses_overlay_for_niigata_bsn() -> None:
@@ -4888,7 +4888,7 @@ def test_expected_model_version_uses_overlay_for_niigata_bsn() -> None:
         [{"grade_code": "L", "keibajo_code": "04", "kyoso_joken_code": "999"}],
         race_name={"kyosomei_hondai": "ＢＳＮ賞"},
     )
-    assert version == "jra-named-niigata-bsn-v1-nowin1"
+    assert version == "jra-named-niigata-bsn-v1-noexo1"
 
 
 def test_expected_model_version_uses_overlay_for_sapporo_suzuran() -> None:
@@ -4898,7 +4898,7 @@ def test_expected_model_version_uses_overlay_for_sapporo_suzuran() -> None:
         [{"grade_code": "L", "keibajo_code": "01", "kyoso_joken_code": "999"}],
         race_name={"kyosomei_hondai": "３歳オープン", "kyosomei_fukudai": "すずらん賞"},
     )
-    assert version == "jra-named-sapporo-suzuran-v2-nowin1"
+    assert version == "jra-named-sapporo-suzuran-v2-noexo1"
 
 
 def test_expected_model_version_uses_overlay_for_chukyo_nisai_stakes() -> None:
@@ -4908,7 +4908,7 @@ def test_expected_model_version_uses_overlay_for_chukyo_nisai_stakes() -> None:
         [{"grade_code": "C", "keibajo_code": "07", "kyoso_joken_code": "999"}],
         race_name={"kyosomei_hondai": "中京２歳ステークス"},
     )
-    assert version == "jra-named-chukyo-nisai-stakes-focal-v3-nowin1"
+    assert version == "jra-named-chukyo-nisai-stakes-focal-v3-noexo1"
 
 
 def test_expected_model_version_chukyo_aug_1400_stays_on_focal_v3() -> None:
@@ -4926,7 +4926,7 @@ def test_expected_model_version_chukyo_aug_1400_stays_on_focal_v3() -> None:
         ],
         race_name={"kyosomei_hondai": "中京２歳ステークス"},
     )
-    assert version == "jra-named-chukyo-nisai-stakes-focal-v3-nowin1"
+    assert version == "jra-named-chukyo-nisai-stakes-focal-v3-noexo1"
 
 
 def test_expected_model_version_chukyo_jul_1600_uses_ninki2_v4() -> None:
@@ -4944,7 +4944,7 @@ def test_expected_model_version_chukyo_jul_1600_uses_ninki2_v4() -> None:
         ],
         race_name={"kyosomei_hondai": "中京２歳ステークス"},
     )
-    assert version == "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-nowin1"
+    assert version == "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1"
 
 
 def test_expected_model_version_chukyo_dec_1200_uses_largefield_v3() -> None:
@@ -4962,7 +4962,7 @@ def test_expected_model_version_chukyo_dec_1200_uses_largefield_v3() -> None:
         ],
         race_name={"kyosomei_hondai": "中京２歳ステークス"},
     )
-    assert version == "jra-named-chukyo-nisai-stakes-largefield-v3-nowin1"
+    assert version == "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1"
 
 
 def test_expected_model_version_uses_overlay_for_niigata_kinen() -> None:
@@ -4975,7 +4975,7 @@ def test_expected_model_version_uses_overlay_for_niigata_kinen() -> None:
             "kyosomei_hondai": "農林水産省賞典　新潟記念",
         },
     )
-    assert version == "jra-named-niigata-kinen-draw-v2-nowin1"
+    assert version == "jra-named-niigata-kinen-draw-v2-noexo1"
 
 
 def test_expected_model_version_without_overlay_stays_on_pooled_joken_999() -> None:
@@ -4984,7 +4984,7 @@ def test_expected_model_version_without_overlay_stays_on_pooled_joken_999() -> N
         "jra",
         [{"grade_code": "L", "keibajo_code": "04", "kyoso_joken_code": "999"}],
     )
-    assert version == "jra-cb-v9-sim-2013-clean-nowin1"
+    assert version == "jra-cb-v9-sim-2013-clean-noexo1"
 
 
 def test_load_race_names_by_race_id_skips_catalog_when_parquet_has_hondai() -> None:
@@ -5041,7 +5041,7 @@ def test_score_races_stage1_broken_artifact_falls_back_to_champion(
         scored = score_races({"jra:20260620:05:01:01": entries}, "jra", tmp_path, ["feat"])
 
     rows = scored[0]
-    assert all(row[0] == "jra-cb-v9-sim-2013-clean-nowin1" for row in rows)
+    assert all(row[0] == "jra-cb-v9-sim-2013-clean-noexo1" for row in rows)
     assert "load failed" in capsys.readouterr().err
 
 

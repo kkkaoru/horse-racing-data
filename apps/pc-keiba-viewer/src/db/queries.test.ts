@@ -2230,24 +2230,24 @@ it("getFinishPositionLambdarankPredictions emits priority 0 cell-routing branch 
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
   expect(queryText).toMatch(
-    /where p0\.model_version = 'jra-joken-703-turf-intermediate-qsm-gated-v1-nowin1'/u,
+    /where p0\.model_version = 'jra-joken-703-turf-intermediate-qsm-gated-v1-noexo1'/u,
   );
-  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1'/u);
-  expect(queryText).toMatch(/'jra-cb-v10-prior-corner274-2013-nowin1'/u);
+  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1'/u);
+  expect(queryText).toMatch(/'jra-cb-v10-prior-corner274-2013-noexo1'/u);
 });
 
 it("getFinishPositionLambdarankPredictions returns rows selected via the priority 0 cell-routing branch", async () => {
   executeMock.mockResolvedValue({
     rows: [
       {
-        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1",
         predicted_rank: 1,
         predicted_score: "0.93",
         shusso_tosu: 2,
         umaban: 1,
       },
       {
-        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1",
+        model_version: "jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1",
         predicted_rank: 2,
         predicted_score: "0.51",
         shusso_tosu: 2,
@@ -2260,7 +2260,7 @@ it("getFinishPositionLambdarankPredictions returns rows selected via the priorit
     PERCLASS_703_RUNNERS,
   );
   expect(result.length).toBe(2);
-  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1");
+  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1");
   expect(result[0]?.predictedFinishNorm).toBe(0);
   expect(result[1]?.predictedFinishNorm).toBe(1);
 });
@@ -2290,7 +2290,7 @@ it("getFinishPositionLambdarankPredictions bounds priority 3 fallback to leak-fr
   expect(queryText).toMatch(/from finish_position_active_models stale/u);
   expect(queryText).toMatch(/stale\.subclass is not null/u);
   expect(queryText).toMatch(/stale\.model_version = p3\.model_version/u);
-  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-nowin1'/u);
+  expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-noexo1'/u);
   expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-clean188-nowin1'/u);
   expect(queryText).toMatch(/'banei-cb-v9-sim-2011-nowin1'/u);
   expect(queryText).toMatch(/'banei-cb-v8-window2011-wf-15y-nowin1'/u);
@@ -2320,10 +2320,10 @@ it("getFinishPositionLambdarankPredictions excludes off-label cell-routing varia
     queryText.match(
       /cell_routing_off_label_variant_model_versions\(model_version\) as \(\s*values([\s\S]*?)\),\s*active as \(/u,
     )?.[1] ?? "";
-  expect(cteBody).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269-nowin1'/u);
-  expect(cteBody).toMatch(/'jra-cb-v10-prior-corner274-2013-nowin1'/u);
+  expect(cteBody).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1'/u);
+  expect(cteBody).toMatch(/'jra-cb-v10-prior-corner274-2013-noexo1'/u);
   expect(cteBody).toMatch(/'banei-cb-v8-window2011-wf-15y-nowin1'/u);
-  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean-nowin1'\)/u);
+  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean-noexo1'\)/u);
   expect(cteBody).not.toMatch(/'banei-cb-v9-sim-2011-nowin1'/u);
   expect(result.length).toBe(0);
 });
@@ -2337,14 +2337,14 @@ it("getFinishPositionLambdarankPredictions still lets priority 3 select the plai
   executeMock.mockResolvedValue({
     rows: [
       {
-        model_version: "jra-cb-v9-sim-2013-clean-nowin1",
+        model_version: "jra-cb-v9-sim-2013-clean-noexo1",
         predicted_rank: 1,
         predicted_score: "0.8",
         shusso_tosu: 2,
         umaban: 1,
       },
       {
-        model_version: "jra-cb-v9-sim-2013-clean-nowin1",
+        model_version: "jra-cb-v9-sim-2013-clean-noexo1",
         predicted_rank: 2,
         predicted_score: "0.3",
         shusso_tosu: 2,
@@ -2362,10 +2362,10 @@ it("getFinishPositionLambdarankPredictions still lets priority 3 select the plai
     queryText.match(
       /cell_routing_off_label_variant_model_versions\(model_version\) as \(\s*values([\s\S]*?)\),\s*active as \(/u,
     )?.[1] ?? "";
-  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean-nowin1'\)/u);
+  expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean-noexo1'\)/u);
   expect(result.length).toBe(2);
-  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-nowin1");
-  expect(result[1]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-nowin1");
+  expect(result[0]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-noexo1");
+  expect(result[1]?.modelVersion).toBe("jra-cb-v9-sim-2013-clean-noexo1");
 });
 
 it("getFinishPositionLambdarankPredictions applies leak-free guard to final selected rows", async () => {
