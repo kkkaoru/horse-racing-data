@@ -854,7 +854,7 @@ def test_cli_rejects_no_numeric_features(
         )
 
 
-def test_numeric_feature_names_drops_banned_win_odds_but_keeps_exotic_deviation() -> None:
+def test_numeric_feature_names_drops_banned_win_odds_and_exotic_deviation() -> None:
     schema = pa.schema(
         [
             ("speed_index_avg_5", pa.float64()),
@@ -863,7 +863,4 @@ def test_numeric_feature_names_drops_banned_win_odds_but_keeps_exotic_deviation(
             ("exotic_umaren_p2_rank_residual", pa.float64()),
         ]
     )
-    assert trainer.numeric_feature_names(schema) == [
-        "speed_index_avg_5",
-        "exotic_umaren_p2_rank_residual",
-    ]
+    assert trainer.numeric_feature_names(schema) == ["speed_index_avg_5"]

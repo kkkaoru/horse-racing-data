@@ -21,7 +21,7 @@ import pyarrow.dataset as ds
 from catboost import CatBoostRanker, Pool
 
 from predict_lib.jra_cell_scope import MINIMUM_DIVERSE_TRAINING_RACES
-from predict_lib.market_feature_policy import is_banned_market_feature
+from predict_lib.market_feature_policy import MARKET_DEVIATION_FEATURES, is_banned_market_feature
 from predict_lib.rank_relevance import (
     DEFAULT_RELEVANCE_MODE,
     RELEVANCE_MODES,
@@ -128,6 +128,9 @@ def numeric_feature_names(schema: Iterable[SchemaFieldLike]) -> list[str]:
         # Final win odds / popularity must not reach finish models: training sees
         # settled odds while serving sees live ones, and the ranking would follow the market.
         and not is_banned_market_feature(field.name)
+        # JRA serves without the exotic residuals too (final-odds train vs live-odds serve;
+        # model_meta.MARKET_DEVIATION_DISALLOWED_CATEGORIES rejects them for JRA models).
+        and field.name not in MARKET_DEVIATION_FEATURES
         and (
             pa.types.is_integer(field.type)
             or pa.types.is_floating(field.type)
