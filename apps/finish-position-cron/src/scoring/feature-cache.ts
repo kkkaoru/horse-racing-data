@@ -102,7 +102,7 @@ export interface RefreshLateBindingInput {
   row: FeatureEntry;
   category: LateBindingCategory;
   // Latest odds/weight for THIS horse, fetched from /api/odds + /api/horse-weight.
-  // null fields fall back to the cached row values (no realtime update yet).
+  // null odds fall back to the builder's median (matching the Python rescore).
   tanshoOdds: number | null;
   tanshoNinkijun: number | null;
   currentBataiju: number | null;
@@ -119,14 +119,16 @@ export interface RefreshLateBindingInput {
 // caller-supplied live field size (the cached shusso_tosu is NULL). Returns a
 // new row object (does not mutate the input).
 export const refreshLateBindingColumns = (input: RefreshLateBindingInput): FeatureEntry => {
-  const cachedOdds = numberOrNull(input.row[TANSHO_ODDS_FIELD]);
-  const cachedNinkijun = numberOrNull(input.row[TANSHO_NINKIJUN_FIELD]);
+  // No live odds -> null -> the builder's median fallback, as in the Python
+  // rescore (predict_lib.rescore._snapshot_for_entry). Reusing the cached row's
+  // odds here made the stale price count as "fresh" and could route to a
+  // different model than the container for the same race.
   const late = computeLateBindingColumns({
     category: input.category,
     odds: {
       runnerCount: input.runnerCount,
-      tanshoNinkijun: input.tanshoNinkijun ?? cachedNinkijun,
-      tanshoOdds: input.tanshoOdds ?? cachedOdds,
+      tanshoNinkijun: input.tanshoNinkijun,
+      tanshoOdds: input.tanshoOdds,
     },
     weight: {
       currentBataiju: input.currentBataiju,

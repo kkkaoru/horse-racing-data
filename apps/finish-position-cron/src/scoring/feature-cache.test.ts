@@ -174,7 +174,7 @@ test("refreshLateBindingColumns keeps early-binding columns untouched", () => {
   expect(refreshed.career_win_rate).toBe(0.25);
 });
 
-test("refreshLateBindingColumns falls back to cached odds when realtime is null", () => {
+test("refreshLateBindingColumns uses the median fallback, not stale cached odds, when realtime is null", () => {
   const refreshed = refreshLateBindingColumns({
     category: "jra",
     currentBataiju: null,
@@ -188,28 +188,11 @@ test("refreshLateBindingColumns falls back to cached odds when realtime is null"
     tanshoNinkijun: null,
     tanshoOdds: null,
   });
-  expect(refreshed.tansho_odds).toBe(12);
-  expect(refreshed.tansho_ninkijun).toBe(5);
-  expect(refreshed.odds_score).toBe(Math.log(12) / Math.log(300));
+  expect(refreshed.tansho_odds).toBe(null);
+  expect(refreshed.tansho_ninkijun).toBe(null);
+  expect(refreshed.odds_score).toBe(0.5664);
+  expect(refreshed.popularity_score).toBe(0.5);
   expect(refreshed.weight_diff_from_avg).toBe(null);
-});
-
-test("refreshLateBindingColumns parses string-valued cached odds from the parquet", () => {
-  const refreshed = refreshLateBindingColumns({
-    category: "jra",
-    currentBataiju: null,
-    row: {
-      shusso_tosu: null,
-      tansho_ninkijun: "4",
-      tansho_odds: "8.0",
-      weight_avg_5: 460,
-    },
-    runnerCount: 10,
-    tanshoNinkijun: null,
-    tanshoOdds: null,
-  });
-  expect(refreshed.tansho_odds).toBe(8);
-  expect(refreshed.tansho_ninkijun).toBe(4);
 });
 
 test("refreshLateBindingColumns treats an empty-string cached odds cell as missing", () => {
