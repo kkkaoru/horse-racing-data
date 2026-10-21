@@ -9,6 +9,8 @@ import {
   type UnsafeContainerInstance,
 } from "../src/deploy-safety";
 
+const WRANGLER_ERROR_OUTPUT_LIMIT = 2000;
+
 export const runCommand = async (command: readonly string[]): Promise<void> => {
   const process = Bun.spawn(command, { stderr: "inherit", stdout: "inherit" });
   const exitCode = await process.exited;
@@ -22,7 +24,13 @@ export const runWranglerJson = async (args: readonly string[]): Promise<unknown>
   });
   const output = await new Response(process.stdout).text();
   const exitCode = await process.exited;
-  if (exitCode !== 0) throw new Error(`Wrangler exited with status ${exitCode}`);
+  // In --json mode Wrangler reports errors on stdout; surface them instead of
+  // discarding the only diagnostic (CI deploys failed here with no message).
+  if (exitCode !== 0) {
+    throw new Error(
+      `wrangler ${args.join(" ")} exited with status ${exitCode}: ${output.trim().slice(0, WRANGLER_ERROR_OUTPUT_LIMIT)}`,
+    );
+  }
   return JSON.parse(output) as unknown;
 };
 
