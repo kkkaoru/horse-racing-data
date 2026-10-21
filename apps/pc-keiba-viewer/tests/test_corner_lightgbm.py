@@ -496,7 +496,7 @@ def test_import_mlx_core_keeps_explicit_tf32_opt_in(monkeypatch: pytest.MonkeyPa
 
 
 def test_seed_mlx_makes_mlx_random_draws_repeatable() -> None:
-    mx = pytest.importorskip("mlx.core")
+    mx = pytest.importorskip("mlx.core", exc_type=ImportError)
     subject.seed_mlx(17)
     first = np.array(mx.random.uniform(shape=(4,)))
     subject.seed_mlx(17)
@@ -508,7 +508,7 @@ def test_seed_mlx_makes_mlx_random_draws_repeatable() -> None:
 
 
 def test_train_neural_corner_model_raises_runtime_error_on_non_finite_loss() -> None:
-    _ = pytest.importorskip("mlx.core")
+    _ = pytest.importorskip("mlx.core", exc_type=ImportError)
     sequences = np.full((8, 3, 2), np.nan, dtype=np.float64)
     target = pl.Series("target", [0.5] * 8)
     with pytest.raises(RuntimeError, match="neural corner model diverged at epoch 1"):
