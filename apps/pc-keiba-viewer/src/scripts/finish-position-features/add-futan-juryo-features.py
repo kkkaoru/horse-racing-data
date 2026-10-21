@@ -207,10 +207,12 @@ def stage_horse_history(con: duckdb.DuckDBPyConnection) -> None:
 
     Uses ``futan_raw`` as source, ordered chronologically.
     ``past_futan_juryo_avg5`` is the average of the current race and up to 4
-    prior races (ROWS BETWEEN 4 PRECEDING AND CURRENT ROW); at serve time
-    only the upcoming race exists so the window collapses to that single row,
-    giving avg5 = current futan (same as training).  Past races beyond the
-    current date are never included, preventing data leakage during training.
+    prior races (ROWS BETWEEN 4 PRECEDING AND CURRENT ROW). Serving passes
+    ``--from-date`` = pipeline_args.HISTORY_FROM_DATE, so ``futan_raw`` holds the
+    target horses' prior races plus the upcoming one (se fallback) and the window
+    matches training; only debutants collapse to the single current row. Rows
+    after the current race are never included. Carried weight is known before
+    the race, so including the current race is not a leak.
     """
     con.execute(
         """
