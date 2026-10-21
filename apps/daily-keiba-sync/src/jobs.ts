@@ -40,6 +40,7 @@ import type {
   Env,
   NeonDispatchJob,
   NeonTableJob,
+  Provider,
   R2BucketJob,
   R2BucketJVLinkJob,
   R2BucketNVLinkJob,
@@ -51,7 +52,20 @@ import type {
   TableStage,
 } from "./types";
 
+interface FinishRunInput {
+  advanceCursor: boolean;
+  env: Env;
+  now: Date;
+  provider: Provider;
+  runId: string;
+  status: "succeeded" | "succeeded_empty";
+  tableCount: number;
+}
+
 const NDJSON_CONTENT_TYPE = "application/x-ndjson";
+// pipeline-health-monitor alerts when a provider's scheduled sync stops succeeding.
+export const providerSyncHealthKey = (provider: Provider): string =>
+  `provider-sync:last-success:${provider}`;
 
 const targetPartition = (target: CatalogTargetRow, record: RecordRow): string => {
   if (target.table_name === "jvd_cs") {
@@ -216,6 +230,16 @@ const notifyRealtimeJvRaceDays = async (
   );
 };
 
+// Only cursor-advancing (scheduled) runs prove the daily sync works; manual backfills do not.
+const finishRun = async (input: FinishRunInput): Promise<void> => {
+  await completeRun(input.env.DB, input.runId, input.status, input.tableCount, input.now);
+  if (!input.advanceCursor) return;
+  await input.env.SYNC_CACHE.put(
+    providerSyncHealthKey(input.provider),
+    JSON.stringify({ at: input.now.toISOString(), runId: input.runId, status: input.status }),
+  );
+};
+
 const completeSyncedRun = async (
   job: NeonDispatchJob | NeonTableJob,
   env: Env,
@@ -223,7 +247,15 @@ const completeSyncedRun = async (
   now: Date,
 ): Promise<void> => {
   await notifyRealtimeJvRaceDays(job, env);
-  await completeRun(env.DB, job.runId, "succeeded", configuredTableCount, now);
+  await finishRun({
+    advanceCursor: (await getRun(env.DB, job.runId)).advance_cursor === 1,
+    env,
+    now,
+    provider: job.provider,
+    runId: job.runId,
+    status: "succeeded",
+    tableCount: configuredTableCount,
+  });
 };
 
 export const acquireRun = async (
@@ -268,7 +300,15 @@ const stageR2Bucket = async (job: R2BucketJob, env: Env, now: Date): Promise<voi
     await purgeProviderCursorCache(env.SYNC_CACHE, job.provider);
   }
   if (parsed.tables.length === 0) {
-    await completeRun(env.DB, job.runId, "succeeded_empty", 0, now);
+    await finishRun({
+      advanceCursor: job.advanceCursor === true,
+      env,
+      now,
+      provider: job.provider,
+      runId: job.runId,
+      status: "succeeded_empty",
+      tableCount: 0,
+    });
     return;
   }
   const targets = new Map(
@@ -351,7 +391,15 @@ const stageR2Bucket = async (job: R2BucketJob, env: Env, now: Date): Promise<voi
     );
   await sendJobs(env.R2_CATALOG_JOBS, [...indexJobs, ...catalogJobs]);
   if (indexJobs.length === 0 && catalogJobs.length === 0)
-    await completeRun(env.DB, job.runId, "succeeded", 0, now);
+    await finishRun({
+      advanceCursor: job.advanceCursor === true,
+      env,
+      now,
+      provider: job.provider,
+      runId: job.runId,
+      status: "succeeded",
+      tableCount: 0,
+    });
 };
 
 const stageR2BucketJVLink = async (job: R2BucketJVLinkJob, env: Env, now: Date): Promise<void> =>

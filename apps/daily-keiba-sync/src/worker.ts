@@ -183,19 +183,24 @@ const monitor = async (env: Env, provider: Provider, runDate: string, now: Date)
       run.from_time === null
         ? defaultAcquisitionWindow(provider, runDate, BOOTSTRAP_LOOKBACK_DAYS)
         : { fromTime: run.from_time, toTime: run.to_time };
-    await acquireRun(
-      {
-        advanceCursor: run.advance_cursor === 1,
-        cursorTime: run.cursor_time ?? jstTimestamp(now.getTime()),
-        fromTime: window.fromTime,
-        provider,
-        runDate,
-        runId: run.run_id,
-        toTime: window.toTime,
-      },
-      env,
-      now,
-    );
+    try {
+      await acquireRun(
+        {
+          advanceCursor: run.advance_cursor === 1,
+          cursorTime: run.cursor_time ?? jstTimestamp(now.getTime()),
+          fromTime: window.fromTime,
+          provider,
+          runDate,
+          runId: run.run_id,
+          toTime: window.toTime,
+        },
+        env,
+        now,
+      );
+    } catch (error) {
+      await updateRunStatus(env.DB, run.run_id, "acquisition_failed", now, "acquisition");
+      throw error;
+    }
     return;
   }
   await env.R2_CATALOG_JOBS.send({ provider, runDate, runId: run.run_id, type: "recover" });

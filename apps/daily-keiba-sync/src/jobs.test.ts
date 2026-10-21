@@ -106,6 +106,7 @@ beforeAll(async () => {
     },
     compatibilityDate: "2026-06-18",
     d1Databases: { DB: "jobs-test" },
+    kvNamespaces: ["SYNC_CACHE"],
     modules: true,
     r2Buckets: { CATALOG_BUCKET: "catalog-test", SOURCE_STAGING: "staging-test" },
     script: "export default {}",
@@ -140,6 +141,10 @@ beforeEach(async () => {
     "delete from catalog_table_leases; delete from catalog_operations; delete from catalog_row_index; delete from catalog_index_chunks; delete from catalog_index_partitions; delete from sync_run_table_partitions; delete from sync_run_tables; delete from sync_runs; delete from provider_acquisition_cursors;",
   );
   await baseEnv.DB.exec("delete from catalog_targets where table_name = 'jvd_cs'");
+  await Promise.all([
+    baseEnv.SYNC_CACHE.delete("provider-sync:last-success:jv"),
+    baseEnv.SYNC_CACHE.delete("provider-sync:last-success:nv"),
+  ]);
   queue = new RecordingQueue();
   realtimeRequests = [];
   const source = {
@@ -532,6 +537,11 @@ describe("sync queue jobs", () => {
     expect((await getRun(baseEnv.DB, run.run_id)).status).toBe("succeeded_empty");
     expect(await getProviderAcquisitionCursor(baseEnv.DB, "nv")).toBe("20260904010000");
     expect(mocks.purgeCursorCache).toHaveBeenCalledWith(emptyEnv.SYNC_CACHE, "nv");
+    expect(await baseEnv.SYNC_CACHE.get("provider-sync:last-success:nv", "json")).toStrictEqual({
+      at: "2026-09-03T16:00:00.000Z",
+      runId: run.run_id,
+      status: "succeeded_empty",
+    });
   });
 
   test("selects the JV source and rejects unsafe upstream responses", async () => {
@@ -800,6 +810,7 @@ describe("sync queue jobs", () => {
     );
     expect((await getRun(baseEnv.DB, run.run_id)).status).toBe("succeeded_empty");
     expect(queue.messages).toEqual([]);
+    expect(await baseEnv.SYNC_CACHE.get("provider-sync:last-success:nv")).toBeNull();
   });
 
   test("publishes a catalog table before dispatching Neon", async () => {
@@ -960,6 +971,7 @@ describe("sync queue jobs", () => {
     );
     expect(mocks.neon).toHaveBeenCalledTimes(1);
     expect((await getRun(baseEnv.DB, run.run_id)).status).toBe("succeeded");
+    expect(await baseEnv.SYNC_CACHE.get("provider-sync:last-success:nv")).toBeNull();
   });
 
   test("does not rewrite an already backed-up table on duplicate queue delivery", async () => {

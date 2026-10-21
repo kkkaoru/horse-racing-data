@@ -1066,6 +1066,20 @@ describe("daily sync Worker", () => {
     expect(queue.messages.at(-1)?.type).toBe("recover");
   });
 
+  test("monitor marks a stale run whose re-acquisition fails as acquisition_failed", async () => {
+    const now = new Date("2026-09-03T12:00:00Z");
+    mocks.dailyRun.mockResolvedValueOnce(run("acquiring", "2026-09-03T10:00:00Z"));
+    mocks.acquireRun.mockRejectedValueOnce(new Error("Source acquisition failed"));
+    await expect(monitor(env, "nv", "20260903", now)).rejects.toThrow("Source acquisition failed");
+    expect(mocks.updateRunStatus).toHaveBeenLastCalledWith(
+      env.DB,
+      "run-1",
+      "acquisition_failed",
+      now,
+      "acquisition",
+    );
+  });
+
   test("strictly validates every typed external record field", () => {
     const layout = layoutByTable("netkeiba_training_workouts");
     const valid = Object.fromEntries(
