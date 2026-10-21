@@ -1216,6 +1216,7 @@ class ContinuousLearner:
             if validation_year_pool is not None
             else list(VALIDATION_YEAR_POOL)
         )
+        self._last_blind_checked_active_id: int | None = None
         self._blind_holdout_year: int = (
             blind_holdout_year
             if blind_holdout_year is not None
@@ -1524,6 +1525,7 @@ class ContinuousLearner:
                 self._train_start,
                 DEFAULT_PARAMS,
                 self._backends,
+                screening=True,
             )
             if pre_active is not None
             else 0.0
@@ -1661,27 +1663,36 @@ class ContinuousLearner:
             _logger.debug("no active entry — skipping deploy check")
             return False
         deployed_ndcg = self._registry.get_deployed_ndcg()
-        delta = active["ndcg_at_3"] - deployed_ndcg
-        if delta < self._deploy_threshold:
-            _logger.info(
-                "deploy check: improvement below threshold  "
-                "current: %.4f | deployed: %.4f | delta: %+.4f | gap to threshold: %.4f",
-                active["ndcg_at_3"],
-                deployed_ndcg,
-                delta,
-                self._deploy_threshold - delta,
-            )
+        deployed_features = self._registry.get_deployed_feature_names()
+        if deployed_features is None:
+            # No recorded deployed set: only the stored scores are available to compare.
+            delta = active["ndcg_at_3"] - deployed_ndcg
+            if delta < self._deploy_threshold:
+                _logger.info(
+                    "deploy check: improvement below threshold  "
+                    "current: %.4f | deployed: %.4f | delta: %+.4f | gap to threshold: %.4f",
+                    active["ndcg_at_3"],
+                    deployed_ndcg,
+                    delta,
+                    self._deploy_threshold - delta,
+                )
+                return False
+        elif set(active["feature_names"]) == set(deployed_features):
+            _logger.debug("deploy check: active entry is the deployed feature set")
             return False
+        elif active["id"] == self._last_blind_checked_active_id:
+            _logger.debug("deploy check: active entry %d already blind-checked", active["id"])
+            return False
+        # Stored scores come from different rounds' validation years, so with a known
+        # deployed set the decision is made only by the same-year blind comparison below.
+        self._last_blind_checked_active_id = active["id"]
         _logger.info(
-            "NDCG@3 improved by %+.4f (%.4f → %.4f) — evaluating blind holdout",
-            delta,
-            deployed_ndcg,
+            "evaluating blind holdout for active entry %d (stored %.4f, deployed stored %.4f)",
+            active["id"],
             active["ndcg_at_3"],
+            deployed_ndcg,
         )
         blind_ndcg = self._evaluate_blind_holdout(active)
-        # Compare on the same year: deployed_ndcg was measured on other validation years,
-        # so a harder or easier blind year alone would flip the decision.
-        deployed_features = self._registry.get_deployed_feature_names()
         blind_baseline = (
             deployed_ndcg
             if deployed_features is None

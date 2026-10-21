@@ -792,7 +792,7 @@ def test_evaluate_feature_set_filters_to_correct_columns() -> None:
     captured_folds: list[object] = []
     with patch(
         "learning.feature_explorer.run_fold_with_backend",
-        side_effect=lambda fold, backend, p: (captured_folds.append(fold), 0.80)[1],
+        side_effect=lambda fold, backend, p, xgb_args, cb_args: (captured_folds.append(fold), 0.80)[1],
     ):
         subject.evaluate_feature_set(
             df, ["feat_speed"], [2023], "20160101", params,
@@ -3544,3 +3544,23 @@ def test_build_objective_bar_is_active_set_rescored_not_stored_ndcg() -> None:
 
 def test_score_feature_set_on_plans_is_zero_without_scores() -> None:
     assert subject.score_feature_set_on_plans([], {"feat_a"}, ("lightgbm",), subject.DEFAULT_PARAMS, None, None, None) == 0.0
+
+
+def test_evaluate_feature_set_screening_uses_screen_backend_args() -> None:
+    df = _make_df_6feats()
+    seen: list[tuple[object, object]] = []
+
+    def record(
+        _fold: object, _backend: object, _p: object, xgb_args: object, cb_args: object
+    ) -> float:
+        seen.append((xgb_args, cb_args))
+        return 0.5
+
+    with patch("learning.feature_explorer.run_fold_with_backend", side_effect=record):
+        subject.evaluate_feature_set(
+            df, ["feat_a"], [2023], "20160101", subject.DEFAULT_PARAMS, ("catboost",), screening=True
+        )
+        subject.evaluate_feature_set(
+            df, ["feat_a"], [2023], "20160101", subject.DEFAULT_PARAMS, ("catboost",)
+        )
+    assert seen == [(subject._SCREEN_XGB_ARGS, subject._SCREEN_CB_ARGS), (None, None)]

@@ -779,7 +779,12 @@ def evaluate_feature_set(
     train_start: str,
     params: TrainingParams,
     backends: tuple[ModelBackend, ...] = DEFAULT_BACKENDS,
+    *,
+    screening: bool = False,
 ) -> float:
+    """Mean NDCG@3 of ``feature_names``; ``screening`` uses run_exploration's screen args."""
+    xgb_args = _SCREEN_XGB_ARGS if screening else None
+    cb_args = _SCREEN_CB_ARGS if screening else None
     feature_set = set(feature_names)
     feature_mask = {col: col in feature_set for col in df.columns}
     subset_df = select_features(df, feature_mask)
@@ -789,7 +794,7 @@ def evaluate_feature_set(
         if not _fold_is_trainable(fold):
             continue
         for backend in backends:
-            score = run_fold_with_backend(fold, backend, params)
+            score = run_fold_with_backend(fold, backend, params, xgb_args, cb_args)
             if score is not None:
                 ndcg_scores.append(score)
     if not ndcg_scores:

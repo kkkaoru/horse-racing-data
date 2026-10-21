@@ -925,3 +925,29 @@ def test_registry_adds_feature_names_column_to_existing_deployments_table(tmp_pa
         assert reg.get_deployed_feature_names() is None
         reg.record_deployment(0.61, 1, ["feat_a"])
         assert reg.get_deployed_feature_names() == ["feat_a"]
+
+
+def test_is_saturated_uses_same_year_delta_pp_over_raw_ndcg() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial("active", 0.60, ["feat_a"])
+        reg.activate(active_id)
+        # Raw 0.65 beats the stored 0.60, but against the same-year bar it was -1pp.
+        reg.record_trial("t1", 0.65, ["feat_b"], '{"delta_pp": -1.0}')
+        assert reg.is_saturated(lookback=1) is True
+
+
+def test_is_saturated_false_when_same_year_delta_pp_clears_threshold() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial("active", 0.60, ["feat_a"])
+        reg.activate(active_id)
+        # Raw 0.55 is below the stored 0.60, but it beat the same-year bar by +0.8pp.
+        reg.record_trial("t1", 0.55, ["feat_b"], '{"delta_pp": 0.8}')
+        assert reg.is_saturated(lookback=1) is False
+
+
+def test_is_saturated_falls_back_to_raw_ndcg_without_delta_pp() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        active_id = reg.record_trial("active", 0.60, ["feat_a"])
+        reg.activate(active_id)
+        reg.record_trial("t1", 0.65, ["feat_b"], "{}")
+        assert reg.is_saturated(lookback=1) is False

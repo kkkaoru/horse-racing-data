@@ -6619,3 +6619,42 @@ def test_run_inverse_exploration_scores_active_set_on_screen_year() -> None:
         assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.05)}
         assert mock_eval.call_args.args[1] == ["feat_speed"]
         assert mock_eval.call_args.args[2] == mock_run.call_args.kwargs["validation_years"]
+        assert mock_eval.call_args.kwargs == {"screening": True}
+
+
+def test_check_deploy_readiness_skips_prefilter_and_blind_checks_with_known_deployed_set() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.68, ["feat_speed", "feat_new"])
+        reg.activate(1)
+        # Stored 0.68 < deployed stored 0.75 (other years) — must not block the blind check.
+        reg.record_deployment(0.75, 1, ["feat_speed"])
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        blind_scores = {("feat_speed", "feat_new"): 0.62, ("feat_speed",): 0.60}
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(
+                learner,
+                "_evaluate_blind_holdout_features",
+                side_effect=lambda names: blind_scores[tuple(names)],
+            ) as mock_blind,
+            patch.object(reg, "record_deployment") as mock_record,
+        ):
+            assert learner._check_deploy_readiness() is False
+            # Same active entry again: already blind-checked, no re-evaluation.
+            assert learner._check_deploy_readiness() is False
+        assert mock_blind.call_count == 2
+        mock_record.assert_called_once_with(0.68, 2, ["feat_speed", "feat_new"])
+
+
+def test_check_deploy_readiness_skips_when_active_is_deployed_set() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed"])
+        reg.activate(1)
+        reg.record_deployment(0.70, 1, ["feat_speed"])
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(learner, "_evaluate_blind_holdout_features") as mock_blind,
+        ):
+            assert learner._check_deploy_readiness() is False
+        mock_blind.assert_not_called()

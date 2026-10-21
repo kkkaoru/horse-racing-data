@@ -210,17 +210,27 @@ class FeatureRegistry:
             return None
         return _row_to_entry(row)
 
-    def is_saturated(self, lookback: int = 50) -> bool:
-        """True when none of the last `lookback` trials beat the active entry."""
+    def is_saturated(
+        self, lookback: int = 50, threshold: float = NDCG_IMPROVEMENT_THRESHOLD
+    ) -> bool:
+        """True when none of the last `lookback` trials beat the active entry.
+
+        A trial's ``delta_pp`` (definition_json) is measured against the active set on
+        that trial's own validation years, so it is used when present; raw NDCG@3 from
+        different rounds' years is only the fallback for trials without it.
+        """
         assert self._con is not None
         active = self.get_active_entry()
         if active is None:
             return False
         active_ndcg = active["ndcg_at_3"]
         row = self._con.execute(
-            "SELECT COUNT(*) FROM (SELECT ndcg_at_3 FROM feature_trials ORDER BY id DESC LIMIT ?) "
-            "WHERE ndcg_at_3 > ?",
-            [lookback, active_ndcg],
+            "SELECT COUNT(*) FROM ("
+            "SELECT ndcg_at_3, "
+            "try_cast(json_extract_string(definition_json, '$.delta_pp') AS DOUBLE) AS delta_pp "
+            "FROM feature_trials ORDER BY id DESC LIMIT ?) "
+            "WHERE coalesce(delta_pp > ?, ndcg_at_3 > ?)",
+            [lookback, threshold * 100, active_ndcg],
         ).fetchone()
         return row is not None and int(row[0]) == 0
 
