@@ -19,6 +19,6 @@
 ## まだ残す Neon 依存 (順番の提案)
 
 1. `sync-realtime-data/src/running-style-queue.ts` の Neon 完了ゲート。Catalog 追記が数日動き、日次で D1/Parquet と件数照合できてから「D1 書き込み + Parquet 件数」に置き換え、Neon 書き込みは best-effort にする。
-2. 学習スクリプトのうち `attach_source_catalog` を通らないもの (`generate_running_style_features_local.py`、`continuous_learner`、`aggregate_bucket_eval` など) を Catalog 経由にする。
+2. 学習スクリプトのうち `attach_source_catalog` を通らないもの (`generate_running_style_features_local.py`、`continuous_learner`、`aggregate_bucket_eval_duckdb.py`) はローカル PG を読む (Neon は読まない)。Neon に触るのは `aggregate_bucket_eval_duckdb.py` の評価結果の upsert (`--neon-url`、ビューア表示用) だけで、これは 4 の本番系に属する。Catalog 経由にするのはローカル PG 依存を減らす段階で行う。
 3. Catalog に無いテーブル (オッズ系、`jvd_wf`) を Catalog に追加する。それまではローカル PG が必要。ローカル PG の追い付きには `bun run --filter local-postgresql training:pull-neon` (Neon をバックアップとして使う break-glass 経路) を使う。
 4. 本番の読み取り (viewer の Hyperdrive 読み取り、WIN5、評価、finish-position の予測 upsert / 監査、cron の readiness / rescore) は Neon が主系のまま。配信影響が大きいので個別に移行計画を立てる。
