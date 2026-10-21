@@ -649,7 +649,7 @@ def test_main_holdout_orchestration_and_early_failures(
     assert calls[-1] == (2024, 2025, 2026)
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["version"] == "jra-priority-cell-optimization-v9"
-    assert report["evaluation_contract"] == "jra-cell-walk-forward-v8"
+    assert report["evaluation_contract"] == "jra-cell-walk-forward-v9"
     assert report["cells"][0]["production_eligible"] is False
     assert (
         report["cells"][0]["production_eligibility_reason"]

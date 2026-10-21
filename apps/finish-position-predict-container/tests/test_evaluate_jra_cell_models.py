@@ -194,6 +194,53 @@ def test_fold_retains_explicit_nonfinish_teacher_in_the_actual_pool(
     assert historical.loc[1, "finish_position"] is None
 
 
+def test_fold_early_stops_on_latest_training_races_then_refits_like_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    race_ids = scope().training_race_ids
+    historical = pd.concat(
+        [frame(race_ids[:90], "20230101"), frame(race_ids[90:], "20230601")], ignore_index=True
+    )
+    target = frame(("eval",), "20240101")
+    constructed: list[dict[str, object]] = []
+    fits: list[tuple[int, int | None, int | None]] = []
+
+    class TuningRanker(FakeRanker):
+        def __init__(self, **kwargs: object) -> None:
+            constructed.append(kwargs)
+
+        @override
+        def fit(
+            self,
+            _pool: object,
+            eval_set: object = None,
+            early_stopping_rounds: int | None = None,
+        ) -> None:
+            validation_rows = None if eval_set is None else cast(PoolLike, eval_set).num_row()
+            fits.append((cast(PoolLike, _pool).num_row(), validation_rows, early_stopping_rounds))
+
+        def get_best_iteration(self) -> int:
+            return 4
+
+    def load_rows(
+        _dataset: DatasetLike, race_ids: tuple[str, ...], _features: list[str]
+    ) -> pd.DataFrame:
+        return target.copy() if "eval" in race_ids else historical.copy()
+
+    monkeypatch.setattr(evaluation, "load_feature_rows", load_rows)
+    monkeypatch.setattr(evaluation, "CatBoostRanker", TuningRanker)
+    parameters = args()
+    parameters.iterations = 250
+    result = evaluation.evaluate_fold(
+        cast(DatasetLike, object()), ["feature", "odds_score"], scope(), parameters
+    )
+    assert fits == [(180, 20, 30), (200, None, None)]
+    assert [kwargs["iterations"] for kwargs in constructed] == [250, 5]
+    assert constructed[0]["eval_metric"] == "NDCG:top=3"
+    assert "eval_metric" not in constructed[1]
+    assert result["final_iterations"] == 5
+
+
 @pytest.mark.parametrize("finish", [None, 0, True])
 def test_fold_refuses_unresolved_teacher_before_model_construction(
     monkeypatch: pytest.MonkeyPatch,

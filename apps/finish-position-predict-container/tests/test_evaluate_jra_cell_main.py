@@ -68,8 +68,8 @@ def test_main_writes_versioned_checkpoint_and_resumes_without_fitting(
 ) -> None:
     assert evaluation.main(offline_main) == 0
     report = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
-    assert report["version"] == "jra-cell-walk-forward-v8"
-    assert report["cells"][0]["version"] == "jra-cell-walk-forward-v8"
+    assert report["version"] == "jra-cell-walk-forward-v9"
+    assert report["cells"][0]["version"] == "jra-cell-walk-forward-v9"
     assert report["legacy_metrics_definition"] == "winner-in-predicted-top-K"
     assert report["exact_position_metrics_location"] == "cells[].folds[].exact_position_metrics"
     assert report["exact_position_aggregate_location"] == "aggregate.exact_positions"
@@ -93,7 +93,7 @@ def test_main_writes_versioned_checkpoint_and_resumes_without_fitting(
         {"version": "jra-cell-walk-forward-v5", "folds": []},
         {"version": "jra-cell-walk-forward-v6", "folds": []},
         {"version": "jra-cell-walk-forward-v7", "folds": []},
-        {"version": "jra-cell-walk-forward-v8", "folds": []},
+        {"version": "jra-cell-walk-forward-v9", "folds": []},
     ],
 )
 def test_main_rejects_old_checkpoint_without_overwriting(

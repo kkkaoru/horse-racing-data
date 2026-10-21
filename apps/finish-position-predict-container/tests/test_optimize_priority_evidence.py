@@ -93,7 +93,7 @@ def scored_calls(monkeypatch: pytest.MonkeyPatch) -> list[Namespace]:
         catalog = require_teacher_catalog(args)
         calls.append(args)
         result: dict[str, object] = {
-            "version": "jra-cell-walk-forward-v8",
+            "version": "jra-cell-walk-forward-v9",
             "teacher_evidence": asdict(catalog.references),
             "status": "evaluated",
             "evaluation_year": scope.evaluation_year,
@@ -239,16 +239,16 @@ def test_compatible_prediction_request_fills_missing_predictions_then_reuses(
         {"version": "jra-cell-walk-forward-v5"},
         {"version": "jra-cell-walk-forward-v6", "teacher_evidence": {}},
         {"version": "jra-cell-walk-forward-v7", "teacher_evidence": {}},
-        {"version": "jra-cell-walk-forward-v8", "teacher_evidence": {}},
+        {"version": "jra-cell-walk-forward-v9", "teacher_evidence": {}},
         {
-            "version": "jra-cell-walk-forward-v8",
+            "version": "jra-cell-walk-forward-v9",
             "teacher_evidence": {
                 "declared_counts_sha256": "c" * 64,
                 "runner_outcomes_sha256": "b" * 64,
             },
         },
         {
-            "version": "jra-cell-walk-forward-v8",
+            "version": "jra-cell-walk-forward-v9",
             "teacher_evidence": {
                 "declared_counts_sha256": "a" * 64,
                 "runner_outcomes_sha256": "c" * 64,

@@ -59,13 +59,15 @@ from train_jra_cell_models import (
     DatasetLike,
     build_admitted_rank_pool,
     build_rank_pool,
+    chronological_race_split,
     load_feature_rows,
     numeric_feature_names,
     rank_predictions,
+    resolve_final_iterations,
     winner_topk_metrics,
 )
 
-REPORT_VERSION: Final[str] = "jra-cell-walk-forward-v8"
+REPORT_VERSION: Final[str] = "jra-cell-walk-forward-v9"
 EVALUATION_ROSTER_CONTRACT: Final[str] = "supplied-roster-evidence-explicit-target-status-v1"
 EXACT_POPULATION: Final[str] = "scored-race-fold-occurrences-with-position-specific-support"
 
@@ -78,7 +80,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-plan", type=Path)
     parser.add_argument("--from-date", default="20000101")
     parser.add_argument("--to-date", default="20260905")
-    parser.add_argument("--iterations", type=int, default=100)
+    parser.add_argument("--iterations", type=int, default=250)
     parser.add_argument("--depth", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--relevance-mode", choices=RELEVANCE_MODES, default=DEFAULT_RELEVANCE_MODE)
@@ -106,6 +108,21 @@ def _exact_metrics(frame: pd.DataFrame) -> ExactPositionMetrics:
         ].itertuples(index=False, name=None)
     )
     return exact_position_metrics(observations)
+
+
+def _ranker(args: argparse.Namespace, iterations: int, **extra: str) -> CatBoostRanker:
+    return CatBoostRanker(
+        loss_function="YetiRank",
+        iterations=iterations,
+        learning_rate=args.learning_rate,
+        depth=args.depth,
+        l2_leaf_reg=3.0,
+        random_seed=20260905,
+        task_type="CPU",
+        thread_count=args.thread_count,
+        verbose=False,
+        **extra,
+    )
 
 
 def evaluate_fold(
@@ -223,21 +240,23 @@ def evaluate_fold(
             ),
         }
     )
-    training_pool = build_admitted_rank_pool(historical, feature_names)
     ordered = evaluation.sort_values(["race_id", "umaban"]).reset_index(drop=True)
     evaluation_pool = build_rank_pool(ordered, feature_names, with_labels=False)
-    model = CatBoostRanker(
-        loss_function="YetiRank",
-        iterations=args.iterations,
-        learning_rate=args.learning_rate,
-        depth=args.depth,
-        l2_leaf_reg=3.0,
-        random_seed=20260905,
-        task_type="CPU",
-        thread_count=args.thread_count,
-        verbose=False,
-    )
-    model.fit(training_pool)
+    # Same recipe as train_jra_cell_models.train_cell, so the fold accuracy measures what ships.
+    training, validation = chronological_race_split(historical)
+    final_iterations = args.iterations
+    if not validation.empty:
+        tuning_model = _ranker(args, args.iterations, eval_metric="NDCG:top=3")
+        tuning_model.fit(
+            build_admitted_rank_pool(training, feature_names),
+            eval_set=build_admitted_rank_pool(validation, feature_names),
+            early_stopping_rounds=30,
+        )
+        final_iterations = resolve_final_iterations(
+            args.iterations, tuning_model.get_best_iteration(), fixed_iterations=False
+        )
+    model = _ranker(args, final_iterations)
+    model.fit(build_admitted_rank_pool(historical, feature_names))
     scores = np.asarray(model.predict(evaluation_pool), dtype=np.float64)
     if not bool(np.isfinite(scores).all()):
         raise ValueError("walk-forward model produced a non-finite score")
@@ -256,6 +275,7 @@ def evaluate_fold(
     result: dict[str, object] = {
         **base,
         "status": "evaluated",
+        "final_iterations": final_iterations,
         "metrics": metrics,
         "market_baseline_metrics": market_metrics,
         "legacy_metrics_definition": "winner-in-predicted-top-K",
