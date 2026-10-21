@@ -792,7 +792,7 @@ def test_check_deploy_readiness_records_deployment_when_blind_confirms() -> None
             patch.object(reg, "record_deployment") as mock_record,
         ):
             learner._check_deploy_readiness()
-        mock_record.assert_called_once_with(0.80, 1)
+        mock_record.assert_called_once_with(0.80, 1, ["feat_speed"])
 
 
 def test_check_deploy_readiness_records_when_delta_equals_threshold() -> None:
@@ -810,7 +810,7 @@ def test_check_deploy_readiness_records_when_delta_equals_threshold() -> None:
         ):
             learner._check_deploy_readiness()
         mock_deploy.assert_not_called()
-        mock_record.assert_called_once_with(0.505, 1)
+        mock_record.assert_called_once_with(0.505, 1, ["feat_speed"])
 
 
 def test_check_deploy_readiness_deploys_above_threshold_when_auto_deploy() -> None:
@@ -6547,3 +6547,45 @@ def test_main_no_trial_store_when_log_subgroup_disabled(tmp_path: Path) -> None:
         )
 
     assert captured["trial_store"] is None
+
+
+def test_check_deploy_readiness_compares_blind_year_against_deployed_feature_set() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed", "feat_new"])
+        reg.activate(1)
+        reg.record_deployment(0.70, 1, ["feat_speed"])
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        blind_scores = {("feat_speed", "feat_new"): 0.62, ("feat_speed",): 0.618}
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(
+                learner,
+                "_evaluate_blind_holdout_features",
+                side_effect=lambda names: blind_scores[tuple(names)],
+            ),
+            patch.object(reg, "record_deployment") as mock_record,
+        ):
+            # Blind 0.62 is far below the stored 0.70, but the deployed set scores 0.618
+            # on the same blind year: +0.002 < threshold, so no deployment.
+            assert learner._check_deploy_readiness() is False
+        mock_record.assert_not_called()
+
+
+def test_check_deploy_readiness_confirms_against_deployed_set_on_hard_blind_year() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("t1", 0.80, ["feat_speed", "feat_new"])
+        reg.activate(1)
+        reg.record_deployment(0.70, 1, ["feat_speed"])
+        learner = _make_learner(registry=reg, deploy_threshold=0.005)
+        blind_scores = {("feat_speed", "feat_new"): 0.62, ("feat_speed",): 0.60}
+        with (
+            patch.object(reg, "is_saturated", return_value=False),
+            patch.object(
+                learner,
+                "_evaluate_blind_holdout_features",
+                side_effect=lambda names: blind_scores[tuple(names)],
+            ),
+            patch.object(reg, "record_deployment") as mock_record,
+        ):
+            assert learner._check_deploy_readiness() is False
+        mock_record.assert_called_once_with(0.80, 2, ["feat_speed", "feat_new"])

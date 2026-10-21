@@ -898,3 +898,30 @@ def test_open_rejects_registry_stamped_with_another_regime(tmp_path: Path):
         pass
     with pytest.raises(subject.RegistryRegimeMismatchError, match="older-regime-v0"):
         subject.FeatureRegistry(db_path).open()
+
+
+def test_get_deployed_feature_names_returns_latest_recorded_set() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_deployment(0.60, 1, ["feat_a"])
+        reg.record_deployment(0.65, 2, ["feat_a", "feat_b"])
+        assert reg.get_deployed_feature_names() == ["feat_a", "feat_b"]
+
+
+def test_get_deployed_feature_names_is_none_without_recorded_set() -> None:
+    with subject.FeatureRegistry(Path(":memory:")) as reg:
+        assert reg.get_deployed_feature_names() is None
+        reg.record_deployment(0.60, 1)
+        assert reg.get_deployed_feature_names() is None
+
+
+def test_registry_adds_feature_names_column_to_existing_deployments_table(tmp_path: Path) -> None:
+    path = tmp_path / "registry.duckdb"
+    with subject.FeatureRegistry(path) as reg:
+        reg.record_deployment(0.60, 1)
+    con = duckdb.connect(str(path))
+    con.execute("ALTER TABLE deployments DROP COLUMN feature_names")
+    con.close()
+    with subject.FeatureRegistry(path) as reg:
+        assert reg.get_deployed_feature_names() is None
+        reg.record_deployment(0.61, 1, ["feat_a"])
+        assert reg.get_deployed_feature_names() == ["feat_a"]

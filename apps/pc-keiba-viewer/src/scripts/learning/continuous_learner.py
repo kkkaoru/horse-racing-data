@@ -1667,14 +1667,22 @@ class ContinuousLearner:
             active["ndcg_at_3"],
         )
         blind_ndcg = self._evaluate_blind_holdout(active)
-        blind_delta = blind_ndcg - deployed_ndcg
+        # Compare on the same year: deployed_ndcg was measured on other validation years,
+        # so a harder or easier blind year alone would flip the decision.
+        deployed_features = self._registry.get_deployed_feature_names()
+        blind_baseline = (
+            deployed_ndcg
+            if deployed_features is None
+            else self._evaluate_blind_holdout_features(deployed_features)
+        )
+        blind_delta = blind_ndcg - blind_baseline
         if blind_delta < self._deploy_threshold:
             _logger.info(
                 "deploy check: blind holdout %d did not confirm  "
-                "blind ndcg: %.4f | deployed: %.4f | blind delta: %+.4f",
+                "blind ndcg: %.4f | deployed on blind year: %.4f | blind delta: %+.4f",
                 self._blind_holdout_year,
                 blind_ndcg,
-                deployed_ndcg,
+                blind_baseline,
                 blind_delta,
             )
             return False
@@ -1698,7 +1706,9 @@ class ContinuousLearner:
             active["ndcg_at_3"],
             feature_count,
         )
-        self._registry.record_deployment(active["ndcg_at_3"], feature_count)
+        self._registry.record_deployment(
+            active["ndcg_at_3"], feature_count, active["feature_names"]
+        )
         return False
 
     def _evaluate_blind_holdout(self, entry: FeatureEntry) -> float:
@@ -1707,9 +1717,12 @@ class ContinuousLearner:
         This year never enters Optuna search, so it gives an unbiased read on
         whether a round's winner truly generalises before we deploy it.
         """
+        return self._evaluate_blind_holdout_features(entry["feature_names"])
+
+    def _evaluate_blind_holdout_features(self, feature_names: list[str]) -> float:
         return evaluate_feature_set(
             self._df,
-            entry["feature_names"],
+            feature_names,
             [self._blind_holdout_year],
             self._train_start,
             DEFAULT_PARAMS,
@@ -1939,7 +1952,7 @@ class ContinuousLearner:
             if self._cf_deploy:
                 _logger.info("│  [5/5] deploying to Cloudflare Container ...")
                 self._deploy_cf_container()
-            self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names))
+            self._registry.record_deployment(entry["ndcg_at_3"], len(feature_names), feature_names)
         except Exception:
             _logger.error("│  deploy failed — rolling back staged artifacts")
             self._rollback_deploy(staged_dest, prev_meta_content)

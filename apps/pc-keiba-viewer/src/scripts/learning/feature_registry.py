@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final, SupportsFloat, SupportsInt, TypedDict, cast
@@ -109,9 +110,12 @@ class FeatureRegistry:
                 id            INTEGER PRIMARY KEY,
                 ndcg_at_3     DOUBLE  NOT NULL,
                 feature_count INTEGER NOT NULL,
-                deployed_at   TEXT    NOT NULL
+                deployed_at   TEXT    NOT NULL,
+                feature_names TEXT
             )
         """)
+        # Registries created before the column existed; NULL means "unknown feature set".
+        self._con.execute("ALTER TABLE deployments ADD COLUMN IF NOT EXISTS feature_names TEXT")
         self._con.execute("""
             CREATE TABLE IF NOT EXISTS registry_meta (
                 key   TEXT PRIMARY KEY,
@@ -347,16 +351,33 @@ class FeatureRegistry:
             return 0.0
         return float(row[0])
 
-    def record_deployment(self, ndcg_at_3: float, feature_count: int) -> None:
+    def get_deployed_feature_names(self) -> list[str] | None:
+        """Feature set of the latest deployment, or None when none was recorded."""
+        assert self._con is not None
+        row = self._con.execute(
+            "SELECT feature_names FROM deployments ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return [str(name) for name in json.loads(str(row[0]))]
+
+    def record_deployment(
+        self,
+        ndcg_at_3: float,
+        feature_count: int,
+        feature_names: Sequence[str] | None = None,
+    ) -> None:
         assert self._con is not None
         entry_id = self._next_deployment_id()
         self._con.execute(
-            "INSERT INTO deployments (id, ndcg_at_3, feature_count, deployed_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO deployments (id, ndcg_at_3, feature_count, deployed_at, feature_names) "
+            "VALUES (?, ?, ?, ?, ?)",
             [
                 entry_id,
                 ndcg_at_3,
                 feature_count,
                 datetime.now(timezone.utc).isoformat(),
+                None if feature_names is None else json.dumps(list(feature_names)),
             ],
         )
 
