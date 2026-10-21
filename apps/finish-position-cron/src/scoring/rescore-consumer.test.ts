@@ -25,7 +25,7 @@ const {
     modelVersion: "jra-cb-v9-sim-2013-clean",
     variant: "sim",
   }));
-  const scoreShadow = vi.fn(() => ({
+  const scoreShadow = vi.fn((_entries?: readonly { readonly umaban?: unknown }[]) => ({
     gradeCode: null,
     modelVersion: "jra-cb-v9-sim-2013-clean",
     predictions: [
@@ -39,7 +39,7 @@ const {
     stage1RescoreRequired: false,
     variant: "sim",
   }));
-  const scoreBaneiShadow = vi.fn(() => ({
+  const scoreBaneiShadow = vi.fn((_entries?: readonly { readonly umaban?: unknown }[]) => ({
     gradeCode: null,
     modelVersion: "banei-cb-v9-sim-2011",
     predictions: [
@@ -557,6 +557,36 @@ test("shadowBaneiRace scores an attested race-final cache without writing Neon",
   expect(queryMock).not.toHaveBeenCalled();
 });
 
+test("shadowBaneiRace scores only active runners and leaves a scratched entry out", async () => {
+  fetchWeightMock.mockResolvedValue(
+    new Map([
+      [1, 980],
+      [3, 1010],
+    ]),
+  );
+  const env = makeKeyedEnv(new Map([[BANEI_PER_RACE_CACHE_KEY, baneiCacheObject]]));
+  env.REALTIME_DB = {
+    prepare: vi.fn(() => ({
+      bind: vi.fn(() => ({
+        all: vi.fn(async () => ({
+          results: [
+            { horse_number: "1", status: null },
+            { horse_number: "2", status: "取消" },
+            { horse_number: "3", status: null },
+          ],
+        })),
+      })),
+    })),
+  } as unknown as D1Database;
+  await shadowBaneiRace({
+    env,
+    fetchImpl: fetch,
+    message: makeMessage({ category: "ban-ei", keibajoCode: "83" }),
+  });
+  const scoredEntries = scoreBaneiShadowMock.mock.calls[0]?.[0] ?? [];
+  expect(scoredEntries.map((entry) => String(entry.umaban))).toStrictEqual(["1", "3"]);
+});
+
 test("shadowBaneiRace reuses the Container dispatch attestation", async () => {
   const env = makeKeyedEnv(new Map([[BANEI_PER_RACE_CACHE_KEY, baneiCacheObject]]));
   await shadowBaneiRace({
@@ -854,6 +884,32 @@ test("rescoreJraRace excludes a scratched entry from required weight coverage", 
   const result = await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
   expect(result.status).toBe("ok");
   expect(queryMock).toHaveBeenCalledTimes(1);
+});
+
+test("rescoreJraRace scores only active runners and leaves a scratched entry out", async () => {
+  fetchWeightMock.mockResolvedValue(
+    new Map([
+      [1, 480],
+      [3, 500],
+    ]),
+  );
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
+  env.REALTIME_DB = {
+    prepare: vi.fn(() => ({
+      bind: vi.fn(() => ({
+        all: vi.fn(async () => ({
+          results: [
+            { horse_number: "1", status: null },
+            { horse_number: "2", status: "取消" },
+            { horse_number: "3", status: null },
+          ],
+        })),
+      })),
+    })),
+  } as unknown as D1Database;
+  await rescoreJraRace({ env, fetchImpl: fetch, message: makeMessage() });
+  const scoredEntries = scoreShadowMock.mock.calls[0]?.[0] ?? [];
+  expect(scoredEntries.map((entry) => String(entry.umaban))).toStrictEqual(["1", "3"]);
 });
 
 test("rescoreJraRace switches to the market-free model when stage-2 spread is degraded", async () => {

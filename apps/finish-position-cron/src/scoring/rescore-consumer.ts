@@ -539,6 +539,15 @@ const loadExpectedRunnerNumbers = async (
   return { active, scratched };
 };
 
+// Scratched runners are excluded before scoring, as the Python rescore path does:
+// otherwise they were ranked with stale cached odds and a missing weight and written
+// to the predictions table.
+const activeRunnerRows = (rows: FeatureEntry[], active: ReadonlySet<number>): FeatureEntry[] =>
+  rows.filter((row) => {
+    const horseNumber = normalizePositiveHorseNumber(row.umaban);
+    return horseNumber !== null && active.has(horseNumber);
+  });
+
 const assertCompleteWeightSet = (input: WeightSetValidationInput): void => {
   const missing = [...input.active].filter((horseNumber) => !input.weights.has(horseNumber));
   if (missing.length > 0) {
@@ -666,7 +675,7 @@ export const shadowBaneiRace = async (
   const entries = buildEntries({
     category: BANEI_CATEGORY,
     oddsMap,
-    rows: target.rows,
+    rows: activeRunnerRows(target.rows, expectedRunners.active),
     weightMap,
   });
   const selected = selectBaneiShadowModel(entries);
@@ -787,7 +796,7 @@ export const rescoreJraRace = async (input: RescoreJraRaceInput): Promise<Rescor
     env: input.env,
     message: input.message,
     oddsMap,
-    rows: target.rows,
+    rows: activeRunnerRows(target.rows, expectedRunners.active),
     weightMap,
   });
 };
