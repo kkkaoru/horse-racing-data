@@ -78,7 +78,7 @@ def test_stage_jockey_features_uses_race_grain_prior_windows() -> None:
     conn = FakeConn()
     subject.stage_jockey_features(conn, 2008, "/tmp/in/race_year=*/*.parquet")
     sql = conn.statements[0]
-    assert "race_seq" in sql
+    assert "race_day" in sql
     assert "jo_race" in sql
     assert "jvn_race" in sql
     assert "rows between unbounded preceding and 1 preceding" in sql
@@ -117,7 +117,7 @@ def test_stage_jockey_features_focused_adds_unfinished_target_rows(
     assert "cast(null as double) as is_win" in sql
     assert "se.kishu_code in ('05339')" in sql
     assert "left join history h" in sql
-    assert "h.race_seq < t.race_seq" in sql
+    assert "h.race_day < t.race_day" in sql
     assert "group by all" in sql
     assert "rows between unbounded preceding and 1 preceding" not in sql
 
@@ -264,3 +264,59 @@ def test_focused_pedigree_features_match_bulk_target(tmp_path: Path) -> None:
     assert bulk is not None
     assert focused == pytest.approx(bulk)
     conn.close()
+
+
+def _jockey_history_pg(con: duckdb.DuckDBPyConnection, target_finish: str | None) -> None:
+    con.execute("attach ':memory:' as pg")
+    con.execute(
+        "create table pg.jvd_ra (kaisai_nen varchar, kaisai_tsukihi varchar, "
+        "keibajo_code varchar, race_bango varchar, kyoso_joken_code varchar, kyori varchar)"
+    )
+    con.execute(
+        "create table pg.jvd_se (kaisai_nen varchar, kaisai_tsukihi varchar, "
+        "keibajo_code varchar, race_bango varchar, ketto_toroku_bango varchar, "
+        "kishu_code varchar, kaisai_nichime varchar, kakutei_chakujun varchar)"
+    )
+    # Target 06R05 on 1021; same-day 05R12 (lower venue code, runs later) and 07R01
+    # lose; the only prior-day race (1020) is a win.
+    con.execute(
+        "insert into pg.jvd_ra values "
+        "('2026','1021','06','05','005','1600'), ('2026','1021','05','12','005','1600'), "
+        "('2026','1021','07','01','005','1600'), ('2026','1020','06','03','005','1600')"
+    )
+    con.execute(
+        "insert into pg.jvd_se values "
+        f"('2026','1021','06','05','T','J1','01',{'null' if target_finish is None else repr(target_finish)}), "
+        "('2026','1021','05','12','A','J1','01','05'), "
+        "('2026','1021','07','01','B','J1','01','04'), "
+        "('2026','1020','06','03','C','J1','01','01')"
+    )
+
+
+def test_focused_jockey_features_count_only_prior_day_races(tmp_path: Path) -> None:
+    con = duckdb.connect()
+    _jockey_history_pg(con, target_finish=None)
+    input_dir = tmp_path / "race_year=2026"
+    input_dir.mkdir()
+    con.execute(
+        "copy (select '2026' as kaisai_nen, '1021' as kaisai_tsukihi, '06' as keibajo_code, "
+        f"'05' as race_bango, 'T' as ketto_toroku_bango) to '{input_dir / 'part.parquet'}'"
+    )
+    subject.stage_jockey_features(
+        con, 2008, str(tmp_path / "race_year=*" / "*.parquet"), focused_target=True
+    )
+    row = con.execute(
+        "select jk_nichime_win_eb, jk_venue_nichime_logn from jra_jockey_cell_features"
+    ).fetchall()
+    assert row == [(1.0, pytest.approx(0.6931471805599453))]
+
+
+def test_batch_jockey_features_count_only_prior_day_races() -> None:
+    con = duckdb.connect()
+    _jockey_history_pg(con, target_finish="02")
+    subject.stage_jockey_features(con, 2008, "/unused/race_year=*/*.parquet")
+    row = con.execute(
+        "select jk_nichime_win_eb, jk_venue_nichime_logn from jra_jockey_cell_features "
+        "where keibajo_code = '06' and race_bango = '05'"
+    ).fetchall()
+    assert row == [(1.0, pytest.approx(0.6931471805599453))]

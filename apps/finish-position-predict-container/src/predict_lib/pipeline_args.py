@@ -217,12 +217,11 @@ LAYER_CHAIN: Final[dict[Category, tuple[str, ...]]] = {
 # by the day-base source/entry watermark. The two near-miss columns that depend
 # on live popularity are overwritten by the attested Worker market foundation.
 #
-#   * JRA_JOCKEY_PEDIGREE_CELL_SCRIPT — SAME-DAY-CUMULATIVE by design: it sums
-#     EARLIER-TODAY races via its own live PG query, independent of the input
-#     parquet. This is the one deliberate exception that must stay per-race
-#     FOREVER — never move it to DAY_CHAIN even if every other layer above it
-#     turns out to be day-stable, because its value literally changes race by
-#     race within the same day as earlier races post their jockey results.
+#   * JRA_JOCKEY_PEDIGREE_CELL_SCRIPT — runs per race via its own PG/catalog
+#     query, independent of the input parquet. Its history is strict prior-date
+#     (same-day results only reach the catalog with the nightly JV-Link sync, so
+#     training excludes them too); it stays in RACE_CHAIN until a DAY_CHAIN move
+#     is verified on its own.
 # ``BABA_PEDIGREE_SCRIPT`` is DAY-STABLE even though its affinity values vary
 # by race: it selects each row's ``current_baba_condition`` from the day-base's
 # deliberately frozen baba columns, while every historical aggregate is joined

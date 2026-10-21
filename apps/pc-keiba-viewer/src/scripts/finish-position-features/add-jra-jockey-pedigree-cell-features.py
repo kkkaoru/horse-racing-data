@@ -6,9 +6,12 @@ The 19 features mirror the leak-free candidate gate:
 * jockey x venue x meeting-day empirical-Bayes rates/ranks
 * grandsire / sire / keito cell empirical-Bayes rates/ranks
 
-All history windows are race-grain and exclude the whole current race. This is
-required because row-grain ``1 preceding`` windows leak when two runners in the
-same race share a sire/grandsire/keito.
+All history windows are day-grain: they count only races on strictly earlier
+dates. Row-grain ``1 preceding`` windows leak when two runners in the same race
+share a sire/grandsire/keito, and same-day races are unavailable at serving time
+(results reach the catalog with the nightly JV-Link sync, while the last serve is
+~1 hour before post). Ordering same-day races by venue code also counted later
+races at lower-numbered venues as "earlier".
 """
 
 from __future__ import annotations
@@ -140,8 +143,7 @@ def stage_jockey_target_rows(
           se.kaisai_tsukihi,
           se.keibajo_code,
           lpad(cast(cast(se.race_bango as int) as varchar),2,'0') as race_bango,
-          (se.kaisai_nen || se.kaisai_tsukihi || se.keibajo_code
-            || lpad(cast(cast(se.race_bango as int) as varchar),2,'0')) as race_seq,
+          (se.kaisai_nen || se.kaisai_tsukihi) as race_day,
           se.ketto_toroku_bango,
           se.kishu_code,
           se.kaisai_nichime,
@@ -185,8 +187,7 @@ def stage_jockey_features(
             create or replace temp table jra_jockey_cell_features as
             with history as (
               select
-                (se.kaisai_nen || se.kaisai_tsukihi || se.keibajo_code
-                  || lpad(cast(cast(se.race_bango as int) as varchar),2,'0')) as race_seq,
+                (se.kaisai_nen || se.kaisai_tsukihi) as race_day,
                 se.kishu_code,
                 se.kaisai_nichime,
                 se.keibajo_code,
@@ -250,7 +251,7 @@ def stage_jockey_features(
                 ), 0) as jf_n
               from jra_jockey_cell_target_rows t
               left join history h
-                on h.kishu_code = t.kishu_code and h.race_seq < t.race_seq
+                on h.kishu_code = t.kishu_code and h.race_day < t.race_day
               group by all
             ),
             features as (
@@ -298,8 +299,7 @@ def stage_jockey_features(
           select
             se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code,
             lpad(cast(cast(se.race_bango as int) as varchar),2,'0') as race_bango,
-            (se.kaisai_nen || se.kaisai_tsukihi || se.keibajo_code
-              || lpad(cast(cast(se.race_bango as int) as varchar),2,'0')) as race_seq,
+            (se.kaisai_nen || se.kaisai_tsukihi) as race_day,
             se.ketto_toroku_bango,
             se.kishu_code,
             se.kaisai_nichime,
@@ -323,57 +323,57 @@ def stage_jockey_features(
         )
         {target_cte},
         jo_race as (
-          select race_seq, kishu_code, sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
-          from base group by race_seq, kishu_code
+          select race_day, kishu_code, sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
+          from base group by race_day, kishu_code
         ),
         jo_prior as (
-          select race_seq, kishu_code,
+          select race_day, kishu_code,
             sum(w) over jo as jo_w,
             sum(n) over jo as jo_n
           from jo_race
-          window jo as (partition by kishu_code order by race_seq rows between unbounded preceding and 1 preceding)
+          window jo as (partition by kishu_code order by race_day rows between unbounded preceding and 1 preceding)
         ),
         jvn_race as (
-          select race_seq, kishu_code, keibajo_code, kaisai_nichime,
+          select race_day, kishu_code, keibajo_code, kaisai_nichime,
             sum(coalesce(is_win, 0.0)) as w, sum(coalesce(is_top3, 0.0)) as t3, count(is_win) as n
-          from base group by race_seq, kishu_code, keibajo_code, kaisai_nichime
+          from base group by race_day, kishu_code, keibajo_code, kaisai_nichime
         ),
         jvn_prior as (
-          select race_seq, kishu_code, keibajo_code, kaisai_nichime,
+          select race_day, kishu_code, keibajo_code, kaisai_nichime,
             sum(w) over jvn as jvn_w,
             sum(t3) over jvn as jvn_t3,
             sum(n) over jvn as jvn_n
           from jvn_race
           window jvn as (
             partition by kishu_code, keibajo_code, kaisai_nichime
-            order by race_seq rows between unbounded preceding and 1 preceding
+            order by race_day rows between unbounded preceding and 1 preceding
           )
         ),
         jn_race as (
-          select race_seq, kishu_code, kaisai_nichime,
+          select race_day, kishu_code, kaisai_nichime,
             sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
-          from base group by race_seq, kishu_code, kaisai_nichime
+          from base group by race_day, kishu_code, kaisai_nichime
         ),
         jn_prior as (
-          select race_seq, kishu_code, kaisai_nichime,
+          select race_day, kishu_code, kaisai_nichime,
             sum(w) over jn as jn_w,
             sum(n) over jn as jn_n
           from jn_race
-          window jn as (partition by kishu_code, kaisai_nichime order by race_seq rows between unbounded preceding and 1 preceding)
+          window jn as (partition by kishu_code, kaisai_nichime order by race_day rows between unbounded preceding and 1 preceding)
         ),
         jf_race as (
-          select race_seq, kishu_code, keibajo_code, kyoso_joken_code, kyori_band, kaisai_nichime,
+          select race_day, kishu_code, keibajo_code, kyoso_joken_code, kyori_band, kaisai_nichime,
             sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
-          from base group by race_seq, kishu_code, keibajo_code, kyoso_joken_code, kyori_band, kaisai_nichime
+          from base group by race_day, kishu_code, keibajo_code, kyoso_joken_code, kyori_band, kaisai_nichime
         ),
         jf_prior as (
-          select race_seq, kishu_code, keibajo_code, kyoso_joken_code, kyori_band, kaisai_nichime,
+          select race_day, kishu_code, keibajo_code, kyoso_joken_code, kyori_band, kaisai_nichime,
             sum(w) over jf as jf_w,
             sum(n) over jf as jf_n
           from jf_race
           window jf as (
             partition by kishu_code, keibajo_code, kyoso_joken_code, kyori_band, kaisai_nichime
-            order by race_seq rows between unbounded preceding and 1 preceding
+            order by race_day rows between unbounded preceding and 1 preceding
           )
         ),
         w as (
@@ -383,12 +383,12 @@ def stage_jockey_features(
             jn.jn_w, jn.jn_n,
             jf.jf_w, jf.jf_n
           from base b
-          left join jo_prior jo on b.race_seq = jo.race_seq and b.kishu_code = jo.kishu_code
-          left join jvn_prior jvn on b.race_seq = jvn.race_seq and b.kishu_code = jvn.kishu_code
+          left join jo_prior jo on b.race_day = jo.race_day and b.kishu_code = jo.kishu_code
+          left join jvn_prior jvn on b.race_day = jvn.race_day and b.kishu_code = jvn.kishu_code
             and b.keibajo_code = jvn.keibajo_code and b.kaisai_nichime = jvn.kaisai_nichime
-          left join jn_prior jn on b.race_seq = jn.race_seq and b.kishu_code = jn.kishu_code
+          left join jn_prior jn on b.race_day = jn.race_day and b.kishu_code = jn.kishu_code
             and b.kaisai_nichime = jn.kaisai_nichime
-          left join jf_prior jf on b.race_seq = jf.race_seq and b.kishu_code = jf.kishu_code
+          left join jf_prior jf on b.race_day = jf.race_day and b.kishu_code = jf.kishu_code
             and b.keibajo_code = jf.keibajo_code and b.kyoso_joken_code = jf.kyoso_joken_code
             and b.kyori_band = jf.kyori_band and b.kaisai_nichime = jf.kaisai_nichime
         ),
@@ -445,8 +445,7 @@ def stage_pedigree_target_rows(
           se.kaisai_tsukihi,
           se.keibajo_code,
           lpad(cast(cast(se.race_bango as int) as varchar),2,'0') as race_bango,
-          (se.kaisai_nen || se.kaisai_tsukihi || se.keibajo_code
-            || lpad(cast(cast(se.race_bango as int) as varchar),2,'0')) as race_seq,
+          (se.kaisai_nen || se.kaisai_tsukihi) as race_day,
           se.ketto_toroku_bango,
           ra.kyoso_joken_code,
           case
@@ -533,8 +532,7 @@ def stage_pedigree_features(
           select
             se.kaisai_nen, se.kaisai_tsukihi, se.keibajo_code,
             lpad(cast(cast(se.race_bango as int) as varchar),2,'0') as race_bango,
-            (se.kaisai_nen || se.kaisai_tsukihi || se.keibajo_code
-              || lpad(cast(cast(se.race_bango as int) as varchar),2,'0')) as race_seq,
+            (se.kaisai_nen || se.kaisai_tsukihi) as race_day,
             se.ketto_toroku_bango,
             ra.kyoso_joken_code,
             case
@@ -570,97 +568,97 @@ def stage_pedigree_features(
         {target_cte}
         ,
         go_race as (
-          select race_seq, gsire, sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
+          select race_day, gsire, sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
           from withkeito where gsire is not null and gsire <> ''
-          group by race_seq, gsire
+          group by race_day, gsire
         ),
         go_prior as (
-          select race_seq, gsire, sum(w) over go as go_w, sum(n) over go as go_n
+          select race_day, gsire, sum(w) over go as go_w, sum(n) over go as go_n
           from go_race
-          window go as (partition by gsire order by race_seq rows between unbounded preceding and 1 preceding)
+          window go as (partition by gsire order by race_day rows between unbounded preceding and 1 preceding)
         ),
         gds_race as (
-          select race_seq, gsire, kyori_band, surface,
+          select race_day, gsire, kyori_band, surface,
             sum(coalesce(is_win, 0.0)) as w, sum(coalesce(is_top3, 0.0)) as t3, count(is_win) as n
           from withkeito where gsire is not null and gsire <> ''
-          group by race_seq, gsire, kyori_band, surface
+          group by race_day, gsire, kyori_band, surface
         ),
         gds_prior as (
-          select race_seq, gsire, kyori_band, surface,
+          select race_day, gsire, kyori_band, surface,
             sum(w) over gds as gds_w, sum(t3) over gds as gds_t3, sum(n) over gds as gds_n
           from gds_race
-          window gds as (partition by gsire, kyori_band, surface order by race_seq rows between unbounded preceding and 1 preceding)
+          window gds as (partition by gsire, kyori_band, surface order by race_day rows between unbounded preceding and 1 preceding)
         ),
         gv_race as (
-          select race_seq, gsire, keibajo_code,
+          select race_day, gsire, keibajo_code,
             sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
           from withkeito where gsire is not null and gsire <> ''
-          group by race_seq, gsire, keibajo_code
+          group by race_day, gsire, keibajo_code
         ),
         gv_prior as (
-          select race_seq, gsire, keibajo_code, sum(w) over gv as gv_w, sum(n) over gv as gv_n
+          select race_day, gsire, keibajo_code, sum(w) over gv as gv_w, sum(n) over gv as gv_n
           from gv_race
-          window gv as (partition by gsire, keibajo_code order by race_seq rows between unbounded preceding and 1 preceding)
+          window gv as (partition by gsire, keibajo_code order by race_day rows between unbounded preceding and 1 preceding)
         ),
         so_race as (
-          select race_seq, sire, sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
+          select race_day, sire, sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
           from withkeito where sire is not null and sire <> ''
-          group by race_seq, sire
+          group by race_day, sire
         ),
         so_prior as (
-          select race_seq, sire, sum(w) over so as so_w, sum(n) over so as so_n
+          select race_day, sire, sum(w) over so as so_w, sum(n) over so as so_n
           from so_race
-          window so as (partition by sire order by race_seq rows between unbounded preceding and 1 preceding)
+          window so as (partition by sire order by race_day rows between unbounded preceding and 1 preceding)
         ),
         scs_race as (
-          select race_seq, sire, kyoso_joken_code, surface,
+          select race_day, sire, kyoso_joken_code, surface,
             sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
           from withkeito where sire is not null and sire <> ''
-          group by race_seq, sire, kyoso_joken_code, surface
+          group by race_day, sire, kyoso_joken_code, surface
         ),
         scs_prior as (
-          select race_seq, sire, kyoso_joken_code, surface,
+          select race_day, sire, kyoso_joken_code, surface,
             sum(w) over scs as scs_w, sum(n) over scs as scs_n
           from scs_race
-          window scs as (partition by sire, kyoso_joken_code, surface order by race_seq rows between unbounded preceding and 1 preceding)
+          window scs as (partition by sire, kyoso_joken_code, surface order by race_day rows between unbounded preceding and 1 preceding)
         ),
         ko_race as (
-          select race_seq, keito_id, sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
+          select race_day, keito_id, sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
           from withkeito where keito_id is not null
-          group by race_seq, keito_id
+          group by race_day, keito_id
         ),
         ko_prior as (
-          select race_seq, keito_id, sum(w) over ko as ko_w, sum(n) over ko as ko_n
+          select race_day, keito_id, sum(w) over ko as ko_w, sum(n) over ko as ko_n
           from ko_race
-          window ko as (partition by keito_id order by race_seq rows between unbounded preceding and 1 preceding)
+          window ko as (partition by keito_id order by race_day rows between unbounded preceding and 1 preceding)
         ),
         kds_race as (
-          select race_seq, keito_id, kyori_band, surface,
+          select race_day, keito_id, kyori_band, surface,
             sum(coalesce(is_win, 0.0)) as w, count(is_win) as n
           from withkeito where keito_id is not null
-          group by race_seq, keito_id, kyori_band, surface
+          group by race_day, keito_id, kyori_band, surface
         ),
         kds_prior as (
-          select race_seq, keito_id, kyori_band, surface,
+          select race_day, keito_id, kyori_band, surface,
             sum(w) over kds as kds_w, sum(n) over kds as kds_n
           from kds_race
-          window kds as (partition by keito_id, kyori_band, surface order by race_seq rows between unbounded preceding and 1 preceding)
+          window kds as (partition by keito_id, kyori_band, surface order by race_day rows between unbounded preceding and 1 preceding)
         ),
         w as (
           select b.*,
             go.go_w, go.go_n, gds.gds_w, gds.gds_t3, gds.gds_n, gv.gv_w, gv.gv_n,
             so.so_w, so.so_n, scs.scs_w, scs.scs_n, ko.ko_w, ko.ko_n, kds.kds_w, kds.kds_n
           from withkeito b
-          left join go_prior go on b.race_seq = go.race_seq and b.gsire = go.gsire
-          left join gds_prior gds on b.race_seq = gds.race_seq and b.gsire = gds.gsire
+          left join go_prior go on b.race_day = go.race_day and b.gsire = go.gsire
+          left join gds_prior gds on b.race_day = gds.race_day and b.gsire = gds.gsire
             and b.kyori_band = gds.kyori_band and b.surface = gds.surface
-          left join gv_prior gv on b.race_seq = gv.race_seq and b.gsire = gv.gsire
+          left join gv_prior gv on b.race_day = gv.race_day and b.gsire = gv.gsire
             and b.keibajo_code = gv.keibajo_code
-          left join so_prior so on b.race_seq = so.race_seq and b.sire = so.sire
-          left join scs_prior scs on b.race_seq = scs.race_seq and b.sire = scs.sire
+          left join so_prior so on b.race_day = so.race_day and b.sire = so.sire
+          left join scs_prior scs on b.race_day = scs.race_day and b.sire = scs.sire
             and b.kyoso_joken_code = scs.kyoso_joken_code and b.surface = scs.surface
-          left join ko_prior ko on b.race_seq = ko.race_seq and b.keito_id = ko.keito_id
-          left join kds_prior kds on b.race_seq = kds.race_seq and b.keito_id = kds.keito_id
+          left join ko_prior ko on b.race_day = ko.race_day and b.keito_id = ko.keito_id
+          left join kds_prior kds on b.race_day = kds.race_day and b.keito_id = kds.keito_id
             and b.kyori_band = kds.kyori_band and b.surface = kds.surface
         ),
         features as (
