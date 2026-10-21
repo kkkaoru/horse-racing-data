@@ -96,24 +96,27 @@ from normalized
 where umaban is not null and kyori is not null and shusso_tosu is not null
 """
 
-_EMPTY_RUNNING_STYLE_PREDICTIONS_VIEW_SQL = """
+# Running-style predictions are an R2 Catalog table (backfilled from the local history
+# and Neon; Neon is only the backup copy), so catalog-sourced training builds get the
+# same rs_* inputs as the local-PG path instead of an always-empty view.
+_RUNNING_STYLE_PREDICTIONS_VIEW_SQL = """
 create view pg.race_running_style_model_predictions as
 select
-  cast(null as varchar) as model_version,
-  cast(null as varchar) as source,
-  cast(null as varchar) as kaisai_nen,
-  cast(null as varchar) as kaisai_tsukihi,
-  cast(null as varchar) as keibajo_code,
-  cast(null as varchar) as race_bango,
-  cast(null as varchar) as ketto_toroku_bango,
-  cast(null as double) as p_nige,
-  cast(null as double) as p_senkou,
-  cast(null as double) as p_sashi,
-  cast(null as double) as p_oikomi,
-  cast(null as integer) as predicted_class,
-  cast(null as varchar) as cell_model_key,
-  cast(null as varchar) as cell_variant_id
-where false
+  cast(model_version as varchar) as model_version,
+  cast(source as varchar) as source,
+  cast(kaisai_nen as varchar) as kaisai_nen,
+  cast(kaisai_tsukihi as varchar) as kaisai_tsukihi,
+  cast(keibajo_code as varchar) as keibajo_code,
+  cast(race_bango as varchar) as race_bango,
+  cast(ketto_toroku_bango as varchar) as ketto_toroku_bango,
+  cast(p_nige as double) as p_nige,
+  cast(p_senkou as double) as p_senkou,
+  cast(p_sashi as double) as p_sashi,
+  cast(p_oikomi as double) as p_oikomi,
+  cast(predicted_class as integer) as predicted_class,
+  cast(cell_model_key as varchar) as cell_model_key,
+  cast(cell_variant_id as varchar) as cell_variant_id
+from catalog_raw.race_running_style_model_predictions
 """
 
 
@@ -166,4 +169,4 @@ def attach_source_catalog(con: DuckDBConnectionLike, source_url: str) -> None:
             f"create view pg.{table_name} as select * from catalog_raw.{table_name}"
         )
     con.execute(_RAW_RACE_ENTRY_VIEW_SQL)
-    con.execute(_EMPTY_RUNNING_STYLE_PREDICTIONS_VIEW_SQL)
+    con.execute(_RUNNING_STYLE_PREDICTIONS_VIEW_SQL)

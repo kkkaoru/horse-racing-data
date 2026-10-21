@@ -110,7 +110,7 @@ def test_attach_source_catalog_attaches_r2_catalog_read_only(
     assert (
         "create view pg.race_running_style_model_predictions as" in con.statements[-1]
     )
-    assert "where false" in con.statements[-1]
+    assert "from catalog_raw.race_running_style_model_predictions" in con.statements[-1]
 
 
 def test_raw_race_entry_view_counts_only_valid_runners() -> None:

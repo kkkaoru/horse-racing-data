@@ -404,15 +404,6 @@ def test_stage_rs_predictions_reads_only_versioned_r2_output_in_production(
     ]
 
 
-def test_stage_rs_predictions_rejects_catalog_without_generation_date() -> None:
-    args = argparse.Namespace(
-        category="jra",
-        pg_url="r2-catalog://",
-    )
-    with pytest.raises(ValueError, match="--run-date"):
-        subject.stage_rs_predictions(MagicMock(), args)
-
-
 def test_setup_r2_duckdb_secret_uses_required_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -755,3 +746,26 @@ def test_append_features_sql_cross_terms_non_null_for_scored_horse(tmp_path: Pat
     # With all base columns NULL (0 from coalesce), cross-terms should be 0.0 (not NULL)
     assert horse_a["rs_p_nige_x_field_pace"] is not None
     assert horse_a["rs_sire_style_match"] is not None
+
+
+def test_stage_rs_predictions_rejects_catalog_without_run_date_for_focused_race() -> None:
+    args = argparse.Namespace(
+        category="jra", run_date=None, target_race="05:11", pg_url="r2-catalog://pc-keiba"
+    )
+    with pytest.raises(ValueError, match="--run-date YYYYMMDD is required for Catalog production"):
+        subject.stage_rs_predictions(MagicMock(), args)
+
+
+def test_stage_rs_predictions_reads_catalog_history_for_bulk_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    monkeypatch.setattr(subject, "install_and_attach_pg", lambda _con, url: calls.append(("attach", url)))
+    monkeypatch.setattr(
+        subject,
+        "stage_rs_predictions_from_catalog",
+        lambda _con, category, focused: calls.append(("stage", (category, focused))),
+    )
+    args = argparse.Namespace(category="nar", run_date=None, target_race=None, pg_url="r2-catalog://pc-keiba")
+    subject.stage_rs_predictions(MagicMock(), args)
+    assert calls == [("attach", "r2-catalog://pc-keiba"), ("stage", ("nar", False))]

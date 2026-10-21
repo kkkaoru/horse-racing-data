@@ -24,7 +24,7 @@
     "sync:entity-history-manifest": "uv run scripts/publish_entity_catalog_manifest.py",
     "sync:entity-history-serving": "uv run scripts/refresh_entity_history_serving.py",
     "sync:full": "uv run scripts/sync_r2_catalog.py --full",
-    "sync:test": "uv run scripts/test_sync_r2_catalog.py && uv run scripts/test_sync_entity_history.py && uv run scripts/test_publish_entity_catalog_manifest.py && uv run scripts/test_refresh_entity_history_serving.py",
+    "sync:test": "uv run scripts/test_sync_r2_catalog.py && uv run scripts/test_sync_entity_history.py && uv run scripts/test_publish_entity_catalog_manifest.py && uv run scripts/test_refresh_entity_history_serving.py && uv run scripts/test_backfill_running_style_catalog.py",
     "test": "bunx vitest run",
     "test:coverage": "bunx vitest run --coverage",
     "tsc": "bunx tsc --noEmit"

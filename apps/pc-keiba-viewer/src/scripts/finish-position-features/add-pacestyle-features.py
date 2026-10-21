@@ -521,7 +521,9 @@ def stage_rs_predictions(
             focused_target,
         )
         return
-    if args.pg_url.startswith("r2-catalog://"):
+    # Per-race production builds must read the fresh by-day shard; bulk (training) builds
+    # may read the R2 Catalog running-style table, which holds the full history.
+    if focused_target and args.pg_url.startswith("r2-catalog://"):
         raise ValueError("--run-date YYYYMMDD is required for Catalog production")
     install_and_attach_pg(con, args.pg_url)
     stage_rs_predictions_from_catalog(con, args.category, focused_target)
