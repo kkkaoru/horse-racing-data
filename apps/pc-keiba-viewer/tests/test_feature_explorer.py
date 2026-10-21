@@ -1000,7 +1000,8 @@ def test_build_objective_records_negative_delta_pp_against_active_entry() -> Non
         registry.activate(active_id)
         with patch(
             "learning.feature_explorer.run_fold_with_backend",
-            return_value=0.75,
+            # First call re-scores the active set on the study year (the bar), then the trial.
+            side_effect=[0.80, 0.75],
         ):
             objective = subject.build_objective(
                 df,
@@ -1022,7 +1023,7 @@ def test_build_objective_records_negative_delta_pp_against_active_entry() -> Non
         registry.bulk_record_trials(objective.deferred_trials)
         recorded = next(e for e in registry.list_trials() if e["trial_id"] == "test_study_trial_1")
         payload = json.loads(recorded["definition_json"])
-    # Active ndcg 0.80, trial ndcg 0.75 → delta_pp = (0.75 - 0.80) * 100 = -5.0.
+    # Active set re-scored 0.80 on the study year, trial 0.75 → delta_pp = (0.75 - 0.80) * 100 = -5.0.
     assert payload["delta_pp"] == pytest.approx(-5.0)
 
 
@@ -1118,7 +1119,8 @@ def test_build_objective_passes_prefetched_active_ndcg_to_maybe_promote() -> Non
         registry.activate(active_id)
         with patch(
             "learning.feature_explorer.run_fold_with_backend",
-            return_value=0.75,
+            # First call re-scores the active set on the study year (the bar), then the trial.
+            side_effect=[0.50, 0.75],
         ):
             with patch.object(
                 registry, "maybe_promote", wraps=registry.maybe_promote
@@ -2386,7 +2388,8 @@ def test_build_objective_defers_non_promoting_trial_and_flush_records_it() -> No
         registry.activate(active_id)
         with patch(
             "learning.feature_explorer.run_fold_with_backend",
-            return_value=0.75,
+            # First call re-scores the active set on the study year (the bar), then the trial.
+            side_effect=[0.80, 0.75],
         ):
             objective = subject.build_objective(
                 df,
@@ -3502,3 +3505,42 @@ def test_fold_is_trainable_requires_two_training_races_and_a_fold_year() -> None
     assert subject._fold_is_trainable({"train_df": one_race, "valid_df": fold_year, "valid_year": 2024}) is False
     assert subject._fold_is_trainable({"train_df": empty, "valid_df": fold_year, "valid_year": 2024}) is False
     assert subject._fold_is_trainable({"train_df": two_races, "valid_df": empty, "valid_year": 2024}) is False
+
+
+def test_build_objective_bar_is_active_set_rescored_not_stored_ndcg() -> None:
+    # The stored 0.95 came from another round's years; on this study's year the active
+    # set scores 0.70, so a 0.75 trial beats it and promotes.
+    df = _make_df_6feats()
+    params = subject.DEFAULT_PARAMS
+    candidate_features = ["feat_a", "feat_b", "feat_c", "feat_d", "feat_e", "feat_f"]
+    with FeatureRegistry(Path(":memory:")) as registry:
+        active_id = registry.record_trial("seed", 0.95, ["feat_a"], "{}")
+        registry.activate(active_id)
+        with patch(
+            "learning.feature_explorer.run_fold_with_backend",
+            side_effect=[0.70, 0.75],
+        ):
+            with patch.object(
+                registry, "maybe_promote", wraps=registry.maybe_promote
+            ) as spy_promote:
+                objective = subject.build_objective(
+                    df,
+                    candidate_features,
+                    [2023],
+                    "20160101",
+                    params,
+                    registry,
+                    "test_study",
+                    backends=("lightgbm",),
+                )
+                trial = MagicMock()
+                trial.number = 1
+                trial.should_prune.return_value = False
+                trial.suggest_categorical.side_effect = [True, True, True, True, True, True, True]
+                objective(trial)
+    assert spy_promote.call_count == 1
+    assert spy_promote.call_args.kwargs["active_ndcg"] == pytest.approx(0.70)
+
+
+def test_score_feature_set_on_plans_is_zero_without_scores() -> None:
+    assert subject.score_feature_set_on_plans([], {"feat_a"}, ("lightgbm",), subject.DEFAULT_PARAMS, None, None, None) == 0.0

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import math
 import random
@@ -911,6 +912,26 @@ def feature_mask_to_vector(
     return [f in selected_set for f in sorted(all_features)]
 
 
+def score_feature_set_on_plans(
+    fold_plans: list[_FoldPlan],
+    feature_set: set[str],
+    backends: tuple[ModelBackend, ...],
+    params: TrainingParams,
+    xgb_args: argparse.Namespace | None,
+    cb_args: argparse.Namespace | None,
+    num_threads: int | None,
+) -> float:
+    """Mean NDCG@3 of ``feature_set`` over the study's folds, scored like a trial."""
+    scores: list[float] = []
+    for plan, backend in itertools.product(fold_plans, backends):
+        score = run_fold_with_backend(
+            plan.select(feature_set), backend, params, xgb_args, cb_args, num_threads
+        )
+        if score is not None:
+            scores.append(score)
+    return sum(scores) / len(scores) if scores else 0.0
+
+
 def build_objective(
     df: pl.DataFrame,
     candidate_features: list[str],
@@ -935,13 +956,23 @@ def build_objective(
     deferred_trials: list[DeferredTrial] = []
 
     # The active entry only changes when a trial in *this* study promotes (via
-    # maybe_promote below), so its NDCG is read from the registry once here and
-    # tracked locally — saving one get_active_entry() SELECT on every trial. The
-    # buffered (non-promoting) and warm-start/enqueued trials never activate, so
-    # nothing else can move the active row mid-round.
+    # maybe_promote below), so its bar is computed once here and tracked locally.
+    # The bar is the active feature set re-scored on THIS study's validation years:
+    # its stored NDCG came from another round's years, and NDCG levels differ by
+    # year, so comparing against it promotes (or blocks) on year difficulty alone.
     active_entry = registry.get_active_entry()
     active_state = {
-        "ndcg": active_entry["ndcg_at_3"] if active_entry is not None else 0.0
+        "ndcg": score_feature_set_on_plans(
+            fold_plans,
+            set(active_entry["feature_names"]),
+            backends,
+            params,
+            xgb_args,
+            cb_args,
+            num_threads,
+        )
+        if active_entry is not None
+        else 0.0
     }
 
     def objective(trial: optuna.Trial) -> float:

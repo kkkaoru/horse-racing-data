@@ -1508,7 +1508,6 @@ class ContinuousLearner:
             "inverse exploration: %s approach=%s", inverse_study_name, approach
         )
         pre_active = self._registry.get_active_entry()
-        pre_active_ndcg = pre_active["ndcg_at_3"] if pre_active is not None else 0.0
         round_years = select_round_validation_years(
             round_num, self._validation_year_pool, self._blind_holdout_year
         )
@@ -1516,6 +1515,19 @@ class ContinuousLearner:
         # single validation fold instead of the full round — if a negated set cannot beat
         # the active model on one year it will not on more, and this halves the per-trial cost.
         screen_years = round_years[:1]
+        # Score the active set on the same screen year; its stored NDCG is from other years.
+        pre_active_ndcg = (
+            evaluate_feature_set(
+                self._df,
+                pre_active["feature_names"],
+                screen_years,
+                self._train_start,
+                DEFAULT_PARAMS,
+                self._backends,
+            )
+            if pre_active is not None
+            else 0.0
+        )
         run_exploration(
             df=self._df,
             registry=self._registry,

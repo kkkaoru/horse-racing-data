@@ -2624,6 +2624,8 @@ def test_run_inverse_exploration_returns_adopt_when_study_best_beats_pre_active(
         learner = _make_learner(registry=reg)
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
         with patch(
+            "learning.continuous_learner.evaluate_feature_set", return_value=0.50
+        ), patch(
             "learning.continuous_learner.run_exploration",
             side_effect=_record_study_trial(reg, 0.60),
         ):
@@ -2639,6 +2641,8 @@ def test_run_inverse_exploration_returns_reject_when_study_best_below_pre_active
         learner = _make_learner(registry=reg)
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
         with patch(
+            "learning.continuous_learner.evaluate_feature_set", return_value=0.60
+        ), patch(
             "learning.continuous_learner.run_exploration",
             side_effect=_record_study_trial(reg, 0.45),
         ):
@@ -2654,6 +2658,8 @@ def test_run_inverse_exploration_rejects_when_study_best_equals_pre_active() -> 
         learner = _make_learner(registry=reg)
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
         with patch(
+            "learning.continuous_learner.evaluate_feature_set", return_value=0.60
+        ), patch(
             "learning.continuous_learner.run_exploration",
             side_effect=_record_study_trial(reg, 0.60),
         ):
@@ -2698,6 +2704,8 @@ def test_run_inverse_exploration_ignores_other_studies_and_global_best() -> None
         learner = _make_learner(registry=reg)
         trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
         with patch(
+            "learning.continuous_learner.evaluate_feature_set", return_value=0.50
+        ), patch(
             "learning.continuous_learner.run_exploration",
             side_effect=_record_study_trial(reg, 0.52),
         ):
@@ -2729,6 +2737,8 @@ def test_inverse_trials_get_distinct_per_trial_deltas() -> None:
 
         deltas: list[float] = []
         with patch(
+            "learning.continuous_learner.evaluate_feature_set", return_value=0.50
+        ), patch(
             "learning.continuous_learner.run_exploration", side_effect=_side_effect
         ):
             for approach in study_scores:
@@ -6589,3 +6599,23 @@ def test_check_deploy_readiness_confirms_against_deployed_set_on_hard_blind_year
         ):
             assert learner._check_deploy_readiness() is False
         mock_record.assert_called_once_with(0.80, 2, ["feat_speed", "feat_new"])
+
+
+def test_run_inverse_exploration_scores_active_set_on_screen_year() -> None:
+    with FeatureRegistry(Path(":memory:")) as reg:
+        reg.record_trial("active", 0.90, ["feat_speed"])
+        reg.activate(1)
+        learner = _make_learner(registry=reg)
+        trial = _make_entry(ndcg=0.4, feature_names=["feat_speed"])
+        with patch(
+            "learning.continuous_learner.evaluate_feature_set", return_value=0.55
+        ) as mock_eval, patch(
+            "learning.continuous_learner.run_exploration",
+            side_effect=_record_study_trial(reg, 0.60),
+        ) as mock_run:
+            result = learner._run_inverse_exploration(trial, "feature_negate", 0, 20)
+        # Stored 0.90 is from other years; on the screen year the active set scores 0.55.
+        assert result["decision"] == "ADOPT"
+        assert result["delta_pp"] == {"ndcg_delta": pytest.approx(0.05)}
+        assert mock_eval.call_args.args[1] == ["feat_speed"]
+        assert mock_eval.call_args.args[2] == mock_run.call_args.kwargs["validation_years"]
