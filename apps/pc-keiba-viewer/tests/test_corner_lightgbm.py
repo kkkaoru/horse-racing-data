@@ -668,3 +668,47 @@ def test_main_selects_blend_on_latest_training_races(
     # Candidates are only ever scored on the latest training race; the test races are
     # scored once per target, for the reported metric of the already-chosen blend.
     assert scored_race_sets == {("R1",), ("R2", "R3")}
+
+
+def test_stacker_training_frame_uses_out_of_fold_base_predictions(monkeypatch: pytest.MonkeyPatch) -> None:
+    fit = pl.DataFrame(
+        {"race_date": ["20250101", "20250102", "20250103"], "race_id": ["A", "B", "C"], "umaban": [1, 1, 1]}
+    )
+    fitted_on: list[list[str]] = []
+
+    def fake_fit(frame: pl.DataFrame, _target: str) -> tuple[str, str, str]:
+        fitted_on.append(frame["race_id"].to_list())
+        return ("head", "head", "head")
+
+    def fake_add(frame: pl.DataFrame, _target: str, models: tuple[str, str, str]) -> pl.DataFrame:
+        return frame.with_columns(pl.lit(models[0]).alias("scored_by"))
+
+    monkeypatch.setattr(subject, "fit_base_models", fake_fit)
+    monkeypatch.setattr(subject, "add_base_predictions", fake_add)
+
+    out = subject.stacker_training_frame(
+        fit, "corner1_norm", cast(subject.BaseModels, ("full", "full", "full"))
+    )
+
+    assert fitted_on == [["A", "B"]]
+    assert out["race_id"].to_list() == ["C"]
+    assert out["scored_by"].to_list() == ["head"]
+
+
+def test_stacker_training_frame_falls_back_in_sample_for_single_race(monkeypatch: pytest.MonkeyPatch) -> None:
+    fit = pl.DataFrame({"race_date": ["20250101", "20250101"], "race_id": ["A", "A"], "umaban": [1, 2]})
+
+    def forbidden_fit(_frame: pl.DataFrame, _target: str) -> tuple[str, str, str]:
+        raise AssertionError("a single-race window must not refit base models")
+
+    def fake_add(frame: pl.DataFrame, _target: str, models: tuple[str, str, str]) -> pl.DataFrame:
+        return frame.with_columns(pl.lit(models[0]).alias("scored_by"))
+
+    monkeypatch.setattr(subject, "fit_base_models", forbidden_fit)
+    monkeypatch.setattr(subject, "add_base_predictions", fake_add)
+
+    out = subject.stacker_training_frame(
+        fit, "corner1_norm", cast(subject.BaseModels, ("full", "full", "full"))
+    )
+
+    assert out["scored_by"].to_list() == ["full", "full"]

@@ -1916,6 +1916,49 @@ def choose_ensemble_prediction(
     return best_prediction, best_alpha, scores
 
 
+BaseModels = tuple[lgb.LGBMRegressor, lgb.LGBMRanker, lgb.LGBMClassifier]
+
+
+def fit_base_models(fit_frame: pl.DataFrame, target_column: str) -> BaseModels:
+    return (
+        train_model(fit_frame, target_column),
+        train_ranker(fit_frame, target_column),
+        train_pairwise_model(fit_frame, target_column),
+    )
+
+
+def add_base_predictions(frame: pl.DataFrame, target_column: str, models: BaseModels) -> pl.DataFrame:
+    """Add regression / ranker / pairwise prediction columns from ``models`` to ``frame``."""
+    model, ranker, pairwise_model = models
+    regression_column = f"regression_{target_column}"
+    ranker_score_column = f"ranker_score_{target_column}"
+    features = to_lgb_frame(frame.select(FEATURE_COLUMNS))
+    frame = frame.with_columns(
+        pl.Series(regression_column, np.clip(np.asarray(model.predict(features), dtype=float), 0, 1)),
+        pl.Series(ranker_score_column, np.asarray(ranker.predict(features), dtype=float)),
+    )
+    frame = frame.with_columns(
+        normalized_rank_prediction(frame, ranker_score_column).alias(f"ranker_{target_column}"),
+    )
+    return frame.with_columns(
+        apply_pairwise_model(frame, pairwise_model, target_column).alias(f"pairwise_{target_column}"),
+    )
+
+
+def stacker_training_frame(fit_frame: pl.DataFrame, target_column: str, models: BaseModels) -> pl.DataFrame:
+    """Rows the stacker learns from, carrying base predictions it will see at prediction time.
+
+    Base models fit on the earlier races predict the latest ~SELECTION_TAIL_FRACTION of
+    races, so the stacker learns from out-of-sample base predictions instead of the
+    in-sample fit. Windows too small to split fall back to the in-sample predictions.
+    """
+    if fit_frame["race_id"].n_unique() < MIN_SELECTION_RACES:
+        return add_base_predictions(fit_frame, target_column, models)
+    tail = selection_tail_mask(fit_frame)
+    head_models = fit_base_models(fit_frame.filter(pl.Series(~tail)), target_column)
+    return add_base_predictions(fit_frame.filter(pl.Series(tail)), target_column, head_models)
+
+
 def fit_and_predict_target(
     fit_frame: pl.DataFrame,
     evaluation: pl.DataFrame,
@@ -1931,40 +1974,19 @@ def fit_and_predict_target(
     when ``model_dir`` is given, i.e. for the final full-window refit.
     """
     regression_column = f"regression_{target_column}"
-    ranker_score_column = f"ranker_score_{target_column}"
     ranker_prediction_column = f"ranker_{target_column}"
     pairwise_prediction_column = f"pairwise_{target_column}"
     stacked_prediction_column = f"stacked_{target_column}"
     lstm_prediction_column = f"lstm_{target_column}"
     transformer_prediction_column = f"transformer_{target_column}"
-    model = train_model(fit_frame, target_column)
-    ranker = train_ranker(fit_frame, target_column)
-    pairwise_model = train_pairwise_model(fit_frame, target_column)
-    fit_frame = fit_frame.with_columns(
-        pl.Series(
-            regression_column,
-            np.clip(
-                np.asarray(model.predict(to_lgb_frame(fit_frame.select(FEATURE_COLUMNS))), dtype=float),
-                0,
-                1,
-            ),
-        ),
-        pl.Series(
-            ranker_score_column,
-            np.asarray(ranker.predict(to_lgb_frame(fit_frame.select(FEATURE_COLUMNS))), dtype=float),
-        ),
-    )
-    fit_frame = fit_frame.with_columns(
-        normalized_rank_prediction(fit_frame, ranker_score_column).alias(ranker_prediction_column),
-    )
-    fit_frame = fit_frame.with_columns(
-        apply_pairwise_model(fit_frame, pairwise_model, target_column).alias(pairwise_prediction_column),
-    )
+    models = fit_base_models(fit_frame, target_column)
+    model, ranker, pairwise_model = models
+    stack_frame = stacker_training_frame(fit_frame, target_column, models)
     stacker = train_stacking_model(
-        fit_frame,
+        stack_frame,
         target_column,
         stacking_feature_frame(
-            fit_frame,
+            stack_frame,
             target_column,
             regression_column,
             ranker_prediction_column,
@@ -1976,26 +1998,7 @@ def fit_and_predict_target(
         ranker.booster_.save_model(str(model_dir / f"{target_column}.ranker.txt"))
         pairwise_model.booster_.save_model(str(model_dir / f"{target_column}.pairwise.txt"))
         stacker.booster_.save_model(str(model_dir / f"{target_column}.stacker.txt"))
-    evaluation = evaluation.with_columns(
-        pl.Series(
-            regression_column,
-            np.clip(
-                np.asarray(model.predict(to_lgb_frame(evaluation.select(FEATURE_COLUMNS))), dtype=float),
-                0,
-                1,
-            ),
-        ),
-        pl.Series(
-            ranker_score_column,
-            np.asarray(ranker.predict(to_lgb_frame(evaluation.select(FEATURE_COLUMNS))), dtype=float),
-        ),
-    )
-    evaluation = evaluation.with_columns(
-        normalized_rank_prediction(evaluation, ranker_score_column).alias(ranker_prediction_column),
-    )
-    evaluation = evaluation.with_columns(
-        apply_pairwise_model(evaluation, pairwise_model, target_column).alias(pairwise_prediction_column),
-    )
+    evaluation = add_base_predictions(evaluation, target_column, models)
     evaluation = evaluation.with_columns(
         pl.Series(
             stacked_prediction_column,
