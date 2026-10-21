@@ -122,9 +122,22 @@ def load_parquet_dir(
         parts = [p for p in parts if _extract_year(p) <= year_max]
         if not parts:
             raise ValueError(f"no parquet files found under {path} for year_max={year_max}")
-    if columns is not None:
-        return pl.concat([pl.read_parquet(p, columns=columns) for p in parts])
-    return pl.concat([pl.read_parquet(p) for p in parts])
+    return pl.concat([_read_year_part(part, columns) for part in parts], how="vertical_relaxed")
+
+
+def _read_year_part(part: Path, columns: list[str] | None) -> pl.DataFrame:
+    """Read one race_year=YYYY file, restoring race_year from the directory if absent.
+
+    DuckDB ``partition_by (race_year)`` writes (every feature layer) drop the
+    partition column from the files and these are read file by file, so race_year
+    went missing and sample weighting failed ("train_df must contain race_year").
+    """
+    present = set(pl.read_parquet_schema(part))
+    wanted = None if columns is None else [c for c in columns if c in present]
+    frame = pl.read_parquet(part, columns=wanted)
+    if "race_year" in frame.columns or (columns is not None and "race_year" not in columns):
+        return frame
+    return frame.with_columns(pl.lit(_extract_year(part), dtype=pl.Int64).alias("race_year"))
 
 
 def read_parquet_schema_names(path: Path) -> list[str]:

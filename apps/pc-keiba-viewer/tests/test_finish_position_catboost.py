@@ -1195,3 +1195,20 @@ def test_resolve_feature_columns_drops_banned_win_odds_but_keeps_exotic_deviatio
         "speed_index_avg_5",
         "exotic_umaren_p2_rank_residual",
     ]
+
+
+def test_load_parquet_dir_restores_race_year_dropped_by_duckdb_partitioned_writes(tmp_path: Path):
+    for year in (2023, 2024):
+        year_dir = tmp_path / f"race_year={year}"
+        year_dir.mkdir(parents=True)
+        pl.DataFrame({"race_id": [f"r{year}"]}).write_parquet(year_dir / "part.parquet")
+    result = subject.load_parquet_dir(tmp_path)
+    assert result.sort("race_id").rows() == [("r2023", 2023), ("r2024", 2024)]
+
+
+def test_load_parquet_dir_restores_race_year_when_projected_columns_request_it(tmp_path: Path):
+    year_dir = tmp_path / "race_year=2025"
+    year_dir.mkdir(parents=True)
+    pl.DataFrame({"race_id": ["r1"], "feature_a": [0.1]}).write_parquet(year_dir / "part.parquet")
+    result = subject.load_parquet_dir(tmp_path, columns=["race_id", "race_year"])
+    assert result.rows() == [("r1", 2025)]
