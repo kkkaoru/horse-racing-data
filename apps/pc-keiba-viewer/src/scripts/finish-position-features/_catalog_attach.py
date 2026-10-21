@@ -98,8 +98,10 @@ where umaban is not null and kyori is not null and shusso_tosu is not null
 
 # Running-style predictions are an R2 Catalog table (backfilled from the local history
 # and Neon; Neon is only the backup copy), so catalog-sourced training builds get the
-# same rs_* inputs as the local-PG path instead of an always-empty view.
-_RUNNING_STYLE_PREDICTIONS_VIEW_SQL = """
+# same rs_* inputs as the local-PG path instead of an always-empty view. The production
+# writer (daily-keiba-sync) only appends, so keep the newest prediction per key, as
+# the PostgreSQL primary-key upsert does.
+RUNNING_STYLE_PREDICTIONS_VIEW_SQL = """
 create view pg.race_running_style_model_predictions as
 select
   cast(model_version as varchar) as model_version,
@@ -117,6 +119,11 @@ select
   cast(cell_model_key as varchar) as cell_model_key,
   cast(cell_variant_id as varchar) as cell_variant_id
 from catalog_raw.race_running_style_model_predictions
+qualify row_number() over (
+  partition by model_version, source, kaisai_nen, kaisai_tsukihi, keibajo_code,
+    race_bango, ketto_toroku_bango
+  order by prediction_generated_at desc
+) = 1
 """
 
 
@@ -131,8 +138,7 @@ def attach_source_catalog(con: DuckDBConnectionLike, source_url: str) -> None:
         if not snapshot_path.is_absolute():
             raise ValueError("duckdb:// source path must be absolute")
         con.execute(
-            f"attach {_sql_literal(str(snapshot_path))} as pg "
-            "(type duckdb, read_only)"
+            f"attach {_sql_literal(str(snapshot_path))} as pg (type duckdb, read_only)"
         )
         return
     if not source_url.startswith("r2-catalog://"):
@@ -169,4 +175,4 @@ def attach_source_catalog(con: DuckDBConnectionLike, source_url: str) -> None:
             f"create view pg.{table_name} as select * from catalog_raw.{table_name}"
         )
     con.execute(_RAW_RACE_ENTRY_VIEW_SQL)
-    con.execute(_RUNNING_STYLE_PREDICTIONS_VIEW_SQL)
+    con.execute(RUNNING_STYLE_PREDICTIONS_VIEW_SQL)

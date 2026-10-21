@@ -5,7 +5,11 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from _catalog_attach import _RAW_RACE_ENTRY_VIEW_SQL, attach_source_catalog
+from _catalog_attach import (
+    _RAW_RACE_ENTRY_VIEW_SQL,
+    RUNNING_STYLE_PREDICTIONS_VIEW_SQL,
+    attach_source_catalog,
+)
 
 
 class FakeConn:
@@ -87,8 +91,7 @@ def test_attach_source_catalog_attaches_r2_catalog_read_only(
     assert "create view pg.jvd_wc as select * from catalog_raw.jvd_wc" in con.statements
     assert (
         "create view pg.netkeiba_training_workouts as select * from "
-        "catalog_raw.netkeiba_training_workouts"
-        in con.statements
+        "catalog_raw.netkeiba_training_workouts" in con.statements
     )
     assert "create view pg.nvd_ra as select * from catalog_raw.nvd_ra" in con.statements
     assert "create view pg.race_entry_corner_features as" in con.statements[-2]
@@ -158,6 +161,41 @@ def test_raw_race_entry_view_counts_only_valid_runners() -> None:
         "select ketto_toroku_bango, shusso_tosu from pg.race_entry_corner_features "
         "order by ketto_toroku_bango"
     ).fetchall() == [("horse-1", 2), ("horse-2", 2)]
+
+
+def test_running_style_view_keeps_the_newest_prediction_per_key() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute("create schema catalog_raw")
+    con.execute(
+        """
+        create table catalog_raw.race_running_style_model_predictions (
+          model_version varchar, source varchar, kaisai_nen varchar,
+          kaisai_tsukihi varchar, keibajo_code varchar, race_bango varchar,
+          ketto_toroku_bango varchar, p_nige double, p_senkou double, p_sashi double,
+          p_oikomi double, predicted_class integer, cell_model_key varchar,
+          cell_variant_id varchar, prediction_generated_at timestamptz
+        )
+        """
+    )
+    con.execute(
+        """
+        insert into catalog_raw.race_running_style_model_predictions values
+          ('v3', 'nar', '2026', '1020', '42', '11', 'H1', 0.1, 0.2, 0.3, 0.4, 3,
+           null, null, '2026-10-20 08:00:00+00'),
+          ('v3', 'nar', '2026', '1020', '42', '11', 'H1', 0.7, 0.1, 0.1, 0.1, 0,
+           null, null, '2026-10-20 10:30:00+00'),
+          ('v1', 'nar', '2026', '1020', '42', '11', 'H1', 0.2, 0.2, 0.3, 0.3, 2,
+           null, null, '2026-10-20 08:00:00+00')
+        """
+    )
+
+    con.execute(RUNNING_STYLE_PREDICTIONS_VIEW_SQL)
+
+    assert con.execute(
+        "select model_version, p_nige, predicted_class "
+        "from pg.race_running_style_model_predictions order by model_version"
+    ).fetchall() == [("v1", 0.2, 2), ("v3", 0.7, 0)]
 
 
 def test_attach_source_catalog_reports_all_missing_r2_environment_variables(
