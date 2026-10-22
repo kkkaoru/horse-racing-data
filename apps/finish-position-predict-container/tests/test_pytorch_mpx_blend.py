@@ -125,6 +125,30 @@ def test_parse_rejects_malformed_documents(tmp_path: Path) -> None:
         parse_pytorch_mpx_artifact(tiny_document(signals={"sim": "odds"}), base_dir=tmp_path)
     with pytest.raises(ValueError, match="mean"):
         parse_pytorch_mpx_artifact(tiny_document(mean=["x", 0.0]), base_dir=tmp_path)
+    with pytest.raises(ValueError, match="untrained_features"):
+        parse_pytorch_mpx_artifact(tiny_document(untrained_features="a"), base_dir=tmp_path)
+    with pytest.raises(ValueError, match="untrained_features"):
+        parse_pytorch_mpx_artifact(tiny_document(untrained_features=["z"]), base_dir=tmp_path)
+
+
+def test_score_race_pins_untrained_features_to_zero(tmp_path: Path) -> None:
+    artifact = tiny_artifact(tmp_path, mean=[1.0, 0.0], untrained_features=["a"])
+    scores = score_race(
+        artifact,
+        np.asarray([[21.5, 3.0], [9.0, 1.0]], dtype=np.float32),
+        engine=lambda centered: centered[:, 0] + centered[:, 1],
+    )
+    assert scores.tolist() == [3.0, 1.0]
+
+
+def test_production_sidecar_pins_the_venue_weather_columns() -> None:
+    artifact = parse_pytorch_mpx_artifact(
+        json.loads(blend.DEFAULT_ARTIFACT_PATH.read_text(encoding="utf-8")),
+        base_dir=blend.DEFAULT_ARTIFACT_PATH.parent,
+    )
+    assert len(artifact.untrained_features) == 25
+    assert "venue_temperature" in artifact.untrained_features
+    assert "speed_index_avg_5" not in artifact.untrained_features
 
 
 def test_load_artifact_returns_none_for_missing_and_invalid_files(

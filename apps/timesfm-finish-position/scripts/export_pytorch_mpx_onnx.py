@@ -105,6 +105,15 @@ def export(source: Path, onnx_out: Path, sidecar_out: Path, tolerance: float) ->
         "feature_order": feature_order,
         "mean": document["mean"],
         "scale": document["scale"],
+        # train_pytorch_mpx_venue_cells._normalise falls back to mean 0 / scale 1 for a column
+        # with no variance in training; serving pins these to 0 (pytorch_mpx_blend.score_race).
+        "untrained_features": [
+            name
+            for name, mean, scale in zip(
+                feature_order, document["mean"], document["scale"], strict=True
+            )
+            if mean == 0.0 and scale == 1.0
+        ],
         "onnx": onnx_out.name,
         "signals": document.get("signals", {}),
         "parity_max_abs": max_abs,

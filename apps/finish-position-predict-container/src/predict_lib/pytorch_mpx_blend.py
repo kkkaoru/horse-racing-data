@@ -64,6 +64,9 @@ class PytorchMpxArtifact:
     scale: tuple[float, ...]
     onnx_path: Path
     signals: Mapping[str, str]
+    # Columns with no variance in training (all NaN, e.g. venue weather): the network only
+    # ever saw 0 there, so serving pins them to 0 instead of feeding live values.
+    untrained_features: frozenset[str] = frozenset()
 
 
 def _finite_number(value: object) -> float | None:
@@ -125,6 +128,9 @@ def parse_pytorch_mpx_artifact(value: object, *, base_dir: Path) -> PytorchMpxAr
         if not isinstance(cell, str) or signal not in {SIGNAL_SCORE, SIGNAL_RANK}:
             raise ValueError("pytorch mpx artifact signals are invalid")
         signals[cell] = signal
+    untrained = value.get("untrained_features", [])
+    if not isinstance(untrained, list) or any(name not in feature_order for name in untrained):
+        raise ValueError("pytorch mpx artifact untrained_features are invalid")
     return PytorchMpxArtifact(
         category=category,
         feature_order=tuple(str(name) for name in feature_order),
@@ -132,6 +138,7 @@ def parse_pytorch_mpx_artifact(value: object, *, base_dir: Path) -> PytorchMpxAr
         scale=scale,
         onnx_path=base_dir / onnx_name,
         signals=signals,
+        untrained_features=frozenset(str(name) for name in untrained),
     )
 
 
@@ -161,9 +168,12 @@ def score_race(
         raise ValueError("numeric race matrix width must match the artifact")
     if numeric.shape[0] < 1:
         raise ValueError("numeric race matrix must contain runners")
-    centered = (
+    untrained = np.asarray([name in artifact.untrained_features for name in artifact.feature_order])
+    centered = np.where(
+        untrained,
+        np.float32(0.0),
         (numeric - np.asarray(artifact.mean, dtype=np.float32))
-        / np.asarray(artifact.scale, dtype=np.float32)
+        / np.asarray(artifact.scale, dtype=np.float32),
     ).astype(np.float32)
     if engine is not None:
         return engine(centered)
