@@ -234,6 +234,9 @@ class JraHybridScorer:
         race_categorical = np.zeros((race_count, len(race_columns)), dtype=np.int64)
         umaban = np.zeros((race_count, max_runners), dtype=np.int64)
         mask = np.zeros((race_count, max_runners), dtype=np.bool_)
+        # No bin edges = the column was NULL in every training row (e.g. speed_index_* before
+        # 2026), so training only saw the missing encoding; live values would be off-manifold.
+        untrained = {index for index, edges in enumerate(stats["bin_edges"]) if not edges}
         category_lookups = {
             name: {value: index + 1 for index, value in enumerate(stats["categorical_vocab"][name])}
             for name in categorical_columns
@@ -260,7 +263,7 @@ class JraHybridScorer:
                     umaban[race_index, runner_index] = int(raw_umaban)
                 for feature_index, name in enumerate(features):
                     value = _finite_float(entry.get(name))
-                    if value is None:
+                    if value is None or feature_index in untrained:
                         continue
                     continuous[race_index, runner_index, feature_index] = (
                         value - stats["mean"][feature_index]

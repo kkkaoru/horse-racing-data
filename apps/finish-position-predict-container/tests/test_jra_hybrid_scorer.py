@@ -139,6 +139,20 @@ def test_encode_handles_empty_unknown_nonfinite_and_runner_limit(tmp_path: Path)
     assert arrays[3][1].tolist() == [0]
 
 
+def test_encode_treats_features_without_training_values_as_missing(tmp_path: Path) -> None:
+    manifest = _manifest()
+    stats = cast(dict[str, object], manifest["stats"])
+    stats["bin_edges"] = [[9.0, 11.0], []]
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    save_npz = cast(Callable[..., None], np.savez)
+    for index in range(1, 4):
+        save_npz(tmp_path / f"weights_seed{index}.npz", **_weights(index))
+    loaded = scorer.JraHybridScorer.load(tmp_path)
+    continuous, bins, *_rest = loaded.encode_entries([_entries()])
+    assert continuous[0, 1].tolist() == [-1.0, 0.0]
+    assert bins[0, :2].tolist() == [[3, 0], [1, 0]]
+
+
 def test_missing_feature_keys(tmp_path: Path) -> None:
     loaded = scorer.JraHybridScorer.load(_artifact(tmp_path))
     assert loaded.missing_feature_keys([]) == set()
