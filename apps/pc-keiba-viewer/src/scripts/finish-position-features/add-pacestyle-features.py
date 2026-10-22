@@ -386,6 +386,13 @@ def stage_rs_predictions_from_r2(
                 cast(cell_variant_id as varchar) as rs_cell_variant_id
               from read_parquet('{glob}')
               where true {target_filter}
+              -- One file per model_version per day, and the exporter never deletes a
+              -- version's file once a horse is re-predicted by another: keep the newest.
+              qualify row_number() over (
+                partition by kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                  ketto_toroku_bango
+                order by predicted_at desc
+              ) = 1
             ),
             rs_scored as (
               select *,

@@ -769,3 +769,52 @@ def test_stage_rs_predictions_reads_catalog_history_for_bulk_build(
     args = argparse.Namespace(category="nar", run_date=None, target_race=None, pg_url="r2-catalog://pc-keiba")
     subject.stage_rs_predictions(MagicMock(), args)
     assert calls == [("attach", "r2-catalog://pc-keiba"), ("stage", ("nar", False))]
+
+
+class _LocalShardConnection:
+    """Run the staged SQL against local files standing in for the R2 shard prefix."""
+
+    def __init__(self, root: Path) -> None:
+        self.connection: duckdb.DuckDBPyConnection = duckdb.connect()
+        self.root: Path = root
+
+    def execute(self, sql: str) -> duckdb.DuckDBPyConnection:
+        return self.connection.execute(sql.replace("s3://archive/", f"{self.root}/"))
+
+
+def test_stage_rs_predictions_from_r2_keeps_the_newest_version_per_horse(
+    tmp_path: Path,
+) -> None:
+    shard = tmp_path / "running-style/predictions/by-day/raw-iceberg-v1/2026/10/17/nar"
+    shard.mkdir(parents=True)
+    columns = {
+        "kaisai_nen": ["2026", "2026"],
+        "kaisai_tsukihi": ["1017", "1017"],
+        "keibajo_code": ["54", "54"],
+        "race_bango": ["01", "01"],
+        "ketto_toroku_bango": ["H1", "H2"],
+        "p_senkou": [0.2, 0.2],
+        "p_sashi": [0.2, 0.2],
+        "p_oikomi": [0.2, 0.2],
+        "predicted_class": [0, 0],
+        "cell_model_key": ["k", "k"],
+        "cell_variant_id": ["v", "v"],
+    }
+    pl.DataFrame(
+        {**columns, "p_nige": [0.4, 0.4], "predicted_at": ["2026-10-17T00:00Z"] * 2}
+    ).write_parquet(shard / "prod-v3.parquet")
+    pl.DataFrame(
+        {
+            **{name: values[:1] for name, values in columns.items()},
+            "p_nige": [0.9],
+            "predicted_at": ["2026-10-17T05:00Z"],
+        }
+    ).write_parquet(shard / "prod-v3-nowin1.parquet")
+    con = _LocalShardConnection(tmp_path)
+
+    subject.stage_rs_predictions_from_r2(con, "nar", "20261017", "archive")
+
+    rows = con.connection.execute(
+        "select ketto_toroku_bango, rs_p_nige from rs_preds order by ketto_toroku_bango"
+    ).fetchall()
+    assert rows == [("H1", 0.9), ("H2", 0.4)]
