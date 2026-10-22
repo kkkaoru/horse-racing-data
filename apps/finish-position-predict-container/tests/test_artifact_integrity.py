@@ -36,7 +36,7 @@ from predict_lib.dynamic_market_shadow import selected_artifact_versions
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "d977d3d721e83485dd4463530d070e62560fd73f5fdb39d80a297924f3270343"
+EXPECTED_MANIFEST_ROOT = "1572f43780722ba3f5b1b4bc72487e16d9660b45c4a2f95377c95de2829b422c"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -152,14 +152,14 @@ def test_manifest_records_exact_jra_running_style_pair() -> None:
     }
 
     assert artifacts[JRA_RS_MODEL_KEY].sha256 == (
-        "549028cc1c0bd9ede33abc832aa82256341aff1493d2ba5970ac6ea7ab149e42"
+        "ccbf020db07b867c8bb92192df7626248bb45a702b853618e6fcc22d285a6d3b"
     )
-    assert artifacts[JRA_RS_MODEL_KEY].size_bytes == 40054623
+    assert artifacts[JRA_RS_MODEL_KEY].size_bytes == 40133216
     assert artifacts[JRA_RS_CALIBRATOR_KEY].sha256 == (
-        "8024929b2b2c41cc65274134f73397eeaf1dd8899b91359a479dafc2753efc77"
+        "f40cfa9705f97de59c310c4dff8667df6e13cf61ae7b8692552ab9877b5b7171"
     )
-    assert artifacts[JRA_RS_CALIBRATOR_KEY].size_bytes == 22480
-    assert artifacts[JRA_RS_MODEL_KEY].release_id == "jra-running-style-lgbm-prod-v3-nowin1"
+    assert artifacts[JRA_RS_CALIBRATOR_KEY].size_bytes == 38060
+    assert artifacts[JRA_RS_MODEL_KEY].release_id == "jra-running-style-lgbm-prod-v3-nowin2"
     # Model and calibrator are DIFFERENT bundles (a shared calibrator can serve
     # multiple routed models -- see test_shared_calibrator_* below), not a
     # forced 1:1 bundle pairing.
