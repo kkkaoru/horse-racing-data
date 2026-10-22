@@ -49,12 +49,12 @@ def _banei_router() -> CellRouter:
         default_variant="sim",
         variants={
             "sim": VariantSpec(
-                model_version="banei-cb-v9-sim-2011-nowin1",
+                model_version="banei-cb-v9-sim-2011-nowin2",
                 feature_count=130,
                 architecture="catboost",
             ),
             "base": VariantSpec(
-                model_version="banei-cb-v8-window2011-wf-15y-nowin1",
+                model_version="banei-cb-v8-window2011-wf-15y-nowin2",
                 feature_count=111,
                 architecture="catboost",
             ),
@@ -88,8 +88,8 @@ def test_routing_for_returns_category_routing() -> None:
     router = _banei_router()
     routing = router.routing_for("ban-ei")
     assert isinstance(routing, CategoryRouting)
-    assert routing.sim_model_version == "banei-cb-v9-sim-2011-nowin1"
-    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y-nowin1"
+    assert routing.sim_model_version == "banei-cb-v9-sim-2011-nowin2"
+    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y-nowin2"
     assert routing.base_feature_count == 111
     assert routing.base_architecture == "catboost"
     assert routing.default_variant == "sim"
@@ -1449,8 +1449,8 @@ def test_load_cell_router_real_config_has_ban_ei_routing() -> None:
     router = load_cell_router()
     assert router.has_routing("ban-ei") is True
     routing = router.routing_for("ban-ei")
-    assert routing.sim_model_version == "banei-cb-v9-sim-2011-nowin1"
-    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y-nowin1"
+    assert routing.sim_model_version == "banei-cb-v9-sim-2011-nowin2"
+    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y-nowin2"
     assert routing.base_feature_count == 111
     assert routing.base_architecture == "catboost"
     assert routing.default_variant == "sim"
@@ -2281,8 +2281,8 @@ def test_load_cell_router_missing_file_returns_empty_router(tmp_path: Path) -> N
 def test_load_cell_router_custom_path(tmp_path: Path) -> None:
     config = {
         "ban-ei": {
-            "sim_model_version": "banei-cb-v9-sim-2011-nowin1",
-            "base_model_version": "banei-cb-v8-window2011-wf-15y-nowin1",
+            "sim_model_version": "banei-cb-v9-sim-2011-nowin2",
+            "base_model_version": "banei-cb-v8-window2011-wf-15y-nowin2",
             "base_feature_count": 111,
             "base_architecture": "catboost",
             "default_variant": "sim",
@@ -2422,15 +2422,15 @@ def test_load_cell_router_parses_optional_variant_feature_contract(tmp_path: Pat
 
 
 def test_build_base_model_r2_key() -> None:
-    key = build_base_model_r2_key("ban-ei", "banei-cb-v8-window2011-wf-15y-nowin1", "model.json")
-    assert key == "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y-nowin1/model.json"
+    key = build_base_model_r2_key("ban-ei", "banei-cb-v8-window2011-wf-15y-nowin2", "model.json")
+    assert key == "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y-nowin2/model.json"
 
 
 def test_resolve_variant_first_matching_rule_wins(tmp_path: Path) -> None:
     config = {
         "ban-ei": {
-            "sim_model_version": "banei-cb-v9-sim-2011-nowin1",
-            "base_model_version": "banei-cb-v8-window2011-wf-15y-nowin1",
+            "sim_model_version": "banei-cb-v9-sim-2011-nowin2",
+            "base_model_version": "banei-cb-v8-window2011-wf-15y-nowin2",
             "base_feature_count": 111,
             "base_architecture": "catboost",
             "default_variant": "sim",
@@ -2530,8 +2530,8 @@ def test_routing_for_returns_base_architecture_xgboost(tmp_path: Path) -> None:
 
 
 def test_build_base_metadata_r2_key() -> None:
-    key = build_base_metadata_r2_key("ban-ei", "banei-cb-v8-window2011-wf-15y-nowin1")
-    assert key == "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y-nowin1/metadata.json"
+    key = build_base_metadata_r2_key("ban-ei", "banei-cb-v8-window2011-wf-15y-nowin2")
+    assert key == "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y-nowin2/metadata.json"
 
 
 def test_variant_spec_fields_accessible() -> None:
@@ -2544,10 +2544,10 @@ def test_variant_spec_fields_accessible() -> None:
 def test_variants_dict_access_pattern() -> None:
     router = _banei_router()
     routing = router.routing_for("ban-ei")
-    assert routing.variants["base"].model_version == "banei-cb-v8-window2011-wf-15y-nowin1"
+    assert routing.variants["base"].model_version == "banei-cb-v8-window2011-wf-15y-nowin2"
     assert routing.variants["base"].feature_count == 111
     assert routing.variants["base"].architecture == "catboost"
-    assert routing.variants["sim"].model_version == "banei-cb-v9-sim-2011-nowin1"
+    assert routing.variants["sim"].model_version == "banei-cb-v9-sim-2011-nowin2"
     assert routing.variants["sim"].feature_count == 130
 
 
@@ -2572,12 +2572,12 @@ def test_load_cell_router_new_format_variants(tmp_path: Path) -> None:
             "default_variant": "sim",
             "variants": {
                 "sim": {
-                    "model_version": "banei-cb-v9-sim-2011-nowin1",
+                    "model_version": "banei-cb-v9-sim-2011-nowin2",
                     "feature_count": 130,
                     "architecture": "catboost",
                 },
                 "base": {
-                    "model_version": "banei-cb-v8-window2011-wf-15y-nowin1",
+                    "model_version": "banei-cb-v8-window2011-wf-15y-nowin2",
                     "feature_count": 111,
                     "architecture": "catboost",
                 },
@@ -2596,8 +2596,8 @@ def test_load_cell_router_new_format_variants(tmp_path: Path) -> None:
     routing = router.routing_for("ban-ei")
     assert routing.variants["sim"].feature_count == 130
     assert routing.variants["base"].feature_count == 111
-    assert routing.sim_model_version == "banei-cb-v9-sim-2011-nowin1"
-    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y-nowin1"
+    assert routing.sim_model_version == "banei-cb-v9-sim-2011-nowin2"
+    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y-nowin2"
     assert router.resolve_variant("ban-ei", [{"grade_code": "E"}]) == "base"
     assert router.resolve_variant("ban-ei", [{"grade_code": "A"}]) == "sim"
 
@@ -2680,8 +2680,8 @@ def test_resolve_variant_routes_to_third_variant(tmp_path: Path) -> None:
 def test_load_cell_router_old_format_auto_detected(tmp_path: Path) -> None:
     config = {
         "ban-ei": {
-            "sim_model_version": "banei-cb-v9-sim-2011-nowin1",
-            "base_model_version": "banei-cb-v8-window2011-wf-15y-nowin1",
+            "sim_model_version": "banei-cb-v9-sim-2011-nowin2",
+            "base_model_version": "banei-cb-v8-window2011-wf-15y-nowin2",
             "base_feature_count": 111,
             "base_architecture": "catboost",
             "default_variant": "sim",
@@ -2697,8 +2697,8 @@ def test_load_cell_router_old_format_auto_detected(tmp_path: Path) -> None:
     config_path.write_text(json.dumps(config), encoding="utf-8")
     router = load_cell_router(config_path)
     routing = router.routing_for("ban-ei")
-    assert routing.sim_model_version == "banei-cb-v9-sim-2011-nowin1"
-    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y-nowin1"
+    assert routing.sim_model_version == "banei-cb-v9-sim-2011-nowin2"
+    assert routing.base_model_version == "banei-cb-v8-window2011-wf-15y-nowin2"
     assert routing.base_feature_count == 111
     assert routing.base_architecture == "catboost"
     assert set(routing.variants) == {"sim", "base"}

@@ -29,7 +29,7 @@ const CONFIDENCE_LOW_MAX_STDDEV = 1.3;
 const CONFIDENCE_MID_MAX_STDDEV = 1.5;
 const CONFIDENCE_MIN_VALID_SCORES = 2;
 const BAN_EI_KEIBAJO_CODE = "83";
-const NAR_TRANSFORMER_BLEND_MODEL_VERSION = "iter40-nar-settransformer-blend-v1-nowin1";
+const NAR_TRANSFORMER_BLEND_MODEL_VERSION = "iter40-nar-settransformer-blend-v1-nowin2";
 
 export type FinishPositionConfidenceTier = "high" | "low" | "mid";
 

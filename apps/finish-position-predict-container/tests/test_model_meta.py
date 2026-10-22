@@ -1,7 +1,7 @@
 """Tests for the container-baked model metadata mapping (leak-free deploys:
 JRA=jra-cb-v9-sim-2013-clean-noexo1 (250 feat, 4 within-race leak cols excluded),
 NAR=iter12-nar-xgb-hpo-v8-clean188-nowin1 (188 feat, same 4 leak cols excluded),
-Ban-ei=banei-cb-v9-sim-2011-nowin1)."""
+Ban-ei=banei-cb-v9-sim-2011-nowin2)."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def test_model_version_nar() -> None:
 
 
 def test_model_version_banei() -> None:
-    assert model_version_for("ban-ei") == "banei-cb-v9-sim-2011-nowin1"
+    assert model_version_for("ban-ei") == "banei-cb-v9-sim-2011-nowin2"
 
 
 def test_architecture_jra_catboost() -> None:
@@ -145,7 +145,7 @@ def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base(
                 "jra-named-sapporo-suzuran-v1",
                 "jra-named-sapporo-suzuran-v2-noexo1",
                 "iter12-nar-xgb-hpo-v8-clean188-nowin1",
-                "iter40-nar-settransformer-blend-v1-nowin1",
+                "iter40-nar-settransformer-blend-v1-nowin2",
                 "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
                 "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
                 "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1-nowin1",
@@ -154,13 +154,13 @@ def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base(
                 "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface-nowin1",
                 "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
                 "nar-cell-top1-30-c-sprint-summer-tc1-v1-nowin1",
-                "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
-                "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
-                "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
-                "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
-                "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
-                "banei-cb-v9-sim-2011-nowin1",
-                "banei-cb-v8-window2011-wf-15y-nowin1",
+                "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2",
+                "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2",
+                "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2",
+                "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2",
+                "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2",
+                "banei-cb-v9-sim-2011-nowin2",
+                "banei-cb-v8-window2011-wf-15y-nowin2",
             }
         )
         == PRODUCTION_MODEL_VERSION_ALLOWLIST
@@ -555,7 +555,7 @@ def test_build_r2_object_key_model() -> None:
 
 def test_build_r2_object_key_metadata() -> None:
     assert build_r2_object_key("ban-ei", "metadata.json") == (
-        "finish-position/ban-ei/banei-cb-v9-sim-2011-nowin1/metadata.json"
+        "finish-position/ban-ei/banei-cb-v9-sim-2011-nowin2/metadata.json"
     )
 
 
@@ -755,7 +755,7 @@ def test_load_model_meta_rejects_historical_leaky_model_version(tmp_path: Path) 
         "model_versions": {
             "jra": "jra-cb-v9-sim-2013",
             "nar": "iter12-nar-xgb-hpo-v8-clean188-nowin1",
-            "ban-ei": "banei-cb-v9-sim-2011-nowin1",
+            "ban-ei": "banei-cb-v9-sim-2011-nowin2",
         },
         "feature_counts": {"jra": 250, "nar": 188, "ban-ei": 130},
     }
@@ -839,12 +839,12 @@ def test_build_r2_jra_dirt_hybrid_key() -> None:
 
 def test_build_r2_nar_transformer_key() -> None:
     assert build_r2_nar_transformer_key("norm.json") == (
-        "finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/norm.json"
+        "finish-position/nar/iter40-nar-settransformer-blend-v1-nowin2/norm.json"
     )
 
 
 def test_nar_transformer_model_version_constant() -> None:
-    assert NAR_TRANSFORMER_MODEL_VERSION == "iter40-nar-settransformer-blend-v1-nowin1"
+    assert NAR_TRANSFORMER_MODEL_VERSION == "iter40-nar-settransformer-blend-v1-nowin2"
 
 
 def test_nar_transformer_blend_weight_constant() -> None:

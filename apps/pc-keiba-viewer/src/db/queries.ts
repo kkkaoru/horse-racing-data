@@ -3362,6 +3362,7 @@ const FINISH_POSITION_LEAK_FREE_BASE_MODEL_VERSIONS = [
   // Win-odds-banned retrains (2026-10-16): category defaults now serve these.
   "iter12-nar-xgb-hpo-v8-clean188-nowin1",
   // Win-odds-banned retrains (2026-10-16): category defaults now serve these.
+  "banei-cb-v9-sim-2011-nowin2",
   "banei-cb-v9-sim-2011-nowin1",
   "jra-cb-v9-sim-2013-clean-nowin1",
   "jra-cb-v9-sim-2013-clean",

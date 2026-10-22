@@ -36,7 +36,7 @@ from predict_lib.dynamic_market_shadow import selected_artifact_versions
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "41aff142ad09397bf46d1a9f444c10b724d5443853cd035c9b43cfba5881c9fb"
+EXPECTED_MANIFEST_ROOT = "d977d3d721e83485dd4463530d070e62560fd73f5fdb39d80a297924f3270343"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -200,7 +200,7 @@ def test_disabled_transformer_is_unselected_warning_only() -> None:
     assert len(report.warnings) == 14
     assert (
         "unselected manifest artifact: "
-        "finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/norm.json"
+        "finish-position/nar/iter40-nar-settransformer-blend-v1-nowin2/norm.json"
     ) in report.warnings
     assert (
         "unselected manifest artifact: "
@@ -682,7 +682,7 @@ def test_parse_rejects_finish_position_key_for_different_model() -> None:
 def test_parse_rejects_finish_position_container_key_mismatch() -> None:
     payload = _payload()
     _artifact_payload(payload)["container_path"] = (
-        "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y-nowin1/other.json"
+        "finish-position/ban-ei/banei-cb-v8-window2011-wf-15y-nowin2/other.json"
     )
 
     with pytest.raises(ManifestValidationError, match="must mirror"):
@@ -1369,7 +1369,7 @@ def test_nar_transformer_default_ignores_ambient_environment_variable(
     selected = derive_selected_artifact_keys()
 
     assert any(
-        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/")
+        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1-nowin2/")
         for key in selected
     )
 
@@ -1380,7 +1380,7 @@ def test_nar_transformer_deploy_flags_path_can_override_tracked_value(tmp_path: 
     selected = derive_selected_artifact_keys(deploy_flags_path=flags_path)
 
     assert not any(
-        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/")
+        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1-nowin2/")
         for key in selected
     )
 
@@ -1393,7 +1393,7 @@ def test_nar_transformer_explicit_override_wins_over_tracked_file(tmp_path: Path
     )
 
     assert any(
-        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/")
+        key.startswith("finish-position/nar/iter40-nar-settransformer-blend-v1-nowin2/")
         for key in selected
     )
 

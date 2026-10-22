@@ -329,7 +329,7 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
             return [
                 [
                     [
-                        "banei-cb-v9-sim-2011-nowin1",
+                        "banei-cb-v9-sim-2011-nowin2",
                         "ban-ei",
                         "2026",
                         "0816",
@@ -355,7 +355,7 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
                 ],
                 [
                     [
-                        "banei-cb-v9-sim-2011-nowin1",
+                        "banei-cb-v9-sim-2011-nowin2",
                         "ban-ei",
                         "2026",
                         "0816",
@@ -384,7 +384,7 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
             return [
                 [
                     [
-                        "banei-cb-v9-sim-2011-nowin1",
+                        "banei-cb-v9-sim-2011-nowin2",
                         "ban-ei",
                         "2026",
                         "0816",
@@ -431,7 +431,7 @@ def test_predict_category_upserts_only_the_scoped_banei_race(
     assert written == 1
     assert len(conn.upserts) == 1
     assert conn.upserts[0][1] == [
-        "banei-cb-v9-sim-2011-nowin1",
+        "banei-cb-v9-sim-2011-nowin2",
         "ban-ei",
         "2026",
         "0816",

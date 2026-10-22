@@ -162,7 +162,7 @@ def test_build_prediction_rows_banei_class_code_none() -> None:
     ]
     ranked = rank_race_entries(entries, [0.1])
     rows = build_prediction_rows("ban-ei:2026:1201:83:07", "ban-ei", ranked, None, entries[0])
-    assert rows[0][0] == "banei-cb-v9-sim-2011-nowin1"
+    assert rows[0][0] == "banei-cb-v9-sim-2011-nowin2"
     assert rows[0][17] == "sprint"
     assert rows[0][18] == "small"
     assert rows[0][19] == "winter"

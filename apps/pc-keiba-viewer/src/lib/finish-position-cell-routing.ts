@@ -38,7 +38,7 @@ import type { RaceDetail } from "./race-types";
 // display-priority candidate for every NAR race; the priority-0 SQL branch's
 // row-existence check naturally does nothing when no blended row was written,
 // falling through correctly to the plain champion tier below.
-export const NAR_TRANSFORMER_BLEND_MODEL_VERSION = "iter40-nar-settransformer-blend-v1-nowin1";
+export const NAR_TRANSFORMER_BLEND_MODEL_VERSION = "iter40-nar-settransformer-blend-v1-nowin2";
 
 export interface CellRoutingCondition {
   dimension: string;
@@ -926,12 +926,12 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
     default_variant: "sim",
     variants: {
       sim: {
-        model_version: "banei-cb-v9-sim-2011-nowin1",
+        model_version: "banei-cb-v9-sim-2011-nowin2",
         feature_count: 127,
         architecture: "catboost",
       },
       base: {
-        model_version: "banei-cb-v8-window2011-wf-15y-nowin1",
+        model_version: "banei-cb-v8-window2011-wf-15y-nowin2",
         feature_count: 111,
         architecture: "catboost",
       },
@@ -1000,31 +1000,31 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
         routing_mode: "nar_transformer_top1_swap",
       },
       c30_tc2_adaptive: {
-        model_version: "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
+        model_version: "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2",
         feature_count: 65,
         architecture: "xgboost",
         routing_mode: "nar_transformer_top1_swap",
       },
       c50_tc1_rolling: {
-        model_version: "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
+        model_version: "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2",
         feature_count: 14,
         architecture: "xgboost",
         routing_mode: "nar_transformer_top1_swap",
       },
       c43_tc1_rolling: {
-        model_version: "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
+        model_version: "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2",
         feature_count: 14,
         architecture: "xgboost",
         routing_mode: "nar_transformer_top1_swap",
       },
       c43_mile_tc1_rolling: {
-        model_version: "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
+        model_version: "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2",
         feature_count: 14,
         architecture: "xgboost",
         routing_mode: "nar_transformer_top1_swap",
       },
       c43_1400_1500_tc1_rolling: {
-        model_version: "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
+        model_version: "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2",
         feature_count: 14,
         architecture: "xgboost",
         routing_mode: "nar_transformer_top1_swap",
@@ -1710,7 +1710,7 @@ export const resolveFinishPositionDisplayPriorityModelVersion = (
 /**
  * Every distinct model_version referenced by any category's variants,
  * deduped -- each category's own default_variant included (e.g.
- * "jra-cb-v9-sim-2013-clean-noexo1" / "banei-cb-v9-sim-2011-nowin1" today, since
+ * "jra-cb-v9-sim-2013-clean-noexo1" / "banei-cb-v9-sim-2011-nowin2" today, since
  * cell_routing.json lists the default alongside every rule-only variant in
  * the same `variants` map). That inclusiveness is intentional here: this
  * backs a broad ALLOW-list (FINISH_POSITION_LEAK_FREE_MODEL_VERSIONS in
@@ -1741,7 +1741,7 @@ export const getAllFinishPositionCellRoutingModelVersions = (): string[] => {
  *
  * Deliberately narrower than getAllFinishPositionCellRoutingModelVersions()
  * above: reusing that broader set as an exclusion list would sweep in each
- * category's plain default (jra-cb-v9-sim-2013-clean-noexo1 / banei-cb-v9-sim-2011-nowin1
+ * category's plain default (jra-cb-v9-sim-2013-clean-noexo1 / banei-cb-v9-sim-2011-nowin2
  * today) and wrongly block queries.ts's priority-3 fallback from ever
  * selecting that same default/base model_version again once it stops being
  * the "active" row (priority 2) -- even though

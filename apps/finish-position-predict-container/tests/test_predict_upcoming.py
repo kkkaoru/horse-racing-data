@@ -3934,11 +3934,11 @@ def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) 
     skipped (served by the fallback). The race routes to ``base`` so the variant
     booster — not the fallback — drives the ranking.
     """
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin1", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin2", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin1", 1, "catboost"),
-            "base": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin2", 1, "catboost"),
+            "base": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin2", 1, "catboost"),
         },
         default_variant="sim",
     )
@@ -3961,25 +3961,25 @@ def test_score_races_routes_to_pooled_variant_and_skips_default(tmp_path: Path) 
         scored = score_races(races, "ban-ei", tmp_path, ["feat"])
 
     assert len(loaded) == 1, "only the non-default variant should be loaded"
-    assert "banei-cb-v8-window2011-wf-15y-nowin1" in loaded[0], (
+    assert "banei-cb-v8-window2011-wf-15y-nowin2" in loaded[0], (
         "the loaded variant must be the base model"
     )
-    assert "banei-cb-v9-sim-2011-nowin1" not in loaded[0], (
+    assert "banei-cb-v9-sim-2011-nowin2" not in loaded[0], (
         "the default variant must be served by the fallback"
     )
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 2, "the pooled variant booster must drive the ranking"
-    assert all(row[0] == "banei-cb-v8-window2011-wf-15y-nowin1" for row in rows)
+    assert all(row[0] == "banei-cb-v8-window2011-wf-15y-nowin2" for row in rows)
 
 
 def test_score_races_accepts_evaluation_variant_override(tmp_path: Path) -> None:
     """Offline replay may apply current routing rules before their activation date."""
-    version = "banei-cb-v8-window2011-wf-15y-nowin1"
+    version = "banei-cb-v8-window2011-wf-15y-nowin2"
     _write_variant_metadata(tmp_path, "ban-ei", version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin2", 1, "catboost"),
             "base": _FakeVariantSpec(version, 1, "catboost"),
         },
         default_variant="sim",
@@ -4009,12 +4009,12 @@ def test_score_races_rejects_cell_variant_feature_contract_mismatch(
     tmp_path: Path,
 ) -> None:
     """Config feature_names must match the baked metadata contract exactly."""
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin1", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin2", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin2", 1, "catboost"),
             "cell": _FakeVariantSpec(
-                "banei-cb-v8-window2011-wf-15y-nowin1",
+                "banei-cb-v8-window2011-wf-15y-nowin2",
                 1,
                 "catboost",
                 feature_names=("other_feat",),
@@ -4035,12 +4035,12 @@ def test_score_races_rejects_cell_variant_feature_contract_mismatch(
 
 def test_score_races_rejects_cell_variant_feature_hash_mismatch(tmp_path: Path) -> None:
     """Config feature_set_hash must match the baked metadata feature names."""
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin1", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin2", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin2", 1, "catboost"),
             "cell": _FakeVariantSpec(
-                "banei-cb-v8-window2011-wf-15y-nowin1",
+                "banei-cb-v8-window2011-wf-15y-nowin2",
                 1,
                 "catboost",
                 feature_names=("feat",),
@@ -4066,13 +4066,13 @@ def test_score_races_rejects_cell_variant_within_race_leak_metadata(
     _write_variant_metadata(
         tmp_path,
         "ban-ei",
-        "banei-cb-v8-window2011-wf-15y-nowin1",
+        "banei-cb-v8-window2011-wf-15y-nowin2",
         ["target_corner_4_norm"],
     )
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin1", 1, "catboost"),
-            "cell": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin2", 1, "catboost"),
+            "cell": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin2", 1, "catboost"),
         },
         default_variant="sim",
     )
@@ -4183,11 +4183,11 @@ def test_score_races_rejects_variant_with_feature_order_mismatch(tmp_path: Path)
     by design) must not be scored: the race falls back to the category default
     instead of silently scoring against a permuted matrix.
     """
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin1", ["a", "b"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin2", ["a", "b"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin1", 1, "catboost"),
-            "cell": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin1", 2, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin2", 1, "catboost"),
+            "cell": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin2", 2, "catboost"),
         },
         default_variant="sim",
     )
@@ -4210,7 +4210,7 @@ def test_score_races_rejects_variant_with_feature_order_mismatch(tmp_path: Path)
         )
 
     rows = scored[0]
-    assert all(row[0] == "banei-cb-v9-sim-2011-nowin1" for row in rows), (
+    assert all(row[0] == "banei-cb-v9-sim-2011-nowin2" for row in rows), (
         "an order-mismatched variant must fall back to the category default"
     )
     by_rank = {row[9]: row[7] for row in rows}
@@ -4219,11 +4219,11 @@ def test_score_races_rejects_variant_with_feature_order_mismatch(tmp_path: Path)
 
 def test_score_races_accepts_variant_with_matching_feature_order(tmp_path: Path) -> None:
     """A CatBoost variant whose trained order matches metadata.json loads normally."""
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin1", ["a", "b"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin2", ["a", "b"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin1", 1, "catboost"),
-            "cell": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin1", 2, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin2", 1, "catboost"),
+            "cell": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin2", 2, "catboost"),
         },
         default_variant="sim",
     )
@@ -4244,7 +4244,7 @@ def test_score_races_accepts_variant_with_matching_feature_order(tmp_path: Path)
         )
 
     rows = scored[0]
-    assert all(row[0] == "banei-cb-v8-window2011-wf-15y-nowin1" for row in rows), (
+    assert all(row[0] == "banei-cb-v8-window2011-wf-15y-nowin2" for row in rows), (
         "an order-matched variant must be used, not the fallback"
     )
     by_rank = {row[9]: row[7] for row in rows}
@@ -4273,11 +4273,11 @@ def test_score_races_rejects_unallowed_nar_cell_variant(tmp_path: Path) -> None:
 
 def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path) -> None:
     """When the resolved variant is the default (not pooled), the fallback scores."""
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin1", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin2", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin1", 1, "catboost"),
-            "base": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin2", 1, "catboost"),
+            "base": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin2", 1, "catboost"),
         },
         default_variant="sim",
     )
@@ -4300,7 +4300,7 @@ def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1, "the fallback booster must drive the ranking for the default variant"
-    assert all(row[0] == "banei-cb-v9-sim-2011-nowin1" for row in rows)
+    assert all(row[0] == "banei-cb-v9-sim-2011-nowin2" for row in rows)
 
 
 def test_score_races_nar_default_uses_category_model_without_per_class() -> None:
@@ -5052,11 +5052,11 @@ def test_score_races_warns_when_resolved_non_default_variant_missing(
 ) -> None:
     """A rule pointing at an undeclared/unloaded variant falls back but is visible."""
     monkeypatch.setenv("PREDICT_DEBUG_LOGS", "1")
-    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin1", ["feat"])
+    _write_variant_metadata(tmp_path, "ban-ei", "banei-cb-v8-window2011-wf-15y-nowin2", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin1", 1, "catboost"),
-            "base": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin1", 1, "catboost"),
+            "sim": _FakeVariantSpec("banei-cb-v9-sim-2011-nowin2", 1, "catboost"),
+            "base": _FakeVariantSpec("banei-cb-v8-window2011-wf-15y-nowin2", 1, "catboost"),
         },
         default_variant="sim",
     )

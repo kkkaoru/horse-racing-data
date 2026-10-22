@@ -47,7 +47,7 @@ export interface NarStage1ProphetResult {
 }
 
 const SUPPORTED_SIGNATURE =
-  "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin1;stage1=odds-missing:direct-stage1;final=iter12-nar-xgb-hpo-v8-stage1-marketfree-184";
+  "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin2;stage1=odds-missing:direct-stage1;final=iter12-nar-xgb-hpo-v8-stage1-marketfree-184";
 const PROPHET_DECISION = prophetPolicy.categories.nar.signatures.sim[SUPPORTED_SIGNATURE];
 
 const comparePredictions = (

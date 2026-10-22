@@ -145,7 +145,7 @@ def test_baked_policy_covers_every_production_variant() -> None:
     assert policy.resolve("nar", "c42_tc1", c42_branch).enabled is True
     assert policy.resolve("nar", "c42_tc1", c42_branch).weight == pytest.approx(0.2025017432564682)
     assert policy.resolve("jra", "sim", "jra-cb-stage1-marketfree235-2013").enabled is False
-    assert policy.resolve("ban-ei", "base", "banei-cb-v9-sim-2011-nowin1").weight == pytest.approx(
+    assert policy.resolve("ban-ei", "base", "banei-cb-v9-sim-2011-nowin2").weight == pytest.approx(
         0.0662293792416862
     )
     gated_cell = "joken_005_dirt_1200_winter_summer_qsm_gated_top1"

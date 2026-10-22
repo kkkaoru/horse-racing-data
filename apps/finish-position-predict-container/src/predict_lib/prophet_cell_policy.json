@@ -1308,7 +1308,7 @@
           }
         },
         "c30_tc2_adaptive": {
-          "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1": {
+          "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2": {
             "enabled": true,
             "weight": 0.6734851922738258,
             "reason": "served-branch-event-sweep",
@@ -1332,7 +1332,7 @@
           }
         },
         "c43_1400_1500_tc1_rolling": {
-          "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1": {
+          "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -1344,7 +1344,7 @@
           }
         },
         "c43_mile_tc1_rolling": {
-          "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1": {
+          "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2": {
             "enabled": false,
             "weight": 0.05,
             "reason": "no-positive-weight-lexicographic-improvement",
@@ -1356,7 +1356,7 @@
           }
         },
         "c43_tc1_rolling": {
-          "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1": {
+          "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2": {
             "enabled": true,
             "weight": 0.11717896306529131,
             "reason": "served-branch-event-sweep",
@@ -1368,7 +1368,7 @@
           }
         },
         "c50_tc1_rolling": {
-          "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1": {
+          "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2": {
             "enabled": true,
             "weight": 0.09753569441898499,
             "reason": "served-branch-event-sweep",
@@ -1425,7 +1425,7 @@
               "2024": 1
             }
           },
-          "iter40-nar-settransformer-blend-v1-nowin1": {
+          "iter40-nar-settransformer-blend-v1-nowin2": {
             "enabled": true,
             "weight": 0.001778529223552035,
             "reason": "served-branch-event-sweep",
@@ -1449,11 +1449,11 @@
           }
         },
         "c30_tc2_adaptive": {
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1;stage1=fresh;final=nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2;stage1=fresh;final=nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1;stage1=fresh;final=nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2;stage1=fresh;final=nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2": {
             "enabled": true,
             "weight": 0.6734851922738258
           }
@@ -1465,41 +1465,41 @@
           }
         },
         "c43_1400_1500_tc1_rolling": {
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1;stage1=fresh;final=nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2;stage1=fresh;final=nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1;stage1=fresh;final=nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2;stage1=fresh;final=nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2": {
             "enabled": true,
             "weight": 0.11362675060447926
           }
         },
         "c43_mile_tc1_rolling": {
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1;stage1=fresh;final=nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2;stage1=fresh;final=nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1;stage1=fresh;final=nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2;stage1=fresh;final=nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2": {
             "enabled": false,
             "weight": 0.05
           }
         },
         "c43_tc1_rolling": {
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1;stage1=fresh;final=nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2;stage1=fresh;final=nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1;stage1=fresh;final=nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2;stage1=fresh;final=nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2": {
             "enabled": true,
             "weight": 0.12510017993622413
           }
         },
         "c50_tc1_rolling": {
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1;stage1=fresh;final=nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-changed-top1;stage2-model=nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2;stage1=fresh;final=nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2": {
             "enabled": false,
             "weight": 0.05
           },
-          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1;stage1=fresh;final=nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1": {
+          "v1;mode=nar_transformer_top1_swap;stage2=transformer-fused-swap-same-top1;stage2-model=nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2;stage1=fresh;final=nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2": {
             "enabled": true,
             "weight": 0.09753569441898499
           }
@@ -1543,11 +1543,11 @@
           }
         },
         "sim": {
-          "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin1;stage1=fresh;final=iter40-nar-settransformer-blend-v1-nowin1": {
+          "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin2;stage1=fresh;final=iter40-nar-settransformer-blend-v1-nowin2": {
             "enabled": true,
             "weight": 0.001778529223552035
           },
-          "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin1;stage1=odds-missing:direct-stage1;final=iter12-nar-xgb-hpo-v8-stage1-marketfree-184": {
+          "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin2;stage1=odds-missing:direct-stage1;final=iter12-nar-xgb-hpo-v8-stage1-marketfree-184": {
             "enabled": true,
             "weight": 0.5421041821751719
           }
@@ -1567,7 +1567,7 @@
       },
       "branches": {
         "base": {
-          "banei-cb-v9-sim-2011-nowin1": {
+          "banei-cb-v9-sim-2011-nowin2": {
             "enabled": true,
             "weight": 0.0662293792416862,
             "reason": "served-branch-event-sweep",
@@ -1580,7 +1580,7 @@
           }
         },
         "sim": {
-          "banei-cb-v9-sim-2011-nowin1": {
+          "banei-cb-v9-sim-2011-nowin2": {
             "enabled": true,
             "weight": 0.007680626935659348,
             "reason": "served-branch-event-sweep",
@@ -1595,13 +1595,13 @@
       },
       "signatures": {
         "base": {
-          "v1;mode=direct-default;stage2=direct-default;stage2-model=banei-cb-v9-sim-2011-nowin1;stage1=not-configured;final=banei-cb-v9-sim-2011-nowin1": {
+          "v1;mode=direct-default;stage2=direct-default;stage2-model=banei-cb-v9-sim-2011-nowin2;stage1=not-configured;final=banei-cb-v9-sim-2011-nowin2": {
             "enabled": true,
             "weight": 0.0662293792416862
           }
         },
         "sim": {
-          "v1;mode=direct-default;stage2=direct-default;stage2-model=banei-cb-v9-sim-2011-nowin1;stage1=not-configured;final=banei-cb-v9-sim-2011-nowin1": {
+          "v1;mode=direct-default;stage2=direct-default;stage2-model=banei-cb-v9-sim-2011-nowin2;stage1=not-configured;final=banei-cb-v9-sim-2011-nowin2": {
             "enabled": true,
             "weight": 0.007680626935659348
           }

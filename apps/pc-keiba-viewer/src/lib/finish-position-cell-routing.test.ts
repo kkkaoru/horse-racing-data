@@ -680,7 +680,7 @@ it("routes NAR Funabashi 43 1700 C summer to the mile cell", () => {
     trackCode: "24",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
-  expect(value).toStrictEqual("nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1");
+  expect(value).toStrictEqual("nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2");
 });
 
 it("does not route NAR Funabashi 43 1500 C summer to the mile cell", () => {
@@ -697,7 +697,7 @@ it("does not route NAR Funabashi 43 1500 C summer to the mile cell", () => {
     trackCode: "24",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
-  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1");
+  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2");
 });
 
 it("does not route NAR Funabashi 43 1400 C winter to the sprint-winter cell", () => {
@@ -715,7 +715,7 @@ it("does not route NAR Funabashi 43 1400 C winter to the sprint-winter cell", ()
     trackCode: "24",
   };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "nar", race });
-  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1");
+  expect(value).toStrictEqual("nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion returns null for a JRA race matching no rule", () => {
@@ -727,7 +727,7 @@ it("resolveFinishPositionCellRoutingModelVersion returns null for a JRA race mat
 it("resolveFinishPositionCellRoutingModelVersion routes Ban-ei grade E races to the base variant", () => {
   const race: RaceDetail = { ...BASE_RACE, gradeCode: "E", keibajoCode: "83", source: "nar" };
   const value = resolveFinishPositionCellRoutingModelVersion({ category: "ban-ei", race });
-  expect(value).toBe("banei-cb-v8-window2011-wf-15y-nowin1");
+  expect(value).toBe("banei-cb-v8-window2011-wf-15y-nowin2");
 });
 
 it("resolveFinishPositionCellRoutingModelVersion returns null for a non-E Ban-ei race", () => {
@@ -779,7 +779,7 @@ it("resolveFinishPositionCellRoutingModelVersion enforces effective date and med
   });
   expect([before, after, small]).toStrictEqual([
     null,
-    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
+    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2",
     null,
   ]);
 });
@@ -802,7 +802,7 @@ it("resolveFinishPositionDisplayPriorityModelVersion prefers NAR cell then trans
   );
   expect(
     resolveFinishPositionDisplayPriorityModelVersion({ category: "nar", race: unmatched }),
-  ).toBe("iter40-nar-settransformer-blend-v1-nowin1");
+  ).toBe("iter40-nar-settransformer-blend-v1-nowin2");
 });
 
 // --- resolveCellRoutingModelVersionForConfig: malformed-config guard -------
@@ -957,8 +957,8 @@ it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant 
     "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1",
     "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
     "jra-named-niigata-kinen-draw-v2-noexo1",
-    "banei-cb-v9-sim-2011-nowin1",
-    "banei-cb-v8-window2011-wf-15y-nowin1",
+    "banei-cb-v9-sim-2011-nowin2",
+    "banei-cb-v8-window2011-wf-15y-nowin2",
     "iter12-nar-xgb-hpo-v8-clean188-nowin1",
     "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
     "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1-nowin1",
@@ -967,11 +967,11 @@ it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant 
     "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form-nowin1",
     "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
     "nar-cell-top1-30-c-sprint-summer-tc1-v1-nowin1",
-    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
-    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
-    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
-    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
-    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
+    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2",
+    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2",
+    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2",
+    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2",
+    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2",
   ]);
 });
 
@@ -1016,7 +1016,7 @@ it("getAllFinishPositionCellRoutingOffLabelVariantModelVersions excludes each ca
     "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1",
     "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
     "jra-named-niigata-kinen-draw-v2-noexo1",
-    "banei-cb-v8-window2011-wf-15y-nowin1",
+    "banei-cb-v8-window2011-wf-15y-nowin2",
     "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
     "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1-nowin1",
     "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider-nowin1",
@@ -1024,11 +1024,11 @@ it("getAllFinishPositionCellRoutingOffLabelVariantModelVersions excludes each ca
     "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-physiology-form-nowin1",
     "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
     "nar-cell-top1-30-c-sprint-summer-tc1-v1-nowin1",
-    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
-    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
-    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
-    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
-    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
+    "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2",
+    "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2",
+    "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2",
+    "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2",
+    "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2",
   ]);
 });
 

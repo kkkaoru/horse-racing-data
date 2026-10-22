@@ -100,8 +100,8 @@ WITHIN_RACE_LEAK_COLUMNS: Final[frozenset[str]] = frozenset(
 
 PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset(
     {
-        "banei-cb-v8-window2011-wf-15y-nowin1",
-        "banei-cb-v9-sim-2011-nowin1",
+        "banei-cb-v8-window2011-wf-15y-nowin2",
+        "banei-cb-v9-sim-2011-nowin2",
         "jra-cb-v10-prior-corner274-2013-noexo1",
         "jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1",
         "jra-cb-v9-sim-2013-clean-noexo1",
@@ -148,7 +148,7 @@ PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset(
         "jra-named-niigata-kinen-v1",
         "jra-named-sapporo-suzuran-v1",
         "iter12-nar-xgb-hpo-v8-clean188-nowin1",
-        "iter40-nar-settransformer-blend-v1-nowin1",
+        "iter40-nar-settransformer-blend-v1-nowin2",
         "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
         "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
         "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1-nowin1",
@@ -157,11 +157,11 @@ PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset(
         "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-pedigree-surface-nowin1",
         "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
         "nar-cell-top1-30-c-sprint-summer-tc1-v1-nowin1",
-        "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
-        "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
-        "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
-        "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
-        "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
+        "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2",
+        "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2",
+        "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2",
+        "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2",
+        "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2",
     }
 )
 
@@ -513,10 +513,10 @@ NAR_TRANSFORMER_BLEND_ENABLED: Final[bool] = _env_flag(
 )
 
 # The blend artifact version baked at
-# models/finish-position/nar/iter40-nar-settransformer-blend-v1-nowin1/ (norm.json +
+# models/finish-position/nar/iter40-nar-settransformer-blend-v1-nowin2/ (norm.json +
 # weights_s{1,2,3}.npz). Written as the predictions ``model_version`` for blended
 # NAR rows; fallback rows keep MODEL_VERSION_BY_CATEGORY["nar"].
-NAR_TRANSFORMER_MODEL_VERSION: Final[str] = "iter40-nar-settransformer-blend-v1-nowin1"
+NAR_TRANSFORMER_MODEL_VERSION: Final[str] = "iter40-nar-settransformer-blend-v1-nowin2"
 
 # Fusion weight on the transformer seed-rank-mean (1 - w on the base rank).
 NAR_TRANSFORMER_BLEND_WEIGHT: Final[float] = 0.5

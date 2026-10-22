@@ -221,7 +221,7 @@ test("rescore accepts an exact pre-weight prediction generated on the previous e
     "0824",
     "35",
     "01",
-    "iter40-nar-settransformer-blend-v1-nowin1",
+    "iter40-nar-settransformer-blend-v1-nowin2",
     buildCatalogRows().map((row) => row.ketto_toroku_bango),
     "2026-08-22T15:00:00",
   ]);
@@ -339,7 +339,7 @@ test("uses raw Catalog entries and only queries Neon prediction output", async (
       "0701",
       "50",
       "12",
-      "iter40-nar-settransformer-blend-v1-nowin1",
+      "iter40-nar-settransformer-blend-v1-nowin2",
       buildCatalogRows().map((row) => row.ketto_toroku_bango),
       "2026-06-30T15:00:00",
     ],
@@ -508,7 +508,7 @@ test("routes ban-ei grade E through the ban-ei Catalog filter", async () => {
     runYmd: "20260701",
   });
   expect(catalogFetchMock.mock.calls[0]?.[0]?.url).toContain("source=ban-ei");
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("banei-cb-v8-window2011-wf-15y-nowin1");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("banei-cb-v8-window2011-wf-15y-nowin2");
 });
 
 test("returns false without querying Neon when raw Catalog has no entries", async () => {
@@ -708,7 +708,7 @@ test("recognizes a NAR race the stage1 market-free fallback gate routed away fro
   ).resolves.toBe(true);
 
   expect(queryMock).toHaveBeenCalledTimes(2);
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter40-nar-settransformer-blend-v1-nowin1");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter40-nar-settransformer-blend-v1-nowin2");
   expect(queryMock.mock.calls[1]?.[1]?.[5]).toBe("iter12-nar-xgb-hpo-v8-stage1-marketfree-184");
 });
 

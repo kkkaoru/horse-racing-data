@@ -56,7 +56,7 @@ from predict_lib.per_class import (
 
 JRA_FALLBACK_MODEL_VERSION: str = "jra-cb-v9-sim-2013-clean-noexo1"
 NAR_FALLBACK_MODEL_VERSION: str = "iter12-nar-xgb-hpo-v8-clean188-nowin1"
-BANEI_FALLBACK_MODEL_VERSION: str = "banei-cb-v9-sim-2011-nowin1"
+BANEI_FALLBACK_MODEL_VERSION: str = "banei-cb-v9-sim-2011-nowin2"
 JRA_CLASS_005_MODEL_VERSION: str = "iter21-jra-cb-class005-v8"
 JRA_CLASS_010_MODEL_VERSION: str = "iter21-jra-cb-class010-v8"
 JRA_CLASS_010_ENSEMBLE_MODEL_VERSION: str = "iter25-jra-cb-ensemble-010-v8"

@@ -89,7 +89,7 @@ test.each<PredictCategory>(["jra", "nar", "ban-ei"])(
   async (category) => {
     const venue = category === "jra" ? "05" : category === "nar" ? "35" : "83";
     const modelVersion =
-      category === "nar" ? "iter40-nar-settransformer-blend-v1-nowin1" : "model-A";
+      category === "nar" ? "iter40-nar-settransformer-blend-v1-nowin2" : "model-A";
     const value = {
       schemaVersion: 1,
       category,
@@ -647,7 +647,7 @@ test("publishFinishPositionPredictionCache writes today TTL without busting", as
     "05",
     "11",
     "jra",
-    "iter40-nar-settransformer-blend-v1-nowin1",
+    "iter40-nar-settransformer-blend-v1-nowin2",
   ]);
   const selectionSql = queryMock.mock.calls[0]?.[0] ?? "";
   expect(selectionSql).toMatch(/when \$6 = 'nar' and model_version = \$7 then 0/u);
@@ -768,7 +768,7 @@ test("publishFinishPositionPredictionCache uses tomorrow TTL and reports busted 
     "83",
     "12",
     "ban-ei",
-    "iter40-nar-settransformer-blend-v1-nowin1",
+    "iter40-nar-settransformer-blend-v1-nowin2",
   ]);
   expect(putMock).toHaveBeenCalledWith("pred:fp:v1:20260810:83:12", putMock.mock.calls[0]?.[1], {
     expirationTtl: 259200,

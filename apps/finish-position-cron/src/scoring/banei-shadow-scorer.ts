@@ -14,7 +14,7 @@ const MODEL_FILE = "model.json";
 const METADATA_FILE = "metadata.json";
 const FIRST_RANK = 1;
 const PROPHET_SIGNATURE =
-  "v1;mode=direct-default;stage2=direct-default;stage2-model=banei-cb-v9-sim-2011-nowin1;stage1=not-configured;final=banei-cb-v9-sim-2011-nowin1";
+  "v1;mode=direct-default;stage2=direct-default;stage2-model=banei-cb-v9-sim-2011-nowin2;stage1=not-configured;final=banei-cb-v9-sim-2011-nowin2";
 const PROPHET_DECISION = prophetPolicy.categories["ban-ei"].signatures.sim[PROPHET_SIGNATURE];
 // Model-version keys are immutable production artifacts. Cache only the last
 // fully parsed model per R2 binding, after all metadata checks pass. This avoids
@@ -36,13 +36,13 @@ export const BANEI_SHADOW_MODEL_SPECS: Readonly<Record<BaneiShadowVariant, Banei
     base: {
       architecture: "catboost",
       featureCount: 111,
-      modelVersion: "banei-cb-v8-window2011-wf-15y-nowin1",
+      modelVersion: "banei-cb-v8-window2011-wf-15y-nowin2",
       variant: "base",
     },
     sim: {
       architecture: "catboost",
       featureCount: 127,
-      modelVersion: "banei-cb-v9-sim-2011-nowin1",
+      modelVersion: "banei-cb-v9-sim-2011-nowin2",
       variant: "sim",
     },
   };

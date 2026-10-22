@@ -154,7 +154,7 @@ test("scopes Prophet output to the explicitly observed Stage1 signature", () => 
   const result = scoreNarStage1ProphetShadow({
     ...INPUT,
     servedSignature:
-      "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin1;stage1=odds-missing:direct-stage1;final=iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+      "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin2;stage1=odds-missing:direct-stage1;final=iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
     entries: [
       { ...ENTRY, ketto_toroku_bango: "b", umaban: 2 },
       { ...ENTRY, ketto_toroku_bango: "a", umaban: 1 },
@@ -173,7 +173,7 @@ test("applies the shared Prophet adjustment to NAR raw scores with explicit conf
   const result = scoreNarStage1ProphetShadow({
     ...INPUT,
     servedSignature:
-      "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin1;stage1=odds-missing:direct-stage1;final=iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
+      "v1;mode=nar-transformer-blend;stage2=transformer-fused;stage2-model=iter40-nar-settransformer-blend-v1-nowin2;stage1=odds-missing:direct-stage1;final=iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
     prophetConfig: { weight: "0.5" },
     entries: [
       {

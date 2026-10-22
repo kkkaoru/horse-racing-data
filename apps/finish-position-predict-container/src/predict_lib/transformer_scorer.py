@@ -3,7 +3,7 @@
 This module is the ONE deployable implementation of the transformer forward +
 seed combination + rank fusion. It supersedes candidate-mlx-nar/numpy_forward.py:
 the deploy-gate is re-run through THIS module so eval == serve by construction.
-Target production model_version: iter40-nar-settransformer-blend-v1-nowin1.
+Target production model_version: iter40-nar-settransformer-blend-v1-nowin2.
 
 Dependency: numpy ONLY (already in the container via pandas/pyarrow). No MLX, no
 Metal, no polars, no torch. np.load reads the MLX-written .npz directly.

@@ -2219,9 +2219,9 @@ it("getFinishPositionLambdarankPredictions always attempts the NAR transformer b
   const queryArg = executeMock.mock.calls[0]?.[0];
   const queryText = stringifyQuery(queryArg);
   expect(queryText).toMatch(
-    /where p0\.model_version = 'iter40-nar-settransformer-blend-v1-nowin1'/u,
+    /where p0\.model_version = 'iter40-nar-settransformer-blend-v1-nowin2'/u,
   );
-  expect(queryText).toMatch(/'iter40-nar-settransformer-blend-v1-nowin1'/u);
+  expect(queryText).toMatch(/'iter40-nar-settransformer-blend-v1-nowin2'/u);
 });
 
 it("getFinishPositionLambdarankPredictions emits priority 0 cell-routing branch for a routed JRA race", async () => {
@@ -2292,8 +2292,8 @@ it("getFinishPositionLambdarankPredictions bounds priority 3 fallback to leak-fr
   expect(queryText).toMatch(/stale\.model_version = p3\.model_version/u);
   expect(queryText).toMatch(/'jra-cb-v9-sim-2013-clean-noexo1'/u);
   expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-clean188-nowin1'/u);
-  expect(queryText).toMatch(/'banei-cb-v9-sim-2011-nowin1'/u);
-  expect(queryText).toMatch(/'banei-cb-v8-window2011-wf-15y-nowin1'/u);
+  expect(queryText).toMatch(/'banei-cb-v9-sim-2011-nowin2'/u);
+  expect(queryText).toMatch(/'banei-cb-v8-window2011-wf-15y-nowin2'/u);
   expect(queryText).toMatch(/'jra-cb-stage1-marketfree235-2013'/u);
   expect(queryText).toMatch(/'iter12-nar-xgb-hpo-v8-stage1-marketfree-184'/u);
   expect(queryText).toMatch(/group by p3\.model_version/u);
@@ -2322,9 +2322,9 @@ it("getFinishPositionLambdarankPredictions excludes off-label cell-routing varia
     )?.[1] ?? "";
   expect(cteBody).toMatch(/'jra-cb-v9-sim-2013-clean-jockey-pedigree269-noexo1'/u);
   expect(cteBody).toMatch(/'jra-cb-v10-prior-corner274-2013-noexo1'/u);
-  expect(cteBody).toMatch(/'banei-cb-v8-window2011-wf-15y-nowin1'/u);
+  expect(cteBody).toMatch(/'banei-cb-v8-window2011-wf-15y-nowin2'/u);
   expect(cteBody).not.toMatch(/'jra-cb-v9-sim-2013-clean-noexo1'\)/u);
-  expect(cteBody).not.toMatch(/'banei-cb-v9-sim-2011-nowin1'/u);
+  expect(cteBody).not.toMatch(/'banei-cb-v9-sim-2011-nowin2'/u);
   expect(result.length).toBe(0);
 });
 
@@ -2629,7 +2629,7 @@ it("getActiveFinishPositionPredictions replaces a normal-read mixed KV payload w
     JSON.stringify([
       ...Array.from({ length: 9 }, (_, index) => ({
         horseNumber: String(index + 1),
-        modelVersion: "banei-cb-v9-sim-2011-nowin1",
+        modelVersion: "banei-cb-v9-sim-2011-nowin2",
         predictedFinishNorm: index / 8,
         predictionGeneratedAt: "2026-08-24T08:18:05.649Z",
         showProbability: null,
@@ -2637,7 +2637,7 @@ it("getActiveFinishPositionPredictions replaces a normal-read mixed KV payload w
       })),
       {
         horseNumber: "10",
-        modelVersion: "banei-cb-v9-sim-2011-nowin1",
+        modelVersion: "banei-cb-v9-sim-2011-nowin2",
         predictedFinishNorm: 0.5,
         predictionGeneratedAt: "2026-08-24T00:34:29.223Z",
         showProbability: null,
@@ -2647,7 +2647,7 @@ it("getActiveFinishPositionPredictions replaces a normal-read mixed KV payload w
   );
   executeMock.mockResolvedValue({
     rows: Array.from({ length: 9 }, (_, index) => ({
-      model_version: "banei-cb-v9-sim-2011-nowin1",
+      model_version: "banei-cb-v9-sim-2011-nowin2",
       predicted_rank: index + 1,
       predicted_score: String(index + 1),
       prediction_generated_at: "2026-08-24T08:18:05.649Z",

@@ -86,7 +86,7 @@ test("scores and deterministically ranks a Ban-ei race", () => {
 
   expect(result).toMatchObject({
     gradeCode: "A",
-    modelVersion: "banei-cb-v9-sim-2011-nowin1",
+    modelVersion: "banei-cb-v9-sim-2011-nowin2",
     raceId: "nar:2026:0907:83:01",
     shadowOnly: true,
     variant: "sim",
@@ -269,8 +269,8 @@ test("loads exactly the selected model and attested metadata from R2", async () 
   expect(cached).toBe(result);
   expect(result.model.trees).toStrictEqual([]);
   expect(get.mock.calls.map(([key]) => key)).toStrictEqual([
-    "finish-position/ban-ei/banei-cb-v9-sim-2011-nowin1/model.json",
-    "finish-position/ban-ei/banei-cb-v9-sim-2011-nowin1/metadata.json",
+    "finish-position/ban-ei/banei-cb-v9-sim-2011-nowin2/model.json",
+    "finish-position/ban-ei/banei-cb-v9-sim-2011-nowin2/metadata.json",
   ]);
 });
 

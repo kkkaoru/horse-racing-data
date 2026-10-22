@@ -105,19 +105,19 @@ const JRA_JOKEN_MODEL_VERSIONS: ReadonlyMap<string, string> = new Map([
   ["999", "jra-joken-999-pooled-yetirank-v2-noexo1"],
 ]);
 const NAR_DEFAULT_MODEL_VERSION = "iter12-nar-xgb-hpo-v8-clean188-nowin1";
-const NAR_TRANSFORMER_MODEL_VERSION = "iter40-nar-settransformer-blend-v1-nowin1";
+const NAR_TRANSFORMER_MODEL_VERSION = "iter40-nar-settransformer-blend-v1-nowin2";
 const NAR_CELL_TOP1_MODEL_VERSIONS: readonly string[] = [
   "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
   "nar-cell-top1-42-c-sprint-summer-tc1-v1-nowin1",
   "nar-cell-top1-30-c-sprint-summer-tc1-v1-nowin1",
-  "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin1",
-  "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin1",
-  "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin1",
-  "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin1",
-  "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin1",
+  "nar-cell-top1-30-c-sprint-summer-tc2-adaptive-v1-nowin2",
+  "nar-cell-top1-50-c-sprint-summer-tc1-rolling-v1-nowin2",
+  "nar-cell-top1-43-c-sprint-winter-tc1-rolling-v1-nowin2",
+  "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2",
+  "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2",
 ];
-const BANEI_DEFAULT_MODEL_VERSION = "banei-cb-v9-sim-2011-nowin1";
-const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y-nowin1";
+const BANEI_DEFAULT_MODEL_VERSION = "banei-cb-v9-sim-2011-nowin2";
+const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y-nowin2";
 
 // Mirrors predict_lib/stage1_routing.json's per-category fallback
 // model_version (both entries `enabled: true` there today). resolve_stage1_gate
