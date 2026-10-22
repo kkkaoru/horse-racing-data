@@ -557,3 +557,24 @@ test("scoreCatBoostModel compares float features at float32 precision like CatBo
   expect(scoreAt(border + 1e-12)).toBe(scoreAt(border));
   expect(scoreAt(0.2)).not.toBe(scoreAt(border));
 });
+
+test("scoreCatBoostModel rounds a decimal border to float32 before comparing", () => {
+  const model = parseCatBoostJsonModel(FLOAT_MODEL_JSON);
+  const tree = model.trees[0]!;
+  const singleTree: CatBoostModel = {
+    bias: model.bias,
+    categoricalFeatures: model.categoricalFeatures,
+    floatFeatures: model.floatFeatures,
+    scale: model.scale,
+    trees: [{ ...tree, splits: [{ ...tree.splits[0]!, border: 0.1 }, tree.splits[1]!] }],
+  };
+  const scoreAt = (value: number): number =>
+    scoreCatBoostModel({
+      features: [
+        { isMissing: false, value },
+        { isMissing: false, value: 2 },
+      ],
+      model: singleTree,
+    });
+  expect(scoreAt(Math.fround(0.1))).toBe(scoreAt(0));
+});

@@ -258,7 +258,7 @@ const floatSplitBit = (model: CatBoostModel, split: CatBoostSplit, cell: Feature
     return missingFloatGoesRight(model, split.featureIndex) ? BIT_SET : BIT_UNSET;
   }
   // CatBoost compares float32 feature values against float32 borders.
-  return Math.fround(cell.value) > split.border ? BIT_SET : BIT_UNSET;
+  return Math.fround(cell.value) > Math.fround(split.border) ? BIT_SET : BIT_UNSET;
 };
 
 const oneHotSplitBit = (split: CatBoostSplit, cell: FeatureCell): number => {
