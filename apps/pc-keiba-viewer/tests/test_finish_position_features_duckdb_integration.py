@@ -799,6 +799,60 @@ def test_upcoming_target_union_sql_nar_excludes_scratched_entrant():
     assert out["ketto_toroku_bango"].to_list() == ["h101"]
 
 
+def test_upcoming_target_union_sql_nar_excludes_legacy_ban_ei_venues():
+    """Ban-ei ran at 81/82/84 until 2006 (hex body weights); those are not NAR."""
+    con = duckdb.connect()
+    con.execute("create schema pg")
+    se_df = pl.DataFrame(
+        [
+            (
+                "2006", "0430", keibajo, "01", f"h{keibajo}", "01", "j1", "t1",
+                "00", "0", "", "", "00", "0000", "440", "1", "5",
+            )
+            for keibajo in ("30", "81", "82", "84")
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "ketto_toroku_bango", "umaban", "kishumei_ryakusho", "chokyoshimei_ryakusho",
+            "kakutei_chakujun", "ijo_kubun_code", "time_sa", "kohan_3f", "tansho_ninkijun",
+            "tansho_odds", "bataiju", "seibetsu_code", "barei",
+        ],
+        orient="row",
+    )
+    con.register("se_df", se_df)
+    con.execute("create table pg.nvd_se as select * from se_df")
+    con.execute(
+        "alter table pg.nvd_se add column corner_1 varchar; "
+        "alter table pg.nvd_se add column corner_2 varchar; "
+        "alter table pg.nvd_se add column corner_3 varchar; "
+        "alter table pg.nvd_se add column corner_4 varchar"
+    )
+    ra_df = pl.DataFrame(
+        [
+            (
+                "2006", "0430", keibajo, "01", "1400", "20", "B", "000",
+                "1", None, "1", "地方賞", "", "",
+            )
+            for keibajo in ("30", "81", "82", "84")
+        ],
+        schema=[
+            "kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango",
+            "kyori", "track_code", "grade_code", "kyoso_joken_code",
+            "shusso_tosu", "babajotai_code_shiba", "babajotai_code_dirt",
+            "kyosomei_hondai", "kyosomei_fukudai", "kyosomei_kakkonai",
+        ],
+        orient="row",
+    )
+    con.register("ra_df", ra_df)
+    con.execute("create table pg.nvd_ra as select * from ra_df")
+    subject.create_empty_realtime_odds_stub(con)
+
+    sql = subject.upcoming_target_union_sql("nar", "20060430", "20060430")
+    out = con.execute(sql).pl()
+
+    assert out["ketto_toroku_bango"].to_list() == ["h30"]
+
+
 def test_build_rec_select_sql_ban_ei_upcoming_window_excludes_scratched_entrant_via_both_layers():
     """Ban-ei-specific regression test for the second, more subtle half of the
     2026-07-18 entrant-selection fix: unlike JRA/NAR, Ban-ei has no

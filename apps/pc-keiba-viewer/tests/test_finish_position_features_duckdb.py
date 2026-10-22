@@ -232,10 +232,10 @@ def test_upcoming_target_union_sql_jra_restricts_to_central_keibajo():
     )
 
 
-def test_category_source_filter_nar_excludes_ban_ei():
+def test_category_source_filter_nar_excludes_ban_ei_including_legacy_venues():
     assert (
         subject.category_source_filter("nar", "rec")
-        == "rec.source = 'nar' and (rec.keibajo_code is null or rec.keibajo_code <> '83')"
+        == "rec.source = 'nar' and (rec.keibajo_code is null or rec.keibajo_code not in ('81', '82', '83', '84'))"
     )
 
 
@@ -426,7 +426,7 @@ def test_upcoming_target_union_sql_target_race_filters_direct_source_rows():
 def test_upcoming_target_union_sql_nar_excludes_ban_ei_keibajo():
     sql = subject.upcoming_target_union_sql("nar", "20260603", "20260603")
     assert "pg.nvd_se se" in sql
-    assert "(se.keibajo_code is null or se.keibajo_code <> '83')" in sql
+    assert "(se.keibajo_code is null or se.keibajo_code not in ('81', '82', '83', '84'))" in sql
     assert "'nar' as source" in sql
 
 
@@ -439,7 +439,7 @@ def test_upcoming_target_union_sql_ban_ei_filters_to_ban_ei_keibajo():
 def test_upcoming_target_union_sql_all_unions_three_categories():
     sql = subject.upcoming_target_union_sql("all", "20260603", "20260603")
     assert "pg.jvd_se se" in sql
-    assert "(se.keibajo_code is null or se.keibajo_code <> '83')" in sql
+    assert "(se.keibajo_code is null or se.keibajo_code not in ('81', '82', '83', '84'))" in sql
     assert "se.keibajo_code = '83'" in sql
 
 
@@ -650,8 +650,8 @@ def test_target_months_sql_groups_distinct_year_months():
 def test_pedigree_rec_um_subquery_returns_distinct_clauses_per_category():
     assert "where rec.source = 'jra'" in subject.pedigree_rec_um_subquery("jra")
     assert (
-        "where rec.source = 'nar' and (rec.keibajo_code is null or rec.keibajo_code <> '83')"
-        in subject.pedigree_rec_um_subquery("nar")
+        "where rec.source = 'nar' and (rec.keibajo_code is null"
+        " or rec.keibajo_code not in ('81', '82', '83', '84'))" in subject.pedigree_rec_um_subquery("nar")
     )
     assert (
         "where rec.source = 'nar' and rec.keibajo_code = '83'"

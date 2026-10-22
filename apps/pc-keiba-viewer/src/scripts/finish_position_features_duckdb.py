@@ -408,7 +408,10 @@ def category_source_filter(category: str, alias: str) -> str:
     if category == "jra":
         return f"{alias}.source = 'jra' and {alias}.keibajo_code in {JRA_KEIBAJO_CODES_SQL}"
     if category == "nar":
-        return f"{alias}.source = 'nar' and ({alias}.keibajo_code is null or {alias}.keibajo_code <> '83')"
+        return (
+            f"{alias}.source = 'nar' and ({alias}.keibajo_code is null"
+            f" or {alias}.keibajo_code not in {NAR_EXCLUDED_KEIBAJO_CODES_SQL})"
+        )
     if category == "ban-ei":
         return f"{alias}.source = 'nar' and {alias}.keibajo_code = '83'"
     return "true"
@@ -463,6 +466,8 @@ def run_staged_sql(
 
 
 BAN_EI_KEIBAJO_CODE = "83"
+# Ban-ei also raced at 81/82/84 until 2006; those rows carry hex body weights.
+NAR_EXCLUDED_KEIBAJO_CODES_SQL = "('81', '82', '83', '84')"
 CATEGORY_BAN_EI = "ban-ei"
 CATEGORY_NAR = "nar"
 CATEGORY_JRA = "jra"
@@ -1081,7 +1086,7 @@ def upcoming_target_union_sql(
             "nvd_ra",
             target_from,
             target_to,
-            f"(se.keibajo_code is null or se.keibajo_code <> '{BAN_EI_KEIBAJO_CODE}')",
+            f"(se.keibajo_code is null or se.keibajo_code not in {NAR_EXCLUDED_KEIBAJO_CODES_SQL})",
             target_race,
         )
     if category == CATEGORY_BAN_EI:
@@ -2212,7 +2217,8 @@ def pedigree_rec_um_subquery(category: str) -> str:
             " from rec"
             " left join nar_um um using (ketto_toroku_bango)"
             " left join nar_nu nu using (ketto_toroku_bango)"
-            " where rec.source = 'nar' and (rec.keibajo_code is null or rec.keibajo_code <> '83')"
+            " where rec.source = 'nar' and (rec.keibajo_code is null"
+            f" or rec.keibajo_code not in {NAR_EXCLUDED_KEIBAJO_CODES_SQL})"
             " and coalesce(um.ketto_joho_01b, nu.ketto_joho_01b) is not null"
         )
     if category == "ban-ei":
