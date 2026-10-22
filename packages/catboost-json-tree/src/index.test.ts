@@ -534,3 +534,26 @@ test("scoreCatBoostRanking keeps input order for tied scores", () => {
     { id: "second", predictedRank: 2, score: 4.5 },
   ]);
 });
+
+test("scoreCatBoostModel compares float features at float32 precision like CatBoost", () => {
+  const model = parseCatBoostJsonModel(FLOAT_MODEL_JSON);
+  const border = Math.fround(0.1);
+  const tree = model.trees[0]!;
+  const singleTree: CatBoostModel = {
+    bias: model.bias,
+    categoricalFeatures: model.categoricalFeatures,
+    floatFeatures: model.floatFeatures,
+    scale: model.scale,
+    trees: [{ ...tree, splits: [{ ...tree.splits[0]!, border }, tree.splits[1]!] }],
+  };
+  const scoreAt = (value: number): number =>
+    scoreCatBoostModel({
+      features: [
+        { isMissing: false, value },
+        { isMissing: false, value: 2 },
+      ],
+      model: singleTree,
+    });
+  expect(scoreAt(border + 1e-12)).toBe(scoreAt(border));
+  expect(scoreAt(0.2)).not.toBe(scoreAt(border));
+});
