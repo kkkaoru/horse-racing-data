@@ -447,6 +447,23 @@ test("rescoreJraRace blocks the Neon upsert when scoring crosses the race deadli
   vi.useRealTimers();
 });
 
+test("rescoreJraRace publishes after the race start when the message allows post-time rescore", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-08-24T06:30:00.000Z"));
+  const env = makeKeyedEnv(new Map([[PER_RACE_CACHE_KEY, perRaceCacheObject]]));
+  const result = await rescoreJraRace({
+    env,
+    fetchImpl: fetch,
+    message: makeMessage({
+      allowPostTimeRescore: true,
+      raceStartAtJst: "2026-08-24T15:00:00+09:00",
+    }),
+  });
+  expect(result.status).toBe("ok");
+  expect(queryMock).toHaveBeenCalledTimes(1);
+  vi.useRealTimers();
+});
+
 test("rescoreJraRace fails closed before publish when only the whole-day cache exists", async () => {
   fetchOddsMock.mockResolvedValue(new Map([[1, { tanshoNinkijun: 1, tanshoOdds: 2.5 }]]));
   fetchWeightMock.mockResolvedValue(

@@ -595,10 +595,12 @@ const scoreAndWrite = async (input: ScoreAndWriteInput): Promise<RescoreJraRaceR
       )
     : initialScore;
   const parts = splitRaceId(cellToString(input.rows[0]?.race_id) ?? "");
-  assertBeforeRaceStartDeadline({
-    nowMs: Date.now(),
-    raceStartAtJst: input.message.raceStartAtJst,
-  });
+  if (input.message.allowPostTimeRescore !== true) {
+    assertBeforeRaceStartDeadline({
+      nowMs: Date.now(),
+      raceStartAtJst: input.message.raceStartAtJst,
+    });
+  }
   await upsertPredictions({ entries, env: input.env, parts, scored });
   return {
     modelVersion: scored.modelVersion,
