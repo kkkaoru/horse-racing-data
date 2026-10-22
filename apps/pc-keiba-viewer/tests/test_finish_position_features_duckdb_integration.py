@@ -2742,3 +2742,20 @@ def test_base_features_pedigree_and_style_interactions_compute_and_null_guard(
     )
     assert horse_without_style[0] == "h002"
     assert horse_without_style[3] is None
+
+
+def test_build_target_table_labels_running_style_from_the_first_corner_run(
+    seeded_con: duckdb.DuckDBPyConnection,
+) -> None:
+    seeded_con.execute(
+        "update rec set corner1_norm = null, corner2_norm = null, corner3_norm = 0.0"
+        " where race_date like '2020%' and ketto_toroku_bango = 'h001'"
+    )
+    seeded_con.execute(
+        "update rec set corner1_norm = null, corner2_norm = null, corner3_norm = null, corner4_norm = null"
+        " where race_date like '2020%' and ketto_toroku_bango = 'h002'"
+    )
+    subject.build_target_table(seeded_con, "jra", "20200101", "20201231")
+    assert seeded_con.execute(
+        "select ketto_toroku_bango, target_running_style_class from target order by ketto_toroku_bango"
+    ).fetchall() == [("h001", subject.RUNNING_STYLE_CLASS_NIGE), ("h002", None)]

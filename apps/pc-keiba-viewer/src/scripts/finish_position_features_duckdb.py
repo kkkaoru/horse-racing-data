@@ -84,6 +84,9 @@ RUNNING_STYLE_CLASS_NIGE = 0
 RUNNING_STYLE_CLASS_SENKOU = 1
 RUNNING_STYLE_CLASS_SASHI = 2
 RUNNING_STYLE_CLASS_OIKOMI = 3
+RUNNING_STYLE_FIRST_CORNER_SQL = (
+    "coalesce(rec.corner1_norm, rec.corner2_norm, rec.corner3_norm, rec.corner4_norm)"
+)
 KYORI_BAND_SPRINT_MAX = 1300
 KYORI_BAND_MILE_MAX = 1700
 KYORI_BAND_INTERMEDIATE_MAX = 2200
@@ -2011,11 +2014,12 @@ def build_target_table(
           rec.corner2_norm as target_corner_2_norm,
           rec.corner3_norm as target_corner_3_norm,
           rec.corner4_norm as target_corner_4_norm,
+          -- Sprints and one-turn courses have no 1st corner: use the first corner run.
           case
-            when rec.corner1_norm is null then null
-            when rec.corner1_norm = 0 then {RUNNING_STYLE_CLASS_NIGE}
-            when rec.corner1_norm <= {RUNNING_STYLE_SENKOU_THRESHOLD} then {RUNNING_STYLE_CLASS_SENKOU}
-            when rec.corner1_norm <= {RUNNING_STYLE_SASHI_THRESHOLD} then {RUNNING_STYLE_CLASS_SASHI}
+            when {RUNNING_STYLE_FIRST_CORNER_SQL} is null then null
+            when {RUNNING_STYLE_FIRST_CORNER_SQL} = 0 then {RUNNING_STYLE_CLASS_NIGE}
+            when {RUNNING_STYLE_FIRST_CORNER_SQL} <= {RUNNING_STYLE_SENKOU_THRESHOLD} then {RUNNING_STYLE_CLASS_SENKOU}
+            when {RUNNING_STYLE_FIRST_CORNER_SQL} <= {RUNNING_STYLE_SASHI_THRESHOLD} then {RUNNING_STYLE_CLASS_SASHI}
             else {RUNNING_STYLE_CLASS_OIKOMI}
           end as target_running_style_class,
           cast(rec.tansho_odds as double) as tansho_odds,
