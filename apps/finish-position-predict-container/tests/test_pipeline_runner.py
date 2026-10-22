@@ -3407,6 +3407,28 @@ def test_day_base_covers_entry_list_false_when_current_horse_missing(
     assert result is False
 
 
+def test_day_base_covers_entry_list_false_when_day_base_keeps_a_late_scratch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    day_base_dir = tmp_path / "daybase"
+    _write_day_base_parquet(
+        day_base_dir,
+        [("jra:2026:0712:05:11", "H1"), ("jra:2026:0712:05:11", "H2")],
+    )
+
+    monkeypatch.setattr(
+        pipeline_runner,
+        "_query_source_rows",
+        lambda _url, _sql, _params: [("H1",)],
+    )
+
+    result = pipeline_runner.day_base_covers_entry_list(
+        day_base_dir, "jra", "20260712", "05:11", "postgresql://u:p@h/db"
+    )
+
+    assert result is False
+
+
 def test_day_base_covers_entry_list_only_matches_target_race_rows(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

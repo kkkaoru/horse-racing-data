@@ -2310,14 +2310,15 @@ def day_base_covers_entry_list(
     *,
     expected_entry_tokens: frozenset[str] | None = None,
 ) -> bool:
-    """True when every CURRENT entrant of ``target_race`` appears in the day-base.
+    """True when the day-base holds exactly the CURRENT entrants of ``target_race``.
 
     Guards against entry-list drift between the day-base build (prewarm,
     ~09:30 JST) and a later per-race request: a late scratch or a late add
     changes the CURRENT entry list in Postgres without changing the already
-    frozen day-base parquet. When any current ``ketto_toroku_bango`` from
-    ``jvd_se`` / ``nvd_se`` is missing from the day-base's rows for this race,
-    the day-base is stale for this race.
+    frozen day-base parquet. When the current ``ketto_toroku_bango`` set from
+    ``jvd_se`` / ``nvd_se`` differs from the day-base's rows for this race (a
+    late add is missing, or a late scratch is still present), the day-base is
+    stale for this race.
 
     ``target_race`` is ``"keibajo_code:race_bango"``. The day-base's own rows
     for the race are matched by splitting its ``race_id`` column
@@ -2386,7 +2387,9 @@ def day_base_covers_entry_list(
             raise
         day_base_horses = {str(row[0]).strip() for row in rows if row[0]}
         if expected_entry_tokens is None:
-            return current_horses is not None and current_horses.issubset(day_base_horses)
+            # Equality, not subset: a horse scratched after the prewarm is still in the
+            # frozen day-base and would otherwise be scored and counted in field features.
+            return current_horses is not None and current_horses == day_base_horses
         day_base_tokens = {
             f"{str(row[0]).strip()}:{int(str(row[1]).strip())}"
             for row in rows
