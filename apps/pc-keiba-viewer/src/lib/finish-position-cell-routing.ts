@@ -34,7 +34,7 @@ import type { RaceDetail } from "./race-types";
 // Transformer whenever NAR_TRANSFORMER_BLEND_ENABLED is on and the race has no
 // missing transformer features, writing this model_version only for races
 // where the blend actually ran (races that fall back keep the plain category
-// default, iter12-nar-xgb-hpo-v8-clean188-nowin1). So this is always attempted as a
+// default, iter12-nar-xgb-hpo-v8-clean188-nowin2). So this is always attempted as a
 // display-priority candidate for every NAR race; the priority-0 SQL branch's
 // row-existence check naturally does nothing when no blended row was written,
 // falling through correctly to the plain champion tier below.
@@ -952,7 +952,7 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
     default_variant: "sim",
     variants: {
       sim: {
-        model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+        model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin2",
         feature_count: 186,
         architecture: "xgboost",
       },

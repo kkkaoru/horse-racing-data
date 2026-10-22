@@ -862,7 +862,7 @@ const KOCHI_FINAL_SHAPED_CONFIG: CellRoutingConfig = {
       sim: {
         architecture: "xgboost",
         feature_count: 188,
-        model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+        model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin2",
       },
     },
   },
@@ -959,7 +959,7 @@ it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant 
     "jra-named-niigata-kinen-draw-v2-noexo1",
     "banei-cb-v9-sim-2011-nowin2",
     "banei-cb-v8-window2011-wf-15y-nowin2",
-    "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+    "iter12-nar-xgb-hpo-v8-clean188-nowin2",
     "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
     "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1-nowin1",
     "nar-cell-top2-50-c-sprint-summer-tc2-consensus-v1-market-rider-nowin1",

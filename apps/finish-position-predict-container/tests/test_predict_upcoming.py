@@ -3291,7 +3291,7 @@ def test_score_races_routes_nar_top1_swap_variant(tmp_path: Path) -> None:
     _write_variant_metadata(tmp_path, "nar", version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188-nowin1", 1, "xgboost"),
+            "sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188-nowin2", 1, "xgboost"),
             "cell": _FakeVariantSpec(
                 version,
                 1,
@@ -3325,7 +3325,7 @@ def test_score_races_routes_nar_top2_swap_variant(tmp_path: Path) -> None:
     _write_variant_metadata(tmp_path, "nar", version, ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188-nowin1", 1, "xgboost"),
+            "sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188-nowin2", 1, "xgboost"),
             "cell": _FakeVariantSpec(
                 version,
                 1,
@@ -3577,14 +3577,14 @@ def test_score_races_ignores_nar_etop2_flag_and_uses_category_default() -> None:
         )
 
     rows = scored[0]
-    assert all(row[0] == "iter12-nar-xgb-hpo-v8-clean188-nowin1" for row in rows)
+    assert all(row[0] == "iter12-nar-xgb-hpo-v8-clean188-nowin2" for row in rows)
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1
     assert served_signatures == {
         "nar:20260620:30:02:11": (
             "v1;mode=direct-default;stage2=direct-default;"
-            "stage2-model=iter12-nar-xgb-hpo-v8-clean188-nowin1;stage1=not-configured;"
-            "final=iter12-nar-xgb-hpo-v8-clean188-nowin1"
+            "stage2-model=iter12-nar-xgb-hpo-v8-clean188-nowin2;stage1=not-configured;"
+            "final=iter12-nar-xgb-hpo-v8-clean188-nowin2"
         )
     }
     assert evidence["nar:20260620:30:02:11"].adjustment == "none"
@@ -3593,8 +3593,8 @@ def test_score_races_ignores_nar_etop2_flag_and_uses_category_default() -> None:
     assert evidence["nar:20260620:30:02:11"].prophet_weight == 0.00022546418631325156
     assert evidence["nar:20260620:30:02:11"].served_signature == (
         "v1;mode=direct-default;stage2=direct-default;"
-        "stage2-model=iter12-nar-xgb-hpo-v8-clean188-nowin1;stage1=not-configured;"
-        "final=iter12-nar-xgb-hpo-v8-clean188-nowin1"
+        "stage2-model=iter12-nar-xgb-hpo-v8-clean188-nowin2;stage1=not-configured;"
+        "final=iter12-nar-xgb-hpo-v8-clean188-nowin2"
     )
 
 
@@ -4256,7 +4256,7 @@ def test_score_races_rejects_unallowed_nar_cell_variant(tmp_path: Path) -> None:
     _write_variant_metadata(tmp_path, "nar", "nar-cell-v1", ["feat"])
     routing = _FakeRouting(
         variants={
-            "sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188-nowin1", 1, "xgboost"),
+            "sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188-nowin2", 1, "xgboost"),
             "cell": _FakeVariantSpec("nar-cell-v1", 1, "xgboost"),
         },
         default_variant="sim",
@@ -4306,7 +4306,7 @@ def test_score_races_falls_back_when_resolved_variant_not_in_pool(tmp_path: Path
 def test_score_races_nar_default_uses_category_model_without_per_class() -> None:
     """NAR defaults score directly with the category model, not per-class routing."""
     routing = _FakeRouting(
-        variants={"sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188-nowin1", 1, "xgboost")},
+        variants={"sim": _FakeVariantSpec("iter12-nar-xgb-hpo-v8-clean188-nowin2", 1, "xgboost")},
         default_variant="sim",
     )
     router = _FakeRouter(routing, resolved="sim")
@@ -4322,7 +4322,7 @@ def test_score_races_nar_default_uses_category_model_without_per_class() -> None
     rows = scored[0]
     by_rank = {row[9]: row[7] for row in rows}
     assert by_rank[1] == 1
-    assert all(row[0] == "iter12-nar-xgb-hpo-v8-clean188-nowin1" for row in rows)
+    assert all(row[0] == "iter12-nar-xgb-hpo-v8-clean188-nowin2" for row in rows)
 
 
 def test_load_nar_transformer_returns_none_when_feature_order_has_leak(

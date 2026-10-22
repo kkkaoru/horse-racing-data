@@ -104,7 +104,7 @@ const JRA_JOKEN_MODEL_VERSIONS: ReadonlyMap<string, string> = new Map([
   ["703", "jra-joken-703-pooled-yetirank-v2-noexo1"],
   ["999", "jra-joken-999-pooled-yetirank-v2-noexo1"],
 ]);
-const NAR_DEFAULT_MODEL_VERSION = "iter12-nar-xgb-hpo-v8-clean188-nowin1";
+const NAR_DEFAULT_MODEL_VERSION = "iter12-nar-xgb-hpo-v8-clean188-nowin2";
 const NAR_TRANSFORMER_MODEL_VERSION = "iter40-nar-settransformer-blend-v1-nowin2";
 const NAR_CELL_TOP1_MODEL_VERSIONS: readonly string[] = [
   "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",

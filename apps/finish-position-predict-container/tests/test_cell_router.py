@@ -2394,7 +2394,7 @@ def test_load_cell_router_parses_optional_variant_feature_contract(tmp_path: Pat
             "default_variant": "sim",
             "variants": {
                 "sim": {
-                    "model_version": "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+                    "model_version": "iter12-nar-xgb-hpo-v8-clean188-nowin2",
                     "feature_count": 188,
                     "architecture": "xgboost",
                 },
@@ -3173,7 +3173,7 @@ def _kochi_final_shaped_router() -> CellRouter:
         default_variant="sim",
         variants={
             "sim": VariantSpec(
-                model_version="iter12-nar-xgb-hpo-v8-clean188-nowin1",
+                model_version="iter12-nar-xgb-hpo-v8-clean188-nowin2",
                 feature_count=188,
                 architecture="xgboost",
             ),

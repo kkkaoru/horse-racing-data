@@ -805,7 +805,7 @@
     "default_variant": "sim",
     "variants": {
       "sim": {
-        "model_version": "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+        "model_version": "iter12-nar-xgb-hpo-v8-clean188-nowin2",
         "feature_count": 186,
         "architecture": "xgboost"
       },

@@ -1,6 +1,6 @@
 """Tests for the container-baked model metadata mapping (leak-free deploys:
 JRA=jra-cb-v9-sim-2013-clean-noexo1 (250 feat, 4 within-race leak cols excluded),
-NAR=iter12-nar-xgb-hpo-v8-clean188-nowin1 (188 feat, same 4 leak cols excluded),
+NAR=iter12-nar-xgb-hpo-v8-clean188-nowin2 (188 feat, same 4 leak cols excluded),
 Ban-ei=banei-cb-v9-sim-2011-nowin2)."""
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def test_model_version_jra() -> None:
 
 
 def test_model_version_nar() -> None:
-    assert model_version_for("nar") == "iter12-nar-xgb-hpo-v8-clean188-nowin1"
+    assert model_version_for("nar") == "iter12-nar-xgb-hpo-v8-clean188-nowin2"
 
 
 def test_model_version_banei() -> None:
@@ -144,7 +144,7 @@ def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base(
                 "jra-named-niigata-kinen-going-v2-noexo1",
                 "jra-named-sapporo-suzuran-v1",
                 "jra-named-sapporo-suzuran-v2-noexo1",
-                "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+                "iter12-nar-xgb-hpo-v8-clean188-nowin2",
                 "iter40-nar-settransformer-blend-v1-nowin2",
                 "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
                 "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
@@ -601,7 +601,7 @@ def test_is_lightgbm_model_version_false_for_catboost_member() -> None:
 
 
 def test_is_lightgbm_model_version_false_for_xgboost_baseline() -> None:
-    assert is_lightgbm_model_version("iter12-nar-xgb-hpo-v8-clean188-nowin1") is False
+    assert is_lightgbm_model_version("iter12-nar-xgb-hpo-v8-clean188-nowin2") is False
 
 
 def test_member_model_file_name_lightgbm_is_model_txt() -> None:
@@ -617,7 +617,7 @@ def test_member_model_file_name_catboost_is_model_json() -> None:
 
 
 def test_member_model_file_name_xgboost_is_model_json() -> None:
-    assert member_model_file_name("iter12-nar-xgb-hpo-v8-clean188-nowin1") == "model.json"
+    assert member_model_file_name("iter12-nar-xgb-hpo-v8-clean188-nowin2") == "model.json"
 
 
 # --- load_model_meta error cases --------------------------------------------
@@ -754,7 +754,7 @@ def test_load_model_meta_rejects_historical_leaky_model_version(tmp_path: Path) 
     data = {
         "model_versions": {
             "jra": "jra-cb-v9-sim-2013",
-            "nar": "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+            "nar": "iter12-nar-xgb-hpo-v8-clean188-nowin2",
             "ban-ei": "banei-cb-v9-sim-2011-nowin2",
         },
         "feature_counts": {"jra": 250, "nar": 188, "ban-ei": 130},

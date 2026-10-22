@@ -140,7 +140,7 @@ def test_build_prediction_rows_nar_with_entry_uses_nar_subclass() -> None:
     ]
     ranked = rank_race_entries(entries, [0.7])
     rows = build_prediction_rows("nar:2026:0723:54:11", "nar", ranked, None, entries[0])
-    assert rows[0][0] == "iter12-nar-xgb-hpo-v8-clean188-nowin1"
+    assert rows[0][0] == "iter12-nar-xgb-hpo-v8-clean188-nowin2"
     assert rows[0][17] == "sprint"
     assert rows[0][18] == "medium"
     assert rows[0][19] == "summer"

@@ -686,14 +686,14 @@ test("publishFinishPositionPredictionCache writes today TTL without busting", as
 test("publishFinishPositionPredictionCache uses yesterday TTL and busts after overwrite", async () => {
   queryMock.mockResolvedValue([
     {
-      model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+      model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin2",
       predicted_rank: 1,
       predicted_score: 1.2,
       prediction_generated_at: "2026-08-08T01:15:00.000Z",
       umaban: 1,
     },
     {
-      model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+      model_version: "iter12-nar-xgb-hpo-v8-clean188-nowin2",
       predicted_rank: 2,
       predicted_score: 0.4,
       prediction_generated_at: "2026-08-08T01:16:00.000Z",

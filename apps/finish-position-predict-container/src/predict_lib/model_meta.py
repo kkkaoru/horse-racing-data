@@ -37,7 +37,7 @@ JRA leak-free clean retrain (jra-cb-v9-sim-2013-clean, 2026-07-04):
   corner2/3/4 history features and is allowed only through cell_routing.json
   for the accepted dirt small-field 005 cell.
 
-NAR leak-free clean retrain (iter12-nar-xgb-hpo-v8-clean188-nowin1, 2026-07-04):
+NAR leak-free clean retrain (iter12-nar-xgb-hpo-v8-clean188-nowin2, 2026-07-04):
   iter12-nar-xgb-hpo-v8 (192 features) carried the SAME 4 within-race leak
   columns as the JRA model above (target_corner_1_norm, target_corner_3_norm,
   target_corner_4_norm, target_running_style_class). This clean retrain (188
@@ -147,7 +147,7 @@ PRODUCTION_MODEL_VERSION_ALLOWLIST: Final[frozenset[str]] = frozenset(
         "jra-named-chukyo-nisai-stakes-v1",
         "jra-named-niigata-kinen-v1",
         "jra-named-sapporo-suzuran-v1",
-        "iter12-nar-xgb-hpo-v8-clean188-nowin1",
+        "iter12-nar-xgb-hpo-v8-clean188-nowin2",
         "iter40-nar-settransformer-blend-v1-nowin2",
         "iter12-nar-xgb-hpo-v8-stage1-marketfree-184",
         "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
@@ -500,7 +500,7 @@ def build_r2_nar_etop2_key(file_name: str) -> str:
 # ---------------------------------------------------------------------------
 # A clean 113-feature listwise Set Transformer (3 seeds, all-history 2006-2025)
 # whose within-race seed score is fused 0.5/0.5 with the clean NAR production
-# base (iter12-nar-xgb-hpo-v8-clean188-nowin1) score. This is a retrained iter40
+# base (iter12-nar-xgb-hpo-v8-clean188-nowin2) score. This is a retrained iter40
 # artifact with the four within-race leak columns removed from the training and
 # serving feature contract, so the transformer path remains active without
 # carrying post-race signals.

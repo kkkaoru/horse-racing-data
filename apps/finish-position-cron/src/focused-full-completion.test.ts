@@ -391,7 +391,7 @@ test("uses the NAR base model when transformer blending is disabled", async () =
     raceBango: "03",
     runYmd: "20260710",
   });
-  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter12-nar-xgb-hpo-v8-clean188-nowin1");
+  expect(queryMock.mock.calls[0]?.[1]?.[5]).toBe("iter12-nar-xgb-hpo-v8-clean188-nowin2");
 });
 
 test("routes JRA 703 and prior-corner races from raw Catalog fields", async () => {
