@@ -143,13 +143,30 @@ const mergeHistory = (
   return next;
 };
 
+// After the off, keiba.go.jp's odds page lists only the placed horses, so a post-race
+// poll carries 3 tansho rows. Per-horse types keep the horses a snapshot omits instead
+// of blanking their odds until the result import.
+// shortcut: a horse scratched mid-day keeps its last odds, fine while the viewer shows its status.
+const PER_HORSE_ODDS_TYPES: ReadonlySet<OddsType> = new Set<OddsType>(["tansho", "fukusho"]);
+
+const mergeHorseRows = (current: OddsData[], incoming: OddsData[]): OddsData[] => {
+  const incomingCombinations = new Set(incoming.map((row) => row.combination));
+  const omitted = current.filter((row) => !incomingCombinations.has(row.combination));
+  return omitted.length === 0 ? incoming : [...omitted, ...incoming];
+};
+
 const mergeLatest = (
   current: Partial<Record<OddsType, OddsData[]>>,
   incoming: Partial<Record<OddsType, OddsData[]>>,
-): Partial<Record<OddsType, OddsData[]>> => ({
-  ...current,
-  ...incoming,
-});
+): Partial<Record<OddsType, OddsData[]>> => {
+  const merged: Partial<Record<OddsType, OddsData[]>> = { ...current, ...incoming };
+  (Object.entries(incoming) as [OddsType, OddsData[]][]).forEach(([oddsType, rows]) => {
+    if (PER_HORSE_ODDS_TYPES.has(oddsType)) {
+      merged[oddsType] = mergeHorseRows(current[oddsType] ?? [], rows);
+    }
+  });
+  return merged;
+};
 
 const tanshoPointsToHorseTrends = (points: OddsTrendPoint[]): HorseOddsTrend[] =>
   toHorseTrends(

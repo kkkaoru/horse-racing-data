@@ -205,3 +205,73 @@ it("purgeOddsPayloadFromR2 deletes live payload, snapshot objects, catalog stagi
   expect(env.ODDS_ARCHIVE.delete).toHaveBeenCalledTimes(4);
   expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:r2:payload:nar:2026:0708:45:12");
 });
+
+it("writeOddsPayloadToR2 keeps horses a post-race tansho snapshot omits", async () => {
+  const env = buildEnv({
+    ODDS_ARCHIVE: buildR2({
+      fetchedAt: "2026-10-22T17:47:06+09:00",
+      historyByType: {},
+      latest: {
+        tansho: [
+          { combination: "1", odds: 9.1, rank: 4 },
+          { combination: "2", odds: 3.5, rank: 3 },
+          { combination: "3", odds: 58.9, rank: 8 },
+        ],
+        umaren: [{ combination: "1-2", odds: 12.5, rank: 3 }],
+      },
+      raceKey: "nar:2026:1022:42:11",
+      schemaVersion: 1,
+    }),
+  });
+  const payload = await writeOddsPayloadToR2(
+    env,
+    "nar:2026:1022:42:11",
+    "2026-10-22T17:54:34+09:00",
+    {
+      tansho: [{ combination: "3", odds: 58.9, rank: 8 }],
+      umaren: [{ combination: "1-3", odds: 40.1, rank: 9 }],
+    },
+  );
+  expect(payload.latest).toStrictEqual({
+    tansho: [
+      { combination: "1", odds: 9.1, rank: 4 },
+      { combination: "2", odds: 3.5, rank: 3 },
+      { combination: "3", odds: 58.9, rank: 8 },
+    ],
+    umaren: [{ combination: "1-3", odds: 40.1, rank: 9 }],
+  });
+});
+
+it("writeOddsPayloadToR2 replaces tansho rows when the snapshot covers every horse", async () => {
+  const env = buildEnv({
+    ODDS_ARCHIVE: buildR2({
+      fetchedAt: "2026-10-22T17:43:49+09:00",
+      historyByType: {},
+      latest: {
+        tansho: [
+          { combination: "1", odds: 7.9, rank: 4 },
+          { combination: "2", odds: 5.7, rank: 3 },
+        ],
+      },
+      raceKey: "nar:2026:1022:42:11",
+      schemaVersion: 1,
+    }),
+  });
+  const payload = await writeOddsPayloadToR2(
+    env,
+    "nar:2026:1022:42:11",
+    "2026-10-22T17:47:06+09:00",
+    {
+      tansho: [
+        { combination: "2", odds: 3.5, rank: 3 },
+        { combination: "1", odds: 9.1, rank: 4 },
+      ],
+    },
+  );
+  expect(payload.latest).toStrictEqual({
+    tansho: [
+      { combination: "2", odds: 3.5, rank: 3 },
+      { combination: "1", odds: 9.1, rank: 4 },
+    ],
+  });
+});
