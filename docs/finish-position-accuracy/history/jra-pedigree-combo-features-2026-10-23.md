@@ -42,7 +42,7 @@ seeds) did not improve either: 新馬 (joken_701) top3 -1.23, 未勝利
 (joken_703) top1 -0.93 [-1.6, -0.3]. The v3 columns took 3% of the sim
 model's splits; the model ranks mostly on recent form.
 
-## Routing finding (not applied yet)
+## Routing finding (applied 2026-10-24, 8bda7464)
 
 On the ungated class-only cells, the sim model beats the served joken model:
 
@@ -53,7 +53,7 @@ On the ungated class-only cells, the sim model beats the served joken model:
 | joken_010 (2勝)    | 0.0                        | —    | not adopted                              |
 | joken_701 (新馬)   | +3.9                       | +1.8 | 0.0 (157 races; not adopted)             |
 
-Routing the `joken-005` and `joken-703` class-only rules to `sim` needs the
-`cell_routing.json` edit plus `focused-full-completion.ts`
-`JRA_JOKEN_MODEL_VERSIONS` and the viewer mirror
-`finish-position-cell-routing.ts`; the gated variants keep their base.
+The `joken-005` and `joken-703` class-only rules now route to `sim`
+(`cell_routing.json`, `focused-full-completion.ts` `JRA_JOKEN_MODEL_VERSIONS`
+and the viewer mirror `finish-position-cell-routing.ts`); the gated variants
+keep their joken base.
