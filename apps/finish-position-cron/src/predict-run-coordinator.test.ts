@@ -2605,13 +2605,119 @@ test("alarm redelivers an active watch after its producer outbox was cleared", a
     watchId: "active-watch",
     workKey: "focused-full:20260824:jra:05:11",
   } as const;
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000);
   await coordinator.registerFocusedFullWatchOutbox({ message, outboxId: "active-outbox" });
   await coordinator.clearFocusedFullWatchOutbox({ outboxId: "active-outbox" });
+  vi.setSystemTime(301_000);
 
   await coordinator.alarm();
 
   expect(send).toHaveBeenCalledWith(message);
   expect(storageMock.setAlarm).toHaveBeenCalledTimes(2);
+  expect(storageMap.get("focused-full-active-watches")).toStrictEqual({
+    "active-watch": { firstRegisteredAtMs: 1_000, message, registeredAtMs: 301_000 },
+  });
+  vi.useRealTimers();
+});
+
+test("alarm does not fork a second chain next to a watch that re-registered recently", async () => {
+  const send = vi.fn(async () => undefined);
+  const coordinator = makeCoordinator({
+    FOCUSED_FULL_COMPLETION_QUEUE: { send } as unknown as Env["FOCUSED_FULL_COMPLETION_QUEUE"],
+  });
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  storageMap.set("focused-full-active-watches", {
+    "live-watch": {
+      delaySeconds: 30,
+      firstRegisteredAtMs: 1_000,
+      message: { watchId: "live-watch" },
+      registeredAtMs: 9_000,
+    },
+  });
+
+  await coordinator.alarm();
+
+  expect(send).not.toHaveBeenCalled();
+  expect(storageMap.get("focused-full-active-watches")).toStrictEqual({
+    "live-watch": {
+      delaySeconds: 30,
+      firstRegisteredAtMs: 1_000,
+      message: { watchId: "live-watch" },
+      registeredAtMs: 9_000,
+    },
+  });
+  vi.useRealTimers();
+});
+
+test("alarm stamps a pre-existing active watch that has no registration times", async () => {
+  const send = vi.fn(async () => undefined);
+  const coordinator = makeCoordinator({
+    FOCUSED_FULL_COMPLETION_QUEUE: { send } as unknown as Env["FOCUSED_FULL_COMPLETION_QUEUE"],
+  });
+  vi.useFakeTimers();
+  vi.setSystemTime(50_000);
+  storageMap.set("focused-full-active-watches", {
+    "legacy-watch": { delaySeconds: 150, message: { watchId: "legacy-watch" } },
+  });
+
+  await coordinator.alarm();
+
+  expect(send).toHaveBeenCalledWith({ watchId: "legacy-watch" }, { delaySeconds: 150 });
+  expect(storageMap.get("focused-full-active-watches")).toStrictEqual({
+    "legacy-watch": {
+      delaySeconds: 150,
+      firstRegisteredAtMs: 50_000,
+      message: { watchId: "legacy-watch" },
+      registeredAtMs: 50_000,
+    },
+  });
+  vi.useRealTimers();
+});
+
+test("alarm expires an abandoned active watch instead of reviving it forever", async () => {
+  const send = vi.fn(async () => undefined);
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const coordinator = makeCoordinator({
+    FOCUSED_FULL_COMPLETION_QUEUE: { send } as unknown as Env["FOCUSED_FULL_COMPLETION_QUEUE"],
+  });
+  vi.useFakeTimers();
+  vi.setSystemTime(7_201_000);
+  storageMap.set("focused-full-active-watches", {
+    "old-watch": {
+      firstRegisteredAtMs: 1_000,
+      message: { watchId: "old-watch", workKey: "focused-full:20261024:jra:05:11" },
+      registeredAtMs: 1_000,
+    },
+  });
+
+  await coordinator.alarm();
+
+  expect(send).not.toHaveBeenCalled();
+  expect(storageMap.has("focused-full-active-watches")).toBe(false);
+  expect(errorSpy).toHaveBeenCalledWith(
+    '{"event":"focused-full-watch-expired","ttlMs":7200000,"watchId":"old-watch","workKey":"focused-full:20261024:jra:05:11"}',
+  );
+  errorSpy.mockRestore();
+  vi.useRealTimers();
+});
+
+test("alarm skips stamping a revived watch that completed while it was being sent", async () => {
+  const coordinator = makeCoordinator({
+    FOCUSED_FULL_COMPLETION_QUEUE: {
+      send: vi.fn(async () => {
+        storageMap.delete("focused-full-active-watches");
+      }),
+    } as unknown as Env["FOCUSED_FULL_COMPLETION_QUEUE"],
+  });
+  storageMap.set("focused-full-active-watches", {
+    "racing-watch": { message: { watchId: "racing-watch" } },
+  });
+
+  await coordinator.alarm();
+
+  expect(storageMap.has("focused-full-active-watches")).toBe(false);
 });
 
 test("outbox supports immediate messages, keeps siblings on clear, and rejects a missing binding", async () => {
@@ -4370,6 +4476,57 @@ test("claimFocusedFullTerminalWatch transfers a stale watch", async () => {
   vi.useRealTimers();
 });
 
+test("claimFocusedFullTerminalWatch drops a superseded execution's own active watch", async () => {
+  storageMap.set("focused-full-terminal-watch:watch-1", {
+    claimId: "watch-claim-new",
+    executionId: "execution-new",
+    status: "processing",
+    timestamp: 1_000,
+  });
+  storageMap.set("focused-full-active-watches", {
+    "watch-1": { message: { executionId: "execution-old", watchId: "watch-1" } },
+    sibling: { message: { watchId: "sibling" } },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullTerminalWatch({
+      claimId: "watch-claim-old",
+      executionId: "execution-old",
+      staleAfterMs: 60_000,
+      watchId: "watch-1",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "terminal" });
+  expect(storageMap.get("focused-full-active-watches")).toStrictEqual({
+    sibling: { message: { watchId: "sibling" } },
+  });
+});
+
+test("claimFocusedFullTerminalWatch keeps the replacement execution's active watch", async () => {
+  storageMap.set("focused-full-terminal-watch:watch-1", {
+    claimId: "watch-claim-new",
+    executionId: "execution-new",
+    status: "processing",
+    timestamp: 1_000,
+  });
+  storageMap.set("focused-full-active-watches", {
+    "watch-1": { message: { executionId: "execution-new", watchId: "watch-1" } },
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullTerminalWatch({
+      claimId: "watch-claim-old",
+      executionId: "execution-old",
+      staleAfterMs: 60_000,
+      watchId: "watch-1",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "terminal" });
+  expect(storageMap.get("focused-full-active-watches")).toStrictEqual({
+    "watch-1": { message: { executionId: "execution-new", watchId: "watch-1" } },
+  });
+});
+
 test("claimFocusedFullTerminalWatch never reclaims a terminal watch", async () => {
   storageMap.set("focused-full-terminal-watch:watch-1", {
     claimId: "watch-claim-1",
@@ -5088,4 +5245,39 @@ test("a waiter keeps waiting while a succeeded owner still holds a live lease", 
   });
   expect(result).toStrictEqual({ proceed: false, state: "queued" });
   vi.useRealTimers();
+});
+
+test("completion hands the lane to its waiter after a race-chain container slot claim", async () => {
+  storageMap.clear();
+  const coordinator = makeCoordinator();
+  const race = {
+    category: "jra",
+    doName: "predict-jra-0",
+    runYmd: "20261024",
+    staleAfterMs: 1_860_000,
+  };
+  await coordinator.claimFocusedFullRace({ ...race, keibajoCode: "04", raceBango: "02" });
+  await coordinator.claimFocusedFullRace({ ...race, keibajoCode: "04", raceBango: "05" });
+  const slot = await coordinator.claimContainerSlot({
+    category: "jra",
+    doName: "race-chain-predict-jra-0",
+    kind: "focused-full",
+    workKey: "focused-full:20261024:jra:04:02",
+    generationId: "g",
+  });
+  await coordinator.completeFocusedFullRace({
+    ...race,
+    keibajoCode: "04",
+    raceBango: "02",
+    executionId: slot.executionId,
+    status: "success",
+  });
+  expect(storageMap.get("focused-full-lane:predict-jra-0")).toMatchObject({
+    activeRaceKey: "focused-full:20261024:jra:04:05",
+    waiters: [],
+  });
+  expect(storageMap.get("focused-full:20261024:jra:04:02")).toMatchObject({
+    doName: "predict-jra-0",
+    status: "success",
+  });
 });

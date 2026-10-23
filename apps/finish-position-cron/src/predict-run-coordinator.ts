@@ -64,6 +64,13 @@ const DO_HOST: string = "http://do";
 const FOCUSED_FULL_WATCH_OUTBOX_KEY = "focused-full-watch-outbox";
 const FOCUSED_FULL_ACTIVE_WATCHES_KEY = "focused-full-active-watches";
 const FOCUSED_FULL_WATCH_OUTBOX_ALARM_DELAY_MS = 150_000;
+// A watch re-registers on every hop of its own message chain (watch ticks every
+// 30s). The alarm only revives a watch whose chain has been silent for longer
+// than this, so it never forks a second chain next to a live one.
+const FOCUSED_FULL_ACTIVE_WATCH_SILENT_MS = 2 * FOCUSED_FULL_WATCH_OUTBOX_ALARM_DELAY_MS;
+// Watch tick deadline (31m) + terminal claim stale window (16m) + Queue and DLQ
+// finalizer retries (2 x 17 x 30s) is about 65m; anything older is abandoned.
+const FOCUSED_FULL_ACTIVE_WATCH_TTL_MS = 2 * 60 * 60 * 1000;
 const RESCORE_ENQUEUE_CLAIM_STALE_MS = 5 * 60 * 1000;
 const RESCORE_EXECUTION_CLAIM_STALE_MS = 31 * 60 * 1000;
 // Must outlast the detached Python DAY_CHAIN (30m) and pickup delay (180s).
@@ -226,6 +233,12 @@ interface CompleteFocusedFullTerminalWatchParams {
 interface FocusedFullWatchOutboxEntry {
   delaySeconds?: number;
   message: FocusedFullCompletionMessage | FocusedFullWatchTickMessage;
+}
+
+interface FocusedFullActiveWatchEntry extends FocusedFullWatchOutboxEntry {
+  // Optional: entries stored before these fields existed are stamped on the next alarm.
+  firstRegisteredAtMs?: number;
+  registeredAtMs?: number;
 }
 
 interface RegisterFocusedFullWatchOutboxParams extends FocusedFullWatchOutboxEntry {
@@ -459,10 +472,15 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       };
       outbox[params.outboxId] = entry;
       const activeWatches =
-        (await this.ctx.storage.get<Record<string, FocusedFullWatchOutboxEntry>>(
+        (await this.ctx.storage.get<Record<string, FocusedFullActiveWatchEntry>>(
           FOCUSED_FULL_ACTIVE_WATCHES_KEY,
         )) ?? {};
-      activeWatches[params.message.watchId] = entry;
+      const now = Date.now();
+      activeWatches[params.message.watchId] = {
+        ...entry,
+        firstRegisteredAtMs: activeWatches[params.message.watchId]?.firstRegisteredAtMs ?? now,
+        registeredAtMs: now,
+      };
       await this.ctx.storage.put(FOCUSED_FULL_WATCH_OUTBOX_KEY, outbox);
       await this.ctx.storage.put(FOCUSED_FULL_ACTIVE_WATCHES_KEY, activeWatches);
       await this.ctx.storage.setAlarm(Date.now() + FOCUSED_FULL_WATCH_OUTBOX_ALARM_DELAY_MS);
@@ -491,7 +509,7 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       )) ?? {};
     const queue = this.env.FOCUSED_FULL_COMPLETION_QUEUE;
     const activeWatches =
-      (await this.ctx.storage.get<Record<string, FocusedFullWatchOutboxEntry>>(
+      (await this.ctx.storage.get<Record<string, FocusedFullActiveWatchEntry>>(
         FOCUSED_FULL_ACTIVE_WATCHES_KEY,
       )) ?? {};
     if (Object.keys(outbox).length > 0 || Object.keys(activeWatches).length > 0) {
@@ -510,10 +528,61 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       await this.clearFocusedFullWatchOutbox({ outboxId });
       sentWatchIds.add(entry.message.watchId);
     }
+    const now = Date.now();
+    const expiredWatchIds: string[] = [];
+    const revivedWatchIds: string[] = [];
     for (const [watchId, entry] of Object.entries(activeWatches)) {
       if (sentWatchIds.has(watchId)) continue;
+      if (now - (entry.firstRegisteredAtMs ?? now) >= FOCUSED_FULL_ACTIVE_WATCH_TTL_MS) {
+        expiredWatchIds.push(watchId);
+        continue;
+      }
+      if (
+        entry.registeredAtMs !== undefined &&
+        now - entry.registeredAtMs < FOCUSED_FULL_ACTIVE_WATCH_SILENT_MS
+      )
+        continue;
       if (entry.delaySeconds === undefined) await queue?.send(entry.message);
       else await queue?.send(entry.message, { delaySeconds: entry.delaySeconds });
+      revivedWatchIds.push(watchId);
+    }
+    if (expiredWatchIds.length === 0 && revivedWatchIds.length === 0) return;
+    for (const watchId of expiredWatchIds) {
+      console.error(
+        JSON.stringify({
+          event: "focused-full-watch-expired",
+          ttlMs: FOCUSED_FULL_ACTIVE_WATCH_TTL_MS,
+          watchId,
+          workKey: activeWatches[watchId]?.message.workKey,
+        }),
+      );
+    }
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const current =
+        (await this.ctx.storage.get<Record<string, FocusedFullActiveWatchEntry>>(
+          FOCUSED_FULL_ACTIVE_WATCHES_KEY,
+        )) ?? {};
+      for (const watchId of expiredWatchIds) delete current[watchId];
+      for (const watchId of revivedWatchIds) {
+        const entry = current[watchId];
+        if (entry === undefined) continue;
+        current[watchId] = {
+          ...entry,
+          firstRegisteredAtMs: entry.firstRegisteredAtMs ?? now,
+          registeredAtMs: now,
+        };
+      }
+      await this.putActiveWatches(current);
+    });
+  }
+
+  private async putActiveWatches(
+    activeWatches: Record<string, FocusedFullActiveWatchEntry>,
+  ): Promise<void> {
+    if (Object.keys(activeWatches).length === 0) {
+      await this.ctx.storage.delete(FOCUSED_FULL_ACTIVE_WATCHES_KEY);
+    } else {
+      await this.ctx.storage.put(FOCUSED_FULL_ACTIVE_WATCHES_KEY, activeWatches);
     }
   }
 
@@ -1126,22 +1195,24 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const key = buildFocusedFullTerminalWatchKey(params.watchId);
       const existing = await this.ctx.storage.get<RunRecord>(key);
+      const activeWatches =
+        (await this.ctx.storage.get<Record<string, FocusedFullActiveWatchEntry>>(
+          FOCUSED_FULL_ACTIVE_WATCHES_KEY,
+        )) ?? {};
       if (existing?.status === "terminal") {
-        const activeWatches =
-          (await this.ctx.storage.get<Record<string, FocusedFullWatchOutboxEntry>>(
-            FOCUSED_FULL_ACTIVE_WATCHES_KEY,
-          )) ?? {};
         delete activeWatches[params.watchId];
-        if (Object.keys(activeWatches).length === 0) {
-          await this.ctx.storage.delete(FOCUSED_FULL_ACTIVE_WATCHES_KEY);
-        } else {
-          await this.ctx.storage.put(FOCUSED_FULL_ACTIVE_WATCHES_KEY, activeWatches);
-        }
+        await this.putActiveWatches(activeWatches);
         return { proceed: false, state: "terminal" };
       }
       const sameExecution = existing?.executionId === params.executionId;
-      if (existing?.executionId !== undefined && !sameExecution)
+      if (existing?.executionId !== undefined && !sameExecution) {
+        // A superseded execution's watch would otherwise stay active and be revived forever.
+        if (activeWatches[params.watchId]?.message.executionId === params.executionId) {
+          delete activeWatches[params.watchId];
+          await this.putActiveWatches(activeWatches);
+        }
         return { proceed: false, state: "terminal" };
+      }
       const now = Date.now();
       if (
         existing?.status === "processing" &&
@@ -1187,15 +1258,11 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         timestamp: now,
       });
       const activeWatches =
-        (await this.ctx.storage.get<Record<string, FocusedFullWatchOutboxEntry>>(
+        (await this.ctx.storage.get<Record<string, FocusedFullActiveWatchEntry>>(
           FOCUSED_FULL_ACTIVE_WATCHES_KEY,
         )) ?? {};
       delete activeWatches[params.watchId];
-      if (Object.keys(activeWatches).length === 0) {
-        await this.ctx.storage.delete(FOCUSED_FULL_ACTIVE_WATCHES_KEY);
-      } else {
-        await this.ctx.storage.put(FOCUSED_FULL_ACTIVE_WATCHES_KEY, activeWatches);
-      }
+      await this.putActiveWatches(activeWatches);
     });
   }
 
@@ -1411,7 +1478,9 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           ...race,
           // A replacement must not inherit the completed status of its predecessor.
           status: race?.executionId === executionId ? race.status : "started",
-          doName: params.doName,
+          // The race record's doName is its lane; a race-chain slot name
+          // ("race-chain-predict-jra-0") made completion miss the lane hand-off.
+          doName: race?.doName ?? params.doName,
           executionId,
         });
       }
