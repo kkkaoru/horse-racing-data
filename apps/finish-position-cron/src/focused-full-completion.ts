@@ -97,11 +97,12 @@ const JRA_SPRING_MONTHS: ReadonlySet<string> = new Set(["03", "04", "05"]);
 const JRA_WINTER_MONTHS: ReadonlySet<string> = new Set(["12", "01", "02"]);
 const JRA_SUMMER_MONTHS: ReadonlySet<string> = new Set(["06", "07", "08"]);
 const JRA_JOKEN_MODEL_VERSIONS: ReadonlyMap<string, string> = new Map([
-  ["005", "jra-joken-005-pooled-yetirank-v2-noexo1"],
+  // Ungated 1勝 / 未勝利 races route to sim (docs/finish-position-accuracy/history/jra-pedigree-combo-features-2026-10-23.md).
+  ["005", JRA_DEFAULT_MODEL_VERSION],
   ["010", "jra-joken-010-pooled-yetirank-v2-noexo1"],
   ["016", "jra-joken-016-pooled-yetirank-v2-noexo1"],
   ["701", "jra-joken-701-pooled-yetirank-v2-noexo1"],
-  ["703", "jra-joken-703-pooled-yetirank-v2-noexo1"],
+  ["703", JRA_DEFAULT_MODEL_VERSION],
   ["999", "jra-joken-999-pooled-yetirank-v2-noexo1"],
 ]);
 const NAR_DEFAULT_MODEL_VERSION = "iter12-nar-xgb-hpo-v8-clean188-nowin2";

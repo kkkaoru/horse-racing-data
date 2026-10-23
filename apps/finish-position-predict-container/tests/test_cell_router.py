@@ -1486,7 +1486,7 @@ def test_load_cell_router_real_config_has_jra_703_routing() -> None:
     )
     assert (
         router.resolve_variant("jra", [{"grade_code": "", "kyoso_joken_code": "703"}])
-        == "joken_703"
+        == "sim"
     )
     assert (
         router.resolve_variant("jra", [{"grade_code": "E", "kyoso_joken_code": "703"}])
@@ -1515,7 +1515,7 @@ def test_load_cell_router_real_config_prioritizes_703_dirt_mile_summer() -> None
     assert (
         router.resolve_variant("jra", [summer_dirt_mile]) == "joken_703_dirt_mile_summer_qsm_top1"
     )
-    assert router.resolve_variant("jra", [spring_dirt_mile]) == "joken_703"
+    assert router.resolve_variant("jra", [spring_dirt_mile]) == "sim"
     assert router.resolve_variant("jra", [summer_turf_mile]) == "joken_703_turf_1400_qsm_gated_top1"
     assert (
         router.resolve_variant("jra", [summer_dirt_intermediate])
@@ -1559,9 +1559,9 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_mile_autumn_gate() ->
     )
     assert (
         router.resolve_variant("jra", [{**dirt_mile_autumn, "race_date": "20260712"}])
-        == "joken_005"
+        == "sim"
     )
-    assert router.resolve_variant("jra", [{**dirt_mile_autumn, "race_date": None}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**dirt_mile_autumn, "race_date": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_005_dirt_mile_spring_gate() -> None:
@@ -1582,7 +1582,7 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_mile_spring_gate() ->
     }
 
     assert router.resolve_variant("jra", [spring]) == "joken_005_dirt_mile_spring_qsm_gated_top1"
-    assert router.resolve_variant("jra", [{**spring, "race_date": "20260712"}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**spring, "race_date": "20260712"}]) == "sim"
     assert (
         router.resolve_variant("jra", [{**spring, "race_date": "20261012"}])
         == "joken_005_dirt_mile_autumn_yeti_gated_top1"
@@ -1595,7 +1595,7 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_mile_spring_gate() ->
         router.resolve_variant("jra", [{**spring, "track_code": "10"}])
         == "joken_005_turf_mile_yeti_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**spring, "race_date": None}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**spring, "race_date": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_005_dirt_intermediate_autumn_gate() -> None:
@@ -1622,8 +1622,8 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_intermediate_autumn_g
         router.resolve_variant("jra", [{**autumn, "race_date": "20260712"}])
         == "joken_005_dirt_1800_nonautumn_qsm_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**autumn, "race_date": None}]) == "joken_005"
-    assert router.resolve_variant("jra", [{**autumn, "track_code": "10"}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**autumn, "race_date": None}]) == "sim"
+    assert router.resolve_variant("jra", [{**autumn, "track_code": "10"}]) == "sim"
     assert (
         router.resolve_variant("jra", [{**autumn, "grade_code": "E"}])
         == "prior_corner_dirt_smallfield_005"
@@ -1653,7 +1653,7 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_1700_summer_gate() ->
         router.resolve_variant("jra", [{**summer, "race_date": "20261012"}])
         == "joken_005_dirt_intermediate_autumn_yeti_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**summer, "race_date": None}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**summer, "race_date": None}]) == "sim"
     assert (
         router.resolve_variant("jra", [{**summer, "grade_code": "E"}])
         == "prior_corner_dirt_smallfield_005"
@@ -1692,8 +1692,8 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_1200_winter_summer_ga
         router.resolve_variant("jra", [{**winter, "race_date": "20261012"}])
         == "joken_005_dirt_mile_autumn_yeti_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**winter, "kyori": 1300}]) == "joken_005"
-    assert router.resolve_variant("jra", [{**winter, "race_date": None}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**winter, "kyori": 1300}]) == "sim"
+    assert router.resolve_variant("jra", [{**winter, "race_date": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_005_dirt_1800_nonautumn_gate() -> None:
@@ -1719,8 +1719,8 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_1800_nonautumn_gate()
         router.resolve_variant("jra", [{**spring, "race_date": "20261012"}])
         == "joken_005_dirt_intermediate_autumn_yeti_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**spring, "kyori": 1900}]) == "joken_005"
-    assert router.resolve_variant("jra", [{**spring, "race_date": None}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**spring, "kyori": 1900}]) == "sim"
+    assert router.resolve_variant("jra", [{**spring, "race_date": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_005_turf_intermediate_spring_gate() -> None:
@@ -1746,7 +1746,7 @@ def test_load_cell_router_real_config_prioritizes_005_turf_intermediate_spring_g
         router.resolve_variant("jra", [spring])
         == "joken_005_turf_intermediate_spring_qsm_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**spring, "race_date": "20260712"}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**spring, "race_date": "20260712"}]) == "sim"
     assert router.resolve_variant("jra", [{**spring, "grade_code": "E"}]) == "sim"
     assert (
         router.resolve_variant("jra", [{**spring, "track_code": "23"}])
@@ -1756,7 +1756,7 @@ def test_load_cell_router_real_config_prioritizes_005_turf_intermediate_spring_g
         router.resolve_variant("jra", [{**spring, "kyori": 2000}])
         == "joken_005_turf_long_yeti_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**spring, "race_date": None}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**spring, "race_date": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_005_turf_cells_with_confidence_gates() -> None:
@@ -1789,10 +1789,10 @@ def test_load_cell_router_real_config_prioritizes_005_turf_cells_with_confidence
     )
     assert router.resolve_variant("jra", [turf_long]) == "joken_005_turf_long_yeti_gated_top1"
     assert router.resolve_variant("jra", [{**turf_long, "grade_code": "E"}]) == "sim"
-    assert router.resolve_variant("jra", [{**turf_long, "track_code": "23"}]) == "joken_005"
-    assert router.resolve_variant("jra", [{**turf_long, "kyori": 1800}]) == "joken_005"
-    assert router.resolve_variant("jra", [{**turf_long, "track_code": None}]) == "joken_005"
-    assert router.resolve_variant("jra", [{**turf_long, "kyori": None}]) == "joken_005"
+    assert router.resolve_variant("jra", [{**turf_long, "track_code": "23"}]) == "sim"
+    assert router.resolve_variant("jra", [{**turf_long, "kyori": 1800}]) == "sim"
+    assert router.resolve_variant("jra", [{**turf_long, "track_code": None}]) == "sim"
+    assert router.resolve_variant("jra", [{**turf_long, "kyori": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_010_dirt_intermediate_gate() -> None:
@@ -1879,9 +1879,9 @@ def test_load_cell_router_real_config_prioritizes_703_dirt_intermediate_gate() -
         router.resolve_variant("jra", [{**dirt_intermediate, "track_code": "10"}])
         == "joken_703_turf_intermediate_qsm_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**dirt_intermediate, "kyori": 2200}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**dirt_intermediate, "track_code": None}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**dirt_intermediate, "kyori": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "kyori": 2200}]) == "sim"
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "track_code": None}]) == "sim"
+    assert router.resolve_variant("jra", [{**dirt_intermediate, "kyori": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_701_turf_mile_gate() -> None:
@@ -1963,7 +1963,7 @@ def test_load_cell_router_real_config_prioritizes_703_turf_1200_largefield_gate(
         router.resolve_variant("jra", [entry] * 14)
         == "joken_703_turf_1200_largefield_yeti_gated_top1"
     )
-    assert router.resolve_variant("jra", [entry] * 13) == "joken_703"
+    assert router.resolve_variant("jra", [entry] * 13) == "sim"
     assert (
         router.resolve_variant("jra", [{**entry, "kyori": 1400}] * 14)
         == "joken_703_turf_1400_qsm_gated_top1"
@@ -1988,7 +1988,7 @@ def test_load_cell_router_real_config_prioritizes_703_turf_1400_gate() -> None:
         "race_date": "20260712",
     }
     assert router.resolve_variant("jra", [entry]) == "joken_703_turf_1400_qsm_gated_top1"
-    assert router.resolve_variant("jra", [{**entry, "kyori": 1500}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**entry, "kyori": 1500}]) == "sim"
     assert (
         router.resolve_variant("jra", [{**entry, "track_code": "23"}])
         == "joken_703_dirt_mile_summer_qsm_top1"
@@ -2015,8 +2015,8 @@ def test_load_cell_router_real_config_prioritizes_703_turf_long_summer_gate() ->
         router.resolve_variant("jra", [{**summer, "race_date": "20260412"}])
         == "joken_703_turf_long_spring_qsm_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**summer, "race_date": "20261012"}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**summer, "race_date": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**summer, "race_date": "20261012"}]) == "sim"
+    assert router.resolve_variant("jra", [{**summer, "race_date": None}]) == "sim"
     assert router.resolve_variant("jra", [{**summer, "grade_code": "E"}]) == "jockey_pedigree_703"
 
 
@@ -2045,13 +2045,13 @@ def test_load_cell_router_real_config_prioritizes_703_turf_long_spring_gate() ->
         router.resolve_variant("jra", [{**turf_long_spring, "grade_code": "E"}])
         == "jockey_pedigree_703"
     )
-    assert router.resolve_variant("jra", [{**turf_long_spring, "track_code": "23"}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**turf_long_spring, "kyori": 2400}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**turf_long_spring, "track_code": "23"}]) == "sim"
+    assert router.resolve_variant("jra", [{**turf_long_spring, "kyori": 2400}]) == "sim"
     assert (
         router.resolve_variant("jra", [{**turf_long_spring, "race_date": "20260712"}])
         == "joken_703_turf_long_summer_yeti_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**turf_long_spring, "race_date": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**turf_long_spring, "race_date": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_703_turf_intermediate_gate() -> None:
@@ -2087,8 +2087,8 @@ def test_load_cell_router_real_config_prioritizes_703_turf_intermediate_gate() -
         router.resolve_variant("jra", [{**turf_intermediate, "kyori": 2000}])
         == "joken_703_turf_long_summer_yeti_gated_top1"
     )
-    assert router.resolve_variant("jra", [{**turf_intermediate, "track_code": None}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**turf_intermediate, "kyori": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**turf_intermediate, "track_code": None}]) == "sim"
+    assert router.resolve_variant("jra", [{**turf_intermediate, "kyori": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_703_other_extended_gate() -> None:
@@ -2115,10 +2115,10 @@ def test_load_cell_router_real_config_prioritizes_703_other_extended_gate() -> N
         router.resolve_variant("jra", [{**other_extended, "grade_code": "E"}])
         == "jockey_pedigree_703"
     )
-    assert router.resolve_variant("jra", [{**other_extended, "track_code": "10"}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**other_extended, "kyori": 2200}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**other_extended, "track_code": None}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**other_extended, "kyori": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**other_extended, "track_code": "10"}]) == "sim"
+    assert router.resolve_variant("jra", [{**other_extended, "kyori": 2200}]) == "sim"
+    assert router.resolve_variant("jra", [{**other_extended, "track_code": None}]) == "sim"
+    assert router.resolve_variant("jra", [{**other_extended, "kyori": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_prioritizes_703_dirt_sprint_gate() -> None:
@@ -2142,10 +2142,10 @@ def test_load_cell_router_real_config_prioritizes_703_dirt_sprint_gate() -> None
     assert (
         router.resolve_variant("jra", [{**dirt_sprint, "grade_code": "E"}]) == "jockey_pedigree_703"
     )
-    assert router.resolve_variant("jra", [{**dirt_sprint, "track_code": "10"}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**dirt_sprint, "kyori": 1200}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**dirt_sprint, "track_code": None}]) == "joken_703"
-    assert router.resolve_variant("jra", [{**dirt_sprint, "kyori": None}]) == "joken_703"
+    assert router.resolve_variant("jra", [{**dirt_sprint, "track_code": "10"}]) == "sim"
+    assert router.resolve_variant("jra", [{**dirt_sprint, "kyori": 1200}]) == "sim"
+    assert router.resolve_variant("jra", [{**dirt_sprint, "track_code": None}]) == "sim"
+    assert router.resolve_variant("jra", [{**dirt_sprint, "kyori": None}]) == "sim"
 
 
 def test_load_cell_router_real_config_routes_every_ungraded_joken_code() -> None:
@@ -2158,7 +2158,10 @@ def test_load_cell_router_real_config_routes_every_ungraded_joken_code() -> None
         )
         assert routing.variants[variant].feature_count == 111
         entry = {"grade_code": None, "kyoso_joken_code": code}
-        assert router.resolve_variant("jra", [entry]) == variant
+        # Ungated 1勝 (005) / 未勝利 (703) races route to sim; gated cells keep the joken base.
+        assert router.resolve_variant("jra", [entry]) == (
+            "sim" if code in ("005", "703") else variant
+        )
 
 
 def test_load_cell_router_real_config_has_jra_prior_corner_routing() -> None:
@@ -2184,9 +2187,9 @@ def test_load_cell_router_real_config_has_jra_prior_corner_routing() -> None:
     miss_field_entries = [hit_row] * 11  # 11 -> field_band f11_13, doesn't match.
     miss_class_row = {**hit_row, "kyoso_joken_code": "703"}
     miss_class_entries = [miss_class_row] * 10
-    assert router.resolve_variant("jra", hit_entries) == "joken_005"
-    assert router.resolve_variant("jra", miss_field_entries) == "joken_005"
-    assert router.resolve_variant("jra", miss_class_entries) == "joken_703"
+    assert router.resolve_variant("jra", hit_entries) == "sim"
+    assert router.resolve_variant("jra", miss_field_entries) == "sim"
+    assert router.resolve_variant("jra", miss_class_entries) == "sim"
 
 
 def test_load_cell_router_real_config_has_jra_hakodate_venue_routing() -> None:

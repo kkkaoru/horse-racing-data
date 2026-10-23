@@ -838,7 +838,7 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
             values: ["joken-005"],
           },
         ],
-        variant: "joken_005",
+        variant: "sim",
       },
       {
         conditions: [
@@ -874,7 +874,7 @@ const FINISH_POSITION_CELL_ROUTING_BASE_CONFIG: CellRoutingConfig = {
             values: ["joken-703"],
           },
         ],
-        variant: "joken_703",
+        variant: "sim",
       },
       {
         conditions: [
