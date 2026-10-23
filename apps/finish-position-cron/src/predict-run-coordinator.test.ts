@@ -4962,3 +4962,60 @@ test("clearFocusedFullCommits deletes only barriers that exist", async () => {
   });
   expect(storageMap.has("external-commit:focused-full:20261017:jra:04:01")).toBe(false);
 });
+
+test("a succeeded race's unresolved commit barrier does not pin its lane for other races", async () => {
+  storageMap.clear();
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000_000);
+  storageMap.set("focused-full-lane:predict-jra-0", {
+    activeRaceKey: "focused-full:20261024:jra:08:06",
+    startedAt: 1,
+    waiters: [],
+  });
+  storageMap.set("focused-full:20261024:jra:08:06", {
+    executionId: "exec-1",
+    status: "success",
+    timestamp: 1,
+  });
+  storageMap.set("external-commit:focused-full:20261024:jra:08:06", { token: "t" });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    doName: "predict-jra-0",
+    keibajoCode: "08",
+    raceBango: "09",
+    runYmd: "20261024",
+    staleAfterMs: 900_000,
+  });
+  expect(result).toStrictEqual({ proceed: true, state: "stale" });
+  expect(storageMap.has("external-commit:focused-full:20261024:jra:08:06")).toBe(true);
+  vi.useRealTimers();
+});
+
+test("an unfinished race's unresolved commit barrier still pins its lane", async () => {
+  storageMap.clear();
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000_000);
+  storageMap.set("focused-full-lane:predict-nar-0", {
+    activeRaceKey: "focused-full:20261022:nar:42:07",
+    startedAt: 1,
+    waiters: [],
+  });
+  storageMap.set("focused-full:20261022:nar:42:07", {
+    executionId: "exec-1",
+    status: "enqueued",
+    timestamp: 1,
+  });
+  storageMap.set("external-commit:focused-full:20261022:nar:42:07", { token: "t" });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimFocusedFullRace({
+    category: "nar",
+    doName: "predict-nar-0",
+    keibajoCode: "42",
+    raceBango: "08",
+    runYmd: "20261022",
+    staleAfterMs: 900_000,
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "queued" });
+  vi.useRealTimers();
+});

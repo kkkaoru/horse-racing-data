@@ -696,7 +696,10 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         if (
           (active?.executionId !== undefined &&
             slots?.leases.some((lease) => lease.executionId === active.executionId)) ||
-          (await this.ctx.storage.get(`external-commit:${lane.activeRaceKey}`))
+          // A succeeded race's unresolved barrier guards only its own workKey (checked
+          // per race above and in claimContainerSlot); it must not pin the lane (10/24).
+          (!TERMINAL_STATUSES.has(active?.status ?? "") &&
+            (await this.ctx.storage.get(`external-commit:${lane.activeRaceKey}`)))
         )
           return { proceed: false, state: "queued" };
       }
