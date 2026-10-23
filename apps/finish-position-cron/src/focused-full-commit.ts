@@ -1,6 +1,8 @@
 // Run with bun. Durable external-write barrier, independent of Container lifetime.
 import type { Env } from "./types";
 
+const COMPLETE_ATTEMPTS = 3;
+
 export interface FocusedFullCommitIdentity {
   executionId?: string;
   workKey: string;
@@ -31,11 +33,18 @@ export const withFocusedFullCommit = async <T>(params: CommitParams<T>): Promise
     );
     if (!response.ok) throw new Error("FOCUSED_FULL_COMMIT_UNRESOLVED");
   };
+  // The write has landed once commit() resolves, so a lost completion
+  // request (e.g. a coordinator reset on deploy) is safe to resend.
+  const complete = async (attemptsLeft: number): Promise<void> =>
+    request(true).catch(async (error: unknown) => {
+      if (attemptsLeft <= 1) throw error;
+      await complete(attemptsLeft - 1);
+    });
   await request(false);
   // Never use finally: a rejected put may still land remotely. Retain the barrier.
   try {
     const result: T = await params.commit();
-    await request(true);
+    await complete(COMPLETE_ATTEMPTS);
     return result;
   } catch (cause) {
     throw new Error("FOCUSED_FULL_COMMIT_UNRESOLVED", { cause });

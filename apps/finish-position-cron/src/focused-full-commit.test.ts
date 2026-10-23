@@ -292,3 +292,75 @@ test("failed repair send cancellation keeps stopped backup E until replacement a
     }),
   ).resolves.toBe(false);
 });
+
+test("a landed KV write whose cache bust fails releases the barrier", async () => {
+  const h = makeHarness();
+  await h.coordinator.claimFocusedFullRace(race);
+  const a = await h.coordinator.claimContainerSlot(slot);
+  query.mockResolvedValue([
+    {
+      umaban: "1",
+      predicted_rank: 1,
+      predicted_score: 0.4,
+      model_version: "model",
+      prediction_generated_at: "2026-10-04T01:00:00Z",
+    },
+  ]);
+  const result = await publishFinishPositionPredictionCache({
+    ...scope,
+    env: h.env,
+    executionId: a.executionId,
+    bustCacheApi: true,
+    nowMs: Date.parse("2026-10-04T03:00:00Z"),
+  });
+  expect(result).toStrictEqual({
+    busted: false,
+    expectedGeneratedAt: "2026-10-04T01:00:00.000Z",
+    status: "written",
+  });
+  expect(h.put).toHaveBeenCalledOnce();
+  expect(h.records.has("external-commit:focused-full:20261004:jra:05:11")).toBe(false);
+});
+
+test("a lost completion request is resent so a landed write releases the barrier", async () => {
+  const h = makeHarness();
+  await h.coordinator.claimFocusedFullRace(race);
+  const a = await h.coordinator.claimContainerSlot(slot);
+  const coordinatorFetch = vi
+    .fn((request: Request) => h.reconstruct().fetch(request))
+    .mockImplementationOnce((request: Request) => h.reconstruct().fetch(request))
+    .mockRejectedValueOnce(new Error("Durable Object reset"));
+  const env: Env = Object.create(null);
+  Object.assign(env, {
+    PREDICT_RUN_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: coordinatorFetch }),
+    },
+  });
+  await expect(
+    withFocusedFullCommit({ env, workKey, executionId: a.executionId, commit: async () => 7 }),
+  ).resolves.toBe(7);
+  expect(coordinatorFetch).toHaveBeenCalledTimes(3);
+  expect(h.records.has("external-commit:focused-full:20261004:jra:05:11")).toBe(false);
+});
+
+test("completion that keeps failing leaves the barrier unresolved", async () => {
+  const h = makeHarness();
+  await h.coordinator.claimFocusedFullRace(race);
+  const a = await h.coordinator.claimContainerSlot(slot);
+  const coordinatorFetch = vi
+    .fn((_request: Request): Promise<Response> => Promise.reject(new Error("Durable Object reset")))
+    .mockImplementationOnce((request: Request) => h.reconstruct().fetch(request));
+  const env: Env = Object.create(null);
+  Object.assign(env, {
+    PREDICT_RUN_COORDINATOR: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: coordinatorFetch }),
+    },
+  });
+  await expect(
+    withFocusedFullCommit({ env, workKey, executionId: a.executionId, commit: async () => 7 }),
+  ).rejects.toThrow("FOCUSED_FULL_COMMIT_UNRESOLVED");
+  expect(coordinatorFetch).toHaveBeenCalledTimes(4);
+  expect(h.records.has("external-commit:focused-full:20261004:jra:05:11")).toBe(true);
+});

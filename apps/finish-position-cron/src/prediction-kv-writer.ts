@@ -364,17 +364,9 @@ export const publishFinishPositionPredictionCache = async (
       env: params.env,
       executionId: params.executionId,
       workKey: `focused-full:${params.runYmd}:${params.category}:${params.keibajoCode}:${params.raceBango}`,
-      commit: async () => {
-        const result = await writeFinishPositionPredictionKv(params);
-        if (
-          params.executionId !== undefined &&
-          result.status === "written" &&
-          params.bustCacheApi &&
-          !result.busted
-        )
-          throw new Error("FOCUSED_FULL_COMMIT_UNRESOLVED");
-        return result;
-      },
+      // A failed bust follows a landed KV write: callers retry on busted=false.
+      // Throwing here kept the barrier (no TTL) and pinned the lane (10/22 incident).
+      commit: async () => writeFinishPositionPredictionKv(params),
     });
   } catch (error) {
     if (params.executionId !== undefined) throw error;
