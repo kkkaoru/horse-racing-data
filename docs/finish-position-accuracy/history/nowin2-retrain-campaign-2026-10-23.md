@@ -5,9 +5,11 @@ finish-position-cron deployed on 2026-10-23.
 
 ## Retrain tooling fixes
 
-The retrain scripts live in the git-ignored `.cache/tansho-ban-retrain/`
-campaign folder (like every earlier campaign). The fixes made there, so a
-future campaign can re-apply them if it starts from an older copy:
+The retrain scripts run from the git-ignored `.cache/tansho-ban-retrain/`
+campaign folder. The fixed `retrain.py`, `rs_retrain.py` and
+`train_transformer.py` are tracked in
+[`nowin2-retrain-campaign-2026-10-23-scripts/`](nowin2-retrain-campaign-2026-10-23-scripts/);
+copy them into the campaign folder to start a new campaign. The fixes:
 
 - `retrain.py` loaded feature-store years only through `train_end - 1`, so
   models whose recorded window reaches into 2026 (ban-ei, some NAR cells)
