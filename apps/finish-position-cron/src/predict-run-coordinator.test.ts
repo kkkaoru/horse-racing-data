@@ -5019,3 +5019,73 @@ test("an unfinished race's unresolved commit barrier still pins its lane", async
   expect(result).toStrictEqual({ proceed: false, state: "queued" });
   vi.useRealTimers();
 });
+
+test("a waiter takes over a lane whose owner already succeeded without waiting for staleness", async () => {
+  storageMap.clear();
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000_000);
+  storageMap.set("focused-full-lane:predict-jra-0", {
+    activeRaceKey: "focused-full:20261024:jra:04:02",
+    startedAt: 900_000,
+    waiters: ["focused-full:20261024:jra:04:05"],
+  });
+  storageMap.set("focused-full:20261024:jra:04:02", {
+    doName: "predict-jra-0",
+    executionId: "exec-1",
+    status: "success",
+    timestamp: 950_000,
+  });
+  storageMap.set("focused-full:20261024:jra:04:05", {
+    doName: "predict-jra-0",
+    priorityMs: 1,
+    status: "queued",
+    timestamp: 900_000,
+  });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    doName: "predict-jra-0",
+    keibajoCode: "04",
+    raceBango: "05",
+    runYmd: "20261024",
+    staleAfterMs: 1_860_000,
+  });
+  expect(result).toStrictEqual({ proceed: true, state: "stale" });
+  expect(storageMap.get("focused-full-lane:predict-jra-0")).toStrictEqual({
+    activeRaceKey: "focused-full:20261024:jra:04:05",
+    startedAt: 1_000_000,
+    waiters: [],
+  });
+  vi.useRealTimers();
+});
+
+test("a waiter keeps waiting while a succeeded owner still holds a live lease", async () => {
+  storageMap.clear();
+  vi.useFakeTimers();
+  vi.setSystemTime(1_000_000);
+  storageMap.set("focused-full-lane:predict-jra-0", {
+    activeRaceKey: "focused-full:20261024:jra:04:02",
+    startedAt: 900_000,
+    waiters: [],
+  });
+  storageMap.set("focused-full:20261024:jra:04:02", {
+    doName: "predict-jra-0",
+    executionId: "exec-1",
+    status: "success",
+    timestamp: 950_000,
+  });
+  storageMap.set("container-slots", {
+    leases: [{ executionId: "exec-1", doName: "predict-jra-0" }],
+  });
+  const coordinator = makeCoordinator();
+  const result = await coordinator.claimFocusedFullRace({
+    category: "jra",
+    doName: "predict-jra-0",
+    keibajoCode: "04",
+    raceBango: "05",
+    runYmd: "20261024",
+    staleAfterMs: 1_860_000,
+  });
+  expect(result).toStrictEqual({ proceed: false, state: "queued" });
+  vi.useRealTimers();
+});

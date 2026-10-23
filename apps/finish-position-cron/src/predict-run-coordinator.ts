@@ -853,10 +853,16 @@ export class PredictRunCoordinator extends DurableObject<Env> {
         const priorityDelta = recordPriorityMs(left[1]) - recordPriorityMs(right[1]);
         return priorityDelta === 0 ? left[0].localeCompare(right[0]) : priorityDelta;
       });
-      if (now - lane.startedAt >= params.staleAfterMs) {
+      const staleActive = await this.ctx.storage.get<RunRecord>(lane.activeRaceKey);
+      // A succeeded owner with no live lease is done; waiting for the stale window
+      // held every waiter up to 31 min after a missed hand-off (10/24).
+      if (
+        now - lane.startedAt >= params.staleAfterMs ||
+        (TERMINAL_STATUSES.has(staleActive?.status ?? "") &&
+          !slots?.leases.some((lease) => lease.executionId === staleActive?.executionId))
+      ) {
         const promotedRaceKey = waiterRecords[0]?.[0] ?? raceKey;
         const promoted = await this.ctx.storage.get<RunRecord>(promotedRaceKey);
-        const staleActive = await this.ctx.storage.get<RunRecord>(lane.activeRaceKey);
         if (!TERMINAL_STATUSES.has(staleActive?.status ?? "")) {
           await this.ctx.storage.put<RunRecord>(lane.activeRaceKey, {
             ...(staleActive?.doName === undefined ? {} : { doName: staleActive.doName }),
