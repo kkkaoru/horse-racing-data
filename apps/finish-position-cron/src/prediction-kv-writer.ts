@@ -297,6 +297,7 @@ const listRacesForCategory = async (
 
 const writeFinishPositionPredictionKv = async (
   params: PublishFinishPositionPredictionCacheParams,
+  commitPut: (put: () => Promise<void>) => Promise<void>,
 ): Promise<PredictionKvPublishResult> => {
   const nowMs = params.nowMs ?? Date.now();
   const window = resolvePredictionCacheWindow(params.runYmd, nowMs);
@@ -342,7 +343,7 @@ const writeFinishPositionPredictionKv = async (
     raceBango,
     year: params.runYmd.slice(0, RUN_YMD_YEAR_END),
   });
-  await kv.put(cacheKey, JSON.stringify(features), { expirationTtl: ttlSeconds });
+  await commitPut(() => kv.put(cacheKey, JSON.stringify(features), { expirationTtl: ttlSeconds }));
   if (!params.bustCacheApi) {
     return { busted: false, expectedGeneratedAt, status: "written" };
   }
@@ -360,14 +361,16 @@ export const publishFinishPositionPredictionCache = async (
   params: PublishFinishPositionPredictionCacheParams,
 ): Promise<PredictionKvPublishResult> => {
   try {
-    return await withFocusedFullCommit({
-      env: params.env,
-      executionId: params.executionId,
-      workKey: `focused-full:${params.runYmd}:${params.category}:${params.keibajoCode}:${params.raceBango}`,
-      // A failed bust follows a landed KV write: callers retry on busted=false.
-      // Throwing here kept the barrier (no TTL) and pinned the lane (10/22 incident).
-      commit: async () => writeFinishPositionPredictionKv(params),
-    });
+    // The barrier covers only kv.put: a failed read (Neon/R2) or bust writes nothing,
+    // and holding the barrier across them pinned the lane (no TTL; 10/22-24 incidents).
+    return await writeFinishPositionPredictionKv(params, (put) =>
+      withFocusedFullCommit({
+        env: params.env,
+        executionId: params.executionId,
+        workKey: `focused-full:${params.runYmd}:${params.category}:${params.keibajoCode}:${params.raceBango}`,
+        commit: put,
+      }),
+    );
   } catch (error) {
     if (params.executionId !== undefined) throw error;
     console.warn(

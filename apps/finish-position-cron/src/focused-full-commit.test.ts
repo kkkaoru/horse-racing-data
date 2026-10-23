@@ -176,12 +176,22 @@ test("held pickup response and deferred publication cannot commit A after B admi
   );
   held.resolve(Response.json({ found: true, parquetKey: "shared", parquetBase64: "QQ==" }));
   await expect(operation).rejects.toThrow("FOCUSED_FULL_COMMIT_UNRESOLVED");
+  query.mockResolvedValue([
+    {
+      umaban: "1",
+      predicted_rank: 1,
+      predicted_score: 0.4,
+      model_version: "model",
+      prediction_generated_at: "2026-10-04T01:00:00Z",
+    },
+  ]);
   await expect(
     publishFinishPositionPredictionCache({
       ...scope,
       env: h.env,
       executionId: a.executionId,
       bustCacheApi: false,
+      nowMs: Date.parse("2026-10-04T03:00:00Z"),
     }),
   ).rejects.toThrow("FOCUSED_FULL_COMMIT_UNRESOLVED");
   expect(h.put).not.toHaveBeenCalled();
@@ -319,6 +329,24 @@ test("a landed KV write whose cache bust fails releases the barrier", async () =
     status: "written",
   });
   expect(h.put).toHaveBeenCalledOnce();
+  expect(h.records.has("external-commit:focused-full:20261004:jra:05:11")).toBe(false);
+});
+
+test("a failed prediction read before the KV put leaves no barrier", async () => {
+  const h = makeHarness();
+  await h.coordinator.claimFocusedFullRace(race);
+  const a = await h.coordinator.claimContainerSlot(slot);
+  query.mockRejectedValue(new Error("neon unavailable"));
+  await expect(
+    publishFinishPositionPredictionCache({
+      ...scope,
+      env: h.env,
+      executionId: a.executionId,
+      bustCacheApi: true,
+      nowMs: Date.parse("2026-10-04T03:00:00Z"),
+    }),
+  ).rejects.toThrow("neon unavailable");
+  expect(h.put).not.toHaveBeenCalled();
   expect(h.records.has("external-commit:focused-full:20261004:jra:05:11")).toBe(false);
 });
 
