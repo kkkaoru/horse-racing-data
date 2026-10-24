@@ -1,4 +1,5 @@
 import type { Env, OddsSource, RaceListEntry } from "../types";
+import { wasFinalSlotCaptured } from "./enqueue-lock-kv";
 
 const RACE_LIST_KV_KEY_PREFIX = "odds:race-list:v1";
 const DEFAULT_RACE_LIST_KV_TTL_SECONDS = 21_600;
@@ -55,7 +56,10 @@ export const patchLastFetchInKv = async (
     return false;
   }
   const target = list.find((entry) => entry.raceKey === raceKey);
-  if (!target) {
+  // The cached lastOddsFetchAt only feeds the planner's past-race catch-up
+  // check, which treats null and any pre-final-slot value identically, so
+  // only a final-slot fetch is worth a KV write.
+  if (!target || !wasFinalSlotCaptured(new Date(target.raceStartAtJst), fetchedAt)) {
     return false;
   }
   target.lastOddsFetchAt = fetchedAt;

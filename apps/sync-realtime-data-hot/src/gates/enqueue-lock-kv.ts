@@ -38,7 +38,7 @@ const buildEnqueueLockKey = (raceKey: string): string => `${ENQUEUE_LOCK_KEY_PRE
 // matching `resolveOddsSlotAt` / `getOddsFetchSlotAt`. If the row's
 // `last_odds_fetch_at` is null or earlier than that target, the final
 // closing odds were never persisted and we let one more enqueue through.
-const wasFinalSlotCaptured = (raceStart: Date, lastOddsFetchAt: string | null): boolean => {
+export const wasFinalSlotCaptured = (raceStart: Date, lastOddsFetchAt: string | null): boolean => {
   if (!lastOddsFetchAt) {
     return false;
   }

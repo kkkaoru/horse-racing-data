@@ -124,6 +124,21 @@ it("patchLastFetchInKv updates field when race exists", async () => {
   );
 });
 
+it("patchLastFetchInKv skips the KV write for a fetch before the final slot", async () => {
+  const env = buildEnv();
+  const getMock = env.ODDS_HOT_KV.get as unknown as KvMockHandle["get"];
+  getMock.mockResolvedValueOnce(JSON.stringify(sampleList()));
+  const result = await patchLastFetchInKv(
+    env,
+    "nar",
+    "20260528",
+    "nar:20260528:42:01",
+    "2026-05-28T10:01:59+09:00",
+  );
+  expect(result).toBe(false);
+  expect(env.ODDS_HOT_KV.put).not.toHaveBeenCalled();
+});
+
 it("patchLastFetchInKv returns false when list is missing", async () => {
   const env = buildEnv();
   const result = await patchLastFetchInKv(
