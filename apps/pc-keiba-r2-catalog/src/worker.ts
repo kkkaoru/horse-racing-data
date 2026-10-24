@@ -1,5 +1,5 @@
 import { gatedR2SqlFetcher } from "./r2-sql-gate";
-import { cachedR2SqlFetcher } from "./r2-sql-result-cache";
+import { R2_SQL_RESULT_TTL_SECONDS, cachedR2SqlFetcher } from "./r2-sql-result-cache";
 import {
   aggregateArcBloodlines,
   arcBloodlineProfilesQuery,
@@ -761,7 +761,7 @@ const heatmapStatsBody = async (
   const fetchImpl = withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS);
   // A bloodline query that never answers (NAR 30/05 on 2026-09-23) must not
   // take the similar rows down with it. Flag it so the viewer can fill the
-  // bloodline rows from its database; the flagged body is never cached.
+  // bloodline rows from its database; the flagged body is cached only briefly.
   const [bloodlineRows, similarRows] = await Promise.all([
     logHeatmapQueryFailure(
       "bloodline",
@@ -883,17 +883,17 @@ const handleWinRateHeatmapStats = async (
     },
   );
   const payload: ReturnType<typeof normaliseWinRateHeatmapStatsPayload> = JSON.parse(body);
-  if (
-    !body.includes(HEATMAP_BLOODLINE_UNAVAILABLE_MARKER) &&
-    (payload.bloodlineRows.length > 0 || payload.similarRows.length > 0)
-  ) {
+  if (payload.bloodlineRows.length > 0 || payload.similarRows.length > 0) {
+    // A flagged body is kept past the next 15-minute sweep, not for 36 hours,
+    // so a failed bloodline query is retried without paying for every sweep.
+    const unavailable = body.includes(HEATMAP_BLOODLINE_UNAVAILABLE_MARKER);
     await populateCaches(
       dependencies.cache,
       env.CATALOG_KV,
       descriptor,
       body,
-      HEATMAP_CACHE_API_TTL_SECONDS,
-      HEATMAP_KV_TTL_SECONDS,
+      unavailable ? R2_SQL_RESULT_TTL_SECONDS : HEATMAP_CACHE_API_TTL_SECONDS,
+      unavailable ? R2_SQL_RESULT_TTL_SECONDS : HEATMAP_KV_TTL_SECONDS,
     );
   }
   return jsonRowsResponse(body, "r2-sql");

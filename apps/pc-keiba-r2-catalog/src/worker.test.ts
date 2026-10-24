@@ -2183,9 +2183,10 @@ it.each(["cache-api", "kv", "miss"])(
     expect(await response.json()).toStrictEqual({ bloodlineRows: [], similarRows: [] });
     const retry = await handleRequest(request, harness.env, harness.dependencies);
     expect(retry.status).toBe(200);
-    expect(harness.fetchCalls).toHaveLength(6);
+    // The heatmap is rebuilt, but from the cached empty R2 SQL answers.
+    expect(harness.fetchCalls).toHaveLength(3);
     expect(harness.cacheCalls.puts).toHaveLength(0);
-    expect(harness.kvCalls.puts).toHaveLength(0);
+    expect(harness.kvCalls.puts.every((key) => key.startsWith("r2sql-result:"))).toBe(true);
   },
 );
 

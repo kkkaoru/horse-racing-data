@@ -48,10 +48,20 @@ it("keys answers by the full request body", async () => {
   expect(fetchImpl).toHaveBeenCalledTimes(2);
 });
 
-it("never caches empty, unsuccessful, malformed or failed answers", async () => {
+it("caches an empty answer like any other successful answer", async () => {
+  const { kv, put } = makeKv();
+  const fetchImpl = vi.fn<Fetcher>(async () => new Response(answer([])));
+  const cached = cachedR2SqlFetcher(fetchImpl, kv);
+  await cached("https://r2sql.test/", init("SELECT 0"));
+  const second = await cached("https://r2sql.test/", init("SELECT 0"));
+  expect(await second.json()).toStrictEqual({ result: { rows: [] }, success: true });
+  expect(fetchImpl).toHaveBeenCalledOnce();
+  expect(put).toHaveBeenCalledOnce();
+});
+
+it("never caches unsuccessful, malformed or failed answers", async () => {
   const { kv, put } = makeKv();
   const bodies = [
-    new Response(answer([])),
     new Response(JSON.stringify({ errors: [{ code: 1 }], success: false })),
     new Response("not json"),
     new Response(JSON.stringify({ result: [], success: true })),
@@ -64,9 +74,8 @@ it("never caches empty, unsuccessful, malformed or failed answers", async () => 
     (await cached("https://r2sql.test/", init("b"))).status,
     (await cached("https://r2sql.test/", init("c"))).status,
     (await cached("https://r2sql.test/", init("d"))).status,
-    (await cached("https://r2sql.test/", init("e"))).status,
   ];
-  expect(statuses).toStrictEqual([200, 200, 200, 200, 503]);
+  expect(statuses).toStrictEqual([200, 200, 200, 503]);
   expect(put).not.toHaveBeenCalled();
 });
 

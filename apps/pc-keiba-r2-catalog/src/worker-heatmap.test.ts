@@ -201,11 +201,14 @@ it("returns similar rows and flags bloodline when only the bloodline query fails
     [],
   ]);
   expect(isRecord(body) && Array.isArray(body.similarRows) ? body.similarRows.length : 0).toBe(1);
-  expect(harness.cacheEntries.size).toBe(0);
-  // Only the similar query's answer is kept for a retry; no heatmap is cached.
+  // The flagged heatmap is kept only past the next sweep, alongside the
+  // similar query's answer.
+  expect(harness.cacheEntries.size).toBe(1);
+  const cached = [...harness.cacheEntries.values()][0];
+  expect(cached?.headers.get("Cache-Control")).toBe("public, max-age=1200");
   expect(
-    [...harness.kvEntries.keys()].filter((key) => !key.startsWith("r2sql-result:")),
-  ).toStrictEqual([DAY_KNOWN_KEY]);
+    [...harness.kvEntries.keys()].filter((key) => !key.startsWith("r2sql-result:")).length,
+  ).toBe(2);
   expect(
     [...harness.kvEntries.keys()].filter((key) => key.startsWith("r2sql-result:")).length,
   ).toBe(1);

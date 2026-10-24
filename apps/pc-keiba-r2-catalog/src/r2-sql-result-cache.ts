@@ -13,8 +13,10 @@ const KEY_PREFIX = "r2sql-result:v1:";
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-// Empty answers are never cached: an empty heatmap is how a query that lost
-// its target names or rows surfaces, and it must be recomputed.
+// Empty answers are cached too: every sweep used to pay for the same empty
+// scan again. Trade-off: a race whose runners are not ingested yet stays
+// empty for up to the TTL (the heatmap layer still never caches an empty
+// heatmap, so it is rebuilt from these answers once they expire).
 const isCacheableAnswer = (text: string): boolean => {
   try {
     const value: unknown = JSON.parse(text);
@@ -22,8 +24,7 @@ const isCacheableAnswer = (text: string): boolean => {
       isRecord(value) &&
       value.success === true &&
       isRecord(value.result) &&
-      Array.isArray(value.result.rows) &&
-      value.result.rows.length > 0
+      Array.isArray(value.result.rows)
     );
   } catch {
     return false;
