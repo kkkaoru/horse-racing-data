@@ -419,5 +419,33 @@ it("POST re-warms a race whose generation is warm but whose snapshot expired", a
   const response = await POST(buildAuthedRequest("?date=2026-05-29"));
   const body = await readJsonRecord(response);
   expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 1, warmed: 1 });
-  expect(get.mock.calls[2]).toStrictEqual(["ssr-05-01"]);
+  expect(get.mock.calls[2]).toStrictEqual(["ssr-05-01:g3"]);
+  expect(putRaceDetailSsrSnapshotMock).toHaveBeenCalledWith(
+    expect.objectContaining({ cacheKey: "ssr-05-01:g3" }),
+  );
+});
+
+it("POST warms without a snapshot write when the race generation cannot be read", async () => {
+  getRacesByDateMock.mockResolvedValue([buildJraRow({ keibajoCode: "05", raceBango: "01" })]);
+  getRaceDetailMock.mockResolvedValue({ kyori: "1200", trackCode: "10" });
+  getRaceCourseInfoMock.mockResolvedValue(null);
+  getRaceRunnersMock.mockResolvedValue([]);
+  getSameVenueRacesByDateMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  putRaceDetailSsrSnapshotMock.mockResolvedValue(undefined);
+  const get = vi
+    .fn<(key: string) => Promise<string | null>>()
+    .mockRejectedValue(new Error("kv unavailable"));
+  safeGetCloudflareEnvMock.mockResolvedValue({
+    DETAIL_SECTION_CACHE_KV: {
+      get,
+      put: vi.fn<(key: string, value: string) => Promise<void>>().mockResolvedValue(undefined),
+    },
+  });
+  const response = await POST(buildAuthedRequest("?date=2026-05-29"));
+  const body = await readJsonRecord(response);
+  expect(body).toStrictEqual({ date: "2026-05-29", raceCount: 1, warmed: 1 });
+  expect(putRaceDetailSsrSnapshotMock).toHaveBeenCalledWith(
+    expect.objectContaining({ cacheKey: null }),
+  );
 });

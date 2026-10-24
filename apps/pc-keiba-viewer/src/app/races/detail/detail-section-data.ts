@@ -79,8 +79,10 @@ import {
   getWeightLabel,
   isListedOrHigherGradeCode,
 } from "../../../lib/race-classification";
-import { buildDetailSectionCacheKey } from "../../../lib/race-detail-section-cache";
-import { getCachedDetailSectionResponse } from "../../../lib/race-detail-section-cache.server";
+import {
+  getCachedDetailSectionResponse,
+  resolveDetailSectionCacheKey,
+} from "../../../lib/race-detail-section-cache.server";
 import {
   applyRunningStyleSortToRacePaceRows,
   buildRacePacePredictionRowsFromResults,
@@ -1703,7 +1705,7 @@ const isCachedTimeScorePayload = (value: unknown): value is CachedTimeScorePaylo
 const loadCachedTimeScorePayload = async (
   params: DetailSectionParams,
 ): Promise<CachedTimeScorePayload | null> => {
-  const cacheKey = buildDetailSectionCacheKey({
+  const cacheKey = await resolveDetailSectionCacheKey({
     day: params.day,
     keibajoCode: params.keibajoCode,
     month: params.month,
@@ -2493,17 +2495,18 @@ const loadHeatmapSectionSource = async (
   section: "condition" | "results",
   params: DetailSectionParams,
 ): Promise<unknown> => {
-  const cacheKey = buildDetailSectionCacheKey({
-    day: params.day,
-    keibajoCode: params.keibajoCode,
-    month: params.month,
-    raceNumber: params.raceNumber,
-    section,
-    year: params.year,
-  });
   const cached = hasHeatmapSourceFilters(params)
     ? null
-    : await getCachedDetailSectionResponse(cacheKey);
+    : await getCachedDetailSectionResponse(
+        await resolveDetailSectionCacheKey({
+          day: params.day,
+          keibajoCode: params.keibajoCode,
+          month: params.month,
+          raceNumber: params.raceNumber,
+          section,
+          year: params.year,
+        }),
+      );
   if (cached === null) {
     return await loadDetailSectionPayload(section, params, true);
   }
@@ -2524,7 +2527,7 @@ const loadCachedHeatmapBloodlineRows = async (
   if (hasHeatmapSourceFilters(params)) return null;
   try {
     const cached = await getCachedDetailSectionResponse(
-      buildDetailSectionCacheKey({
+      await resolveDetailSectionCacheKey({
         day: params.day,
         keibajoCode: params.keibajoCode,
         month: params.month,

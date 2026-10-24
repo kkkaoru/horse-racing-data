@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   claim: vi.fn<() => Promise<boolean>>(),
   settle: vi.fn<(token: string, success: boolean) => Promise<boolean>>(),
   safeGetCloudflareEnv: vi.fn<() => Promise<unknown>>(),
-  buildDetailSectionCacheKeyMock: vi.fn<(...args: never[]) => unknown>(),
+  resolveDetailSectionCacheKeyMock: vi.fn<(...args: never[]) => Promise<string | null>>(),
   buildFinishPredictionInputsCacheKeyMock: vi.fn<(...args: never[]) => unknown>(),
   buildWinRateHeatmapCacheKeyMock: vi.fn<(...args: never[]) => unknown>(),
   buildStaleDetailSectionResponseMock: vi.fn<(...args: never[]) => unknown>(),
@@ -60,7 +60,6 @@ vi.mock("../../../../../../../../../../lib/finish-prediction-inputs-cache.server
 }));
 
 vi.mock("../../../../../../../../../../lib/race-detail-section-cache", () => ({
-  buildDetailSectionCacheKey: mocks.buildDetailSectionCacheKeyMock,
   DETAIL_SECTION_CACHE_WARM_PARAM: "__cacheWarm",
   isDefaultDetailSectionCacheRequest: mocks.isDefaultDetailSectionCacheRequestMock,
   PREDICTION_REFRESH_PARAM: "__predictionRefresh",
@@ -93,6 +92,7 @@ vi.mock("../../../../../../../../../../lib/race-detail-section-cache.server", ()
   getCachedDetailSectionResponse: mocks.getCachedDetailSectionResponseMock,
   getStaleDetailSectionBody: mocks.getStaleDetailSectionBodyMock,
   putDetailSectionCache: mocks.putDetailSectionCacheMock,
+  resolveDetailSectionCacheKey: mocks.resolveDetailSectionCacheKeyMock,
 }));
 
 vi.mock("../../../../../../../../../races/detail/detail-section-data", () => ({
@@ -101,7 +101,7 @@ vi.mock("../../../../../../../../../races/detail/detail-section-data", () => ({
 }));
 
 const {
-  buildDetailSectionCacheKeyMock,
+  resolveDetailSectionCacheKeyMock,
   buildFinishPredictionInputsCacheKeyMock,
   buildWinRateHeatmapCacheKeyMock,
   getCachedDetailSectionResponseMock,
@@ -148,7 +148,7 @@ beforeEach(() => {
   });
   // Default stub: not cacheable by section-level default cache.
   isDefaultDetailSectionCacheRequestMock.mockReturnValue(false);
-  buildDetailSectionCacheKeyMock.mockReturnValue("unused-default-cache-key");
+  resolveDetailSectionCacheKeyMock.mockResolvedValue("unused-default-cache-key");
   buildFinishPredictionInputsCacheKeyMock.mockReturnValue("finish-prediction-cache-key");
   getCachedDetailSectionResponseMock.mockResolvedValue(null);
   getCachedWinRateHeatmapPayloadMock.mockResolvedValue(null);
@@ -636,7 +636,7 @@ it("fails closed without stale fallback when the authenticated expected generati
     return next;
   });
   isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
-  buildDetailSectionCacheKeyMock.mockReturnValue("section-cache-key");
+  resolveDetailSectionCacheKeyMock.mockResolvedValue("section-cache-key");
   getStaleDetailSectionBodyMock.mockResolvedValue("stale-body");
   getRaceSourceByRouteMock.mockResolvedValue("nar");
   mocks.getRaceDetailMock.mockResolvedValue({ raceId: "race-detail" });
@@ -676,7 +676,7 @@ it("waits for generation-bound input and detail cache stores before responding",
     return next;
   });
   isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
-  buildDetailSectionCacheKeyMock.mockReturnValue("section-cache-key");
+  resolveDetailSectionCacheKeyMock.mockResolvedValue("section-cache-key");
   getRaceSourceByRouteMock.mockResolvedValue("nar");
   mocks.getRaceDetailMock.mockResolvedValue({ raceId: "race-detail" });
   getDetailSectionPayloadMock.mockResolvedValue({
@@ -829,7 +829,7 @@ it("bypasses section cache read and stale SWR for finish-prediction when __predi
     return next;
   });
   isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
-  buildDetailSectionCacheKeyMock.mockReturnValue("section-cache-key");
+  resolveDetailSectionCacheKeyMock.mockResolvedValue("section-cache-key");
   getStaleDetailSectionBodyMock.mockResolvedValue("stale-body");
   getRaceSourceByRouteMock.mockResolvedValue("nar");
   mocks.getRaceDetailMock.mockResolvedValue({ raceId: "race-detail" });
@@ -899,7 +899,7 @@ it("bypasses section cache read and stale SWR for finish-prediction when __predi
 
 it("returns cached finish-prediction section response when cached body has model prediction features", async () => {
   isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
-  buildDetailSectionCacheKeyMock.mockReturnValue("section-cache-key");
+  resolveDetailSectionCacheKeyMock.mockResolvedValue("section-cache-key");
   getCachedFinishPredictionInputsMock.mockResolvedValue(null);
   getCachedDetailSectionResponseMock.mockResolvedValue(
     new Response(
@@ -934,7 +934,7 @@ it("returns cached finish-prediction section response when cached body has model
 
 it("recomputes finish-prediction when cached section body lacks model prediction features", async () => {
   isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
-  buildDetailSectionCacheKeyMock.mockReturnValue("section-cache-key");
+  resolveDetailSectionCacheKeyMock.mockResolvedValue("section-cache-key");
   getCachedFinishPredictionInputsMock.mockResolvedValue(null);
   getCachedDetailSectionResponseMock.mockResolvedValue(
     new Response('{"type":"finish-prediction","inputs":{"modelPredictionFeatures":[]}}', {
@@ -1009,7 +1009,7 @@ it("recomputes finish-prediction when cached section body lacks model prediction
 
 it("serves stale finish-prediction snapshot when stale body has model prediction features", async () => {
   isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
-  buildDetailSectionCacheKeyMock.mockReturnValue("section-cache-key");
+  resolveDetailSectionCacheKeyMock.mockResolvedValue("section-cache-key");
   getCachedFinishPredictionInputsMock.mockResolvedValue(null);
   getCachedDetailSectionResponseMock.mockResolvedValue(null);
   getStaleDetailSectionBodyMock.mockResolvedValue(
@@ -1040,7 +1040,7 @@ it("serves stale finish-prediction snapshot when stale body has model prediction
 
 it("skips stale finish-prediction snapshot and recomputes when stale body lacks model prediction features", async () => {
   isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
-  buildDetailSectionCacheKeyMock.mockReturnValue("section-cache-key");
+  resolveDetailSectionCacheKeyMock.mockResolvedValue("section-cache-key");
   getCachedFinishPredictionInputsMock.mockResolvedValue(null);
   getCachedDetailSectionResponseMock.mockResolvedValue(null);
   getStaleDetailSectionBodyMock.mockResolvedValue(
@@ -2317,3 +2317,31 @@ it.each([false, true])(
     });
   },
 );
+
+it("bypasses every cache tier when the race cache generation cannot be read", async () => {
+  stripDetailSectionCacheWarmParamsMock.mockImplementation(
+    (params: URLSearchParams) => new URLSearchParams(params),
+  );
+  isDefaultDetailSectionCacheRequestMock.mockReturnValue(true);
+  resolveDetailSectionCacheKeyMock.mockResolvedValue(null);
+  getRaceSourceByRouteMock.mockResolvedValue("nar");
+  getDetailSectionPayloadMock.mockResolvedValue({ rows: [], type: "results" });
+  const response = await GET(
+    new Request("https://example.com/api/races/2026/06/03/43/12/sections/results"),
+    {
+      params: Promise.resolve({
+        day: "03",
+        keibajoCode: "43",
+        month: "06",
+        raceNumber: "12",
+        section: "results",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(200);
+  expect(response.headers.get("X-Detail-Section-Cache")).toBe("BYPASS");
+  expect(getCachedDetailSectionResponseMock).not.toHaveBeenCalled();
+  expect(getStaleDetailSectionBodyMock).not.toHaveBeenCalled();
+  expect(mocks.putDetailSectionCacheMock).not.toHaveBeenCalled();
+});

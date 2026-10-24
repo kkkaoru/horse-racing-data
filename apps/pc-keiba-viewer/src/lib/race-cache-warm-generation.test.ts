@@ -17,7 +17,7 @@ const race: RaceCacheBustRequest = {
 
 it("buildRaceCacheWarmMarkerKey scopes markers by kind and race generation key", () => {
   expect(buildRaceCacheWarmMarkerKey("race-trend", race)).toBe(
-    "race-cache:warm:v1:race-trend:race-cache:gen:jra:2026:0824:05:07",
+    "race-cache:warm:v1:race-trend:race-cache:gen:v2:2026:0824:05:07",
   );
 });
 
@@ -42,7 +42,7 @@ it("readRaceCacheWarmGeneration treats a matching marker as valid", async () => 
   });
   expect(state).toStrictEqual({
     generation: "4",
-    markerKey: "race-cache:warm:v1:race-detail-ssr:race-cache:gen:jra:2026:0824:05:07",
+    markerKey: "race-cache:warm:v1:race-detail-ssr:race-cache:gen:v2:2026:0824:05:07",
     valid: true,
   });
 });
@@ -62,7 +62,7 @@ it("readRaceCacheWarmGeneration uses generation zero before the first bust", asy
   });
   expect(state).toStrictEqual({
     generation: "0",
-    markerKey: "race-cache:warm:v1:race-trend:race-cache:gen:jra:2026:0824:05:07",
+    markerKey: "race-cache:warm:v1:race-trend:race-cache:gen:v2:2026:0824:05:07",
     valid: false,
   });
 });
@@ -97,7 +97,7 @@ it("markRaceCacheWarmGeneration writes only the current generation", async () =>
     }),
   ).resolves.toBe(true);
   expect(put).toHaveBeenCalledWith(
-    "race-cache:warm:v1:race-trend:race-cache:gen:jra:2026:0824:05:07",
+    "race-cache:warm:v1:race-trend:race-cache:gen:v2:2026:0824:05:07",
     "8",
     { expirationTtl: 2592000 },
   );

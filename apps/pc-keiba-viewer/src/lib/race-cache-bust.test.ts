@@ -5,6 +5,8 @@ import {
   RACE_CACHE_BUST_INTERNAL_PATH,
   buildRaceCacheBustKeys,
   buildRaceCacheGenerationKey,
+  buildRaceCacheWarmMarkerKey,
+  buildRaceDetailSsrCacheKey,
   parseRaceCacheBustRequest,
   parseRaceKey,
 } from "./race-cache-bust";
@@ -133,78 +135,15 @@ it("parseRaceCacheBustRequest rejects a non-2-digit raceBango", () => {
   ).toBeNull();
 });
 
-it("buildRaceCacheGenerationKey produces a per-race prefixed key", () => {
+it("buildRaceCacheGenerationKey produces a per-race key without the source", () => {
   expect(
     buildRaceCacheGenerationKey({
       keibajoCode: "05",
       mmdd: "0628",
       raceBango: "11",
-      source: "jra",
       year: "2026",
     }),
-  ).toBe("race-cache:gen:jra:2026:0628:05:11");
-});
-
-it("busts result-dependent sections while preserving same-day heatmaps", () => {
-  const keys = buildRaceCacheBustKeys({
-    keibajoCode: "05",
-    mmdd: "0628",
-    raceBango: "11",
-    source: "jra",
-    year: "2026",
-  });
-  expect(keys.mainKeys).toStrictEqual([
-    "race-detail-section:v4:2026:06:28:05:11:ability:default",
-    "race-detail-section:v10:2026:06:28:05:11:bloodline:default",
-    "race-detail-section:v19:2026:06:28:05:11:condition:default",
-    "race-detail-section:v2:2026:06:28:05:11:premium-data-top:default",
-    "race-detail-section:v11:2026:06:28:05:11:overall-score:default",
-    "race-detail-section:v4:2026:06:28:05:11:pace-prediction:default",
-    "race-detail-section:v4:2026:06:28:05:11:results:default",
-    "race-detail-section:v10:2026:06:28:05:11:similar:default",
-    "race-detail-section:v11:2026:06:28:05:11:time-score:default",
-    "race-detail-section:v6:2026:06:28:05:11:training:default",
-    "race-detail-ssr:v4:jra:2026:06:28:05:11",
-  ]);
-});
-
-it("buildRaceCacheBustKeys staleKeys prepend the stale: prefix to each main key", () => {
-  const keys = buildRaceCacheBustKeys({
-    keibajoCode: "05",
-    mmdd: "0628",
-    raceBango: "11",
-    source: "jra",
-    year: "2026",
-  });
-  expect(keys.staleKeys).toStrictEqual([
-    "stale:race-detail-section:v4:2026:06:28:05:11:ability:default",
-    "stale:race-detail-section:v10:2026:06:28:05:11:bloodline:default",
-    "stale:race-detail-section:v19:2026:06:28:05:11:condition:default",
-    "stale:race-detail-section:v2:2026:06:28:05:11:premium-data-top:default",
-    "stale:race-detail-section:v11:2026:06:28:05:11:overall-score:default",
-    "stale:race-detail-section:v4:2026:06:28:05:11:pace-prediction:default",
-    "stale:race-detail-section:v4:2026:06:28:05:11:results:default",
-    "stale:race-detail-section:v10:2026:06:28:05:11:similar:default",
-    "stale:race-detail-section:v11:2026:06:28:05:11:time-score:default",
-    "stale:race-detail-section:v6:2026:06:28:05:11:training:default",
-  ]);
-});
-
-it("training bust preserves heatmap, race SSR, trend, and unrelated sections", () => {
-  const keys = buildRaceCacheBustKeys({
-    keibajoCode: "06",
-    mmdd: "0926",
-    raceBango: "03",
-    scope: "training",
-    source: "jra",
-    year: "2026",
-  });
-  expect(keys.mainKeys).toStrictEqual([
-    "race-detail-section:v6:2026:09:26:06:03:training:default",
-    "race-detail-section:v2:2026:09:26:06:03:premium-data-top:default",
-  ]);
-  expect(keys.staleKeys).toStrictEqual(keys.mainKeys.map((key) => `stale:${key}`));
-  expect(keys.markerKeys).toStrictEqual([]);
+  ).toBe("race-cache:gen:v2:2026:0628:05:11");
 });
 
 it("buildRaceCacheBustKeys includes the generation key shape", () => {
@@ -216,22 +155,47 @@ it("buildRaceCacheBustKeys includes the generation key shape", () => {
       source: "nar",
       year: "2026",
     }).generationKey,
-  ).toBe("race-cache:gen:nar:2026:0529:50:07");
+  ).toBe("race-cache:gen:v2:2026:0529:50:07");
 });
 
-it("buildRaceCacheBustKeys invalidates both generation-bound warm markers", () => {
+it("buildRaceCacheBustKeys lists only the training-scope section keys", () => {
   expect(
     buildRaceCacheBustKeys({
+      keibajoCode: "06",
+      mmdd: "0926",
+      raceBango: "03",
+      scope: "training",
+      source: "jra",
+      year: "2026",
+    }).trainingSectionKeys,
+  ).toStrictEqual([
+    "race-detail-section:v6:2026:09:26:06:03:training:default",
+    "race-detail-section:v2:2026:09:26:06:03:premium-data-top:default",
+  ]);
+});
+
+it("buildRaceCacheWarmMarkerKey embeds the generation key", () => {
+  expect(
+    buildRaceCacheWarmMarkerKey("race-trend", {
       keibajoCode: "50",
       mmdd: "0529",
       raceBango: "07",
-      source: "nar",
       year: "2026",
-    }).markerKeys,
-  ).toStrictEqual([
-    "race-cache:warm:v1:race-detail-ssr:race-cache:gen:nar:2026:0529:50:07",
-    "race-cache:warm:v1:race-trend:race-cache:gen:nar:2026:0529:50:07",
-  ]);
+    }),
+  ).toBe("race-cache:warm:v1:race-trend:race-cache:gen:v2:2026:0529:50:07");
+});
+
+it("buildRaceDetailSsrCacheKey keeps the source segment", () => {
+  expect(
+    buildRaceDetailSsrCacheKey({
+      day: "28",
+      keibajoCode: "05",
+      month: "06",
+      raceNumber: "11",
+      source: "jra",
+      year: "2026",
+    }),
+  ).toBe("race-detail-ssr:v4:jra:2026:06:28:05:11");
 });
 
 it("parseRaceKey accepts the JRA raceKey shape", () => {

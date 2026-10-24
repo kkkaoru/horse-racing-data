@@ -31,7 +31,6 @@ import { secretsEqual } from "../../../../../../../../../../lib/mcp-auth";
 import { normalizeExpectedPredictionGeneratedAt } from "../../../../../../../../../../lib/prediction-generation-freshness";
 import { readPredictionKvText } from "../../../../../../../../../../lib/prediction-kv-cache.server";
 import {
-  buildDetailSectionCacheKey,
   DETAIL_SECTION_CACHE_WARM_PARAM,
   isDefaultDetailSectionCacheRequest,
   PREDICTION_REFRESH_PARAM,
@@ -42,6 +41,7 @@ import {
   getCachedDetailSectionResponse,
   getStaleDetailSectionBody,
   putDetailSectionCache,
+  resolveDetailSectionCacheKey,
 } from "../../../../../../../../../../lib/race-detail-section-cache.server";
 import {
   buildWinRateHeatmapCacheKey,
@@ -568,7 +568,7 @@ async function handleSection(request: Request, { params }: DetailSectionRoutePro
   }
 
   const cacheKey = cacheableDefaultRequest
-    ? buildDetailSectionCacheKey({ day, keibajoCode, month, raceNumber, section, year })
+    ? await resolveDetailSectionCacheKey({ day, keibajoCode, month, raceNumber, section, year })
     : null;
   const skipPredictionRefresh =
     section === "finish-prediction" && requestUrl.searchParams.has(PREDICTION_REFRESH_PARAM);

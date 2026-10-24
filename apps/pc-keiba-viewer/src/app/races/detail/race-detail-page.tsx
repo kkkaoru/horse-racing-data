@@ -43,10 +43,10 @@ import {
 } from "../../../lib/race-classification";
 import { loadOptionalRaceDetailData } from "../../../lib/race-detail-optional-data";
 import {
-  buildRaceDetailSsrCacheKey,
   getCachedRaceDetailSsrSnapshot,
   putRaceDetailSsrSnapshot,
   refreshRaceDetailSsrSnapshotIfStale,
+  resolveRaceDetailSsrCacheKey,
   type RaceDetailSsrSnapshot,
 } from "../../../lib/race-detail-ssr-cache.server";
 import { buildRaceGlobalSummaryItems } from "../../../lib/race-global-summary";
@@ -311,7 +311,7 @@ export async function RaceDetailView({
   source: raceSource,
   year,
 }: RaceDetailViewProps) {
-  const ssrCacheKey = buildRaceDetailSsrCacheKey({
+  const ssrCacheKeyPromise = resolveRaceDetailSsrCacheKey({
     day,
     keibajoCode,
     month,
@@ -330,7 +330,7 @@ export async function RaceDetailView({
     d1FinishPositions,
     horseRaceResults,
   ] = await Promise.all([
-    timed(timings, "snapshot", getCachedRaceDetailSsrSnapshot(ssrCacheKey)),
+    timed(timings, "snapshot", ssrCacheKeyPromise.then(getCachedRaceDetailSsrSnapshot)),
     timed(
       timings,
       "officialCard",
@@ -372,6 +372,7 @@ export async function RaceDetailView({
       getHorseRaceResults(raceSource, year, month, day, keibajoCode, raceNumber).catch(() => []),
     ),
   ]);
+  const ssrCacheKey = await ssrCacheKeyPromise;
   const snapshot =
     cachedSnapshot ??
     (await timed(

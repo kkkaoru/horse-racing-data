@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
+interface TestKv {
+  get?: (key: string) => Promise<string | null>;
+  put?: (...args: unknown[]) => Promise<void>;
+}
+
 interface TestRuntime {
   ctx: { waitUntil: (promise: Promise<unknown>) => void } | null;
-  env: { DETAIL_SECTION_CACHE_KV: { put: (...args: unknown[]) => Promise<void> } } | null;
+  env: { DETAIL_SECTION_CACHE_KV: TestKv } | null;
 }
 
 const runtime: TestRuntime = vi.hoisted((): TestRuntime => ({ ctx: null, env: null }));
@@ -13,11 +18,13 @@ vi.mock("./cloudflare-context.server", () => ({
 
 import {
   buildRaceDetailSsrCacheKey,
+  getCachedRaceDetailSsrSnapshot,
   getRaceDetailSsrCacheTtlSeconds,
   getRaceDetailSsrKvTtlSeconds,
   isRaceDetailSsrSnapshotStale,
   putRaceDetailSsrSnapshot,
   refreshRaceDetailSsrSnapshotIfStale,
+  resolveRaceDetailSsrCacheKey,
   type RaceDetailSsrSnapshot,
 } from "./race-detail-ssr-cache.server";
 import type { RaceDetail } from "./race-types";
@@ -155,5 +162,55 @@ describe("race detail SSR cache", () => {
       reload.mock.calls.length,
       pending.length,
     ]).toStrictEqual([1, 1, 1, 3]);
+  });
+
+  it("skips every cache tier when the race generation could not be resolved", async () => {
+    const get = vi.fn<(key: string) => Promise<string | null>>(async () => "{}");
+    const put = vi.fn<(...args: unknown[]) => Promise<void>>(async () => undefined);
+    runtime.env = { DETAIL_SECTION_CACHE_KV: { get, put } };
+    const snapshot = await getCachedRaceDetailSsrSnapshot(null);
+    await putRaceDetailSsrSnapshot({
+      cacheKey: null,
+      params,
+      snapshot: { courseInfo: null, race: buildRace("0945"), runners: [], sameVenueRaces: [] },
+    });
+    runtime.env = null;
+    expect([snapshot, get.mock.calls.length, put.mock.calls.length]).toStrictEqual([null, 0, 0]);
+  });
+
+  it("reads the legacy snapshot while the race has never been busted", async () => {
+    const get = vi.fn<(key: string) => Promise<string | null>>(async (key) =>
+      key === "k"
+        ? JSON.stringify({ courseInfo: null, race: {}, runners: [], sameVenueRaces: [] })
+        : null,
+    );
+    runtime.env = { DETAIL_SECTION_CACHE_KV: { get } };
+    const snapshot = await getCachedRaceDetailSsrSnapshot("k:g0");
+    runtime.env = null;
+    expect(snapshot).toStrictEqual({ courseInfo: null, race: {}, runners: [], sameVenueRaces: [] });
+    expect(get.mock.calls).toStrictEqual([["k:g0"], ["k"]]);
+  });
+
+  it("does not read the legacy snapshot once the race has been busted", async () => {
+    const get = vi.fn<(key: string) => Promise<string | null>>(async () => null);
+    runtime.env = { DETAIL_SECTION_CACHE_KV: { get } };
+    const snapshot = await getCachedRaceDetailSsrSnapshot("k:g1789173660000");
+    runtime.env = null;
+    expect(snapshot).toBeNull();
+    expect(get.mock.calls).toStrictEqual([["k:g1789173660000"]]);
+  });
+
+  it("returns a miss without the KV binding", async () => {
+    runtime.env = null;
+    expect(await getCachedRaceDetailSsrSnapshot("k:g0")).toBeNull();
+  });
+
+  it("qualifies the SSR key with the race generation", async () => {
+    const get = vi.fn<(key: string) => Promise<string | null>>(async () => "1789173660000");
+    runtime.env = { DETAIL_SECTION_CACHE_KV: { get } };
+    const cacheKey = await resolveRaceDetailSsrCacheKey(params);
+    runtime.env = null;
+    expect(cacheKey).toBe("race-detail-ssr:v4:jra:2026:09:12:06:01:g1789173660000");
+    expect(get.mock.calls).toStrictEqual([["race-cache:gen:v2:2026:0912:06:01"]]);
   });
 });

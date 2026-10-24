@@ -4,28 +4,34 @@ import "server-only";
 
 // Runs with bun.
 import { hasOverseasTimeScoreEvidence } from "./overseas-time-score-evidence";
+import { resolveRaceCacheKey } from "./race-cache-bust.server";
 import {
   DETAIL_SECTION_CACHE_AFTER_START_SECONDS,
   buildDetailSectionCacheKey,
-  expandDetailSectionCacheReadKeys,
+  getLegacyCacheKey,
+  isGenerationalCacheKey,
   type DetailSectionCacheableSection,
+  type DetailSectionCacheKeyInput,
   type DetailSectionCacheWarmMessage,
 } from "./race-detail-section-cache";
 import {
   STALE_DETAIL_SECTION_MAX_AGE_MS,
   getJstMidnightMsForToday,
   parseStaleDetailSectionEnvelope,
-  serializeStaleDetailSectionEnvelope,
+  serializeFreshDetailSectionEnvelope,
 } from "./race-detail-section-stale";
 import type { RaceDetail } from "./race-types";
 
 const CACHE_CONTROL_HEADER = "public, max-age=%d";
 // v2 invalidates Cache API entries created before race cache busts could reliably
-// replace pre-race training data. KV keys remain stable, so existing valid payloads
-// can repopulate the new Cache API namespace without a full cache rebuild.
+// replace pre-race training data. Keys now end with the race generation, so a
+// bust also rotates this Cache API URL.
 const CACHE_URL_BASE = "https://pc-keiba-viewer.local/detail-section-cache/v2/";
 const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 
+// Generational keys hold one `{ payload, writtenAt, freshUntil }` envelope that
+// serves both tiers; legacy (pre-generation) keys hold the raw fresh payload
+// with the stale envelope under `stale:<key>`.
 // Stale snapshots persist much longer than the fresh tier (which expires
 // race start + 6h). Past races are immutable, and for upcoming races we
 // only need stale to last long enough that the next visitor can serve it
@@ -35,6 +41,7 @@ const DEFAULT_CONTENT_TYPE = "application/json; charset=utf-8";
 // keep serving a payload that is hours past the most recent D1 write.
 const STALE_CACHE_KEY_PREFIX = "stale";
 const STALE_TTL_SECONDS = 30 * 24 * 60 * 60;
+const MS_PER_SECOND = 1000;
 
 // 2026-07-04: the 21:00-JST-day-before pre-warm computes the "training"
 // section before netkeiba's premium training reviews / stable comments have
@@ -104,6 +111,18 @@ const buildCachedResponse = (body: string, source: CacheSource): Response =>
     },
   });
 
+// Generational entries are envelopes that stay fresh until `freshUntil`;
+// legacy entries hold the raw payload and are fresh while KV keeps them.
+const readFreshKvBody = (raw: string, cacheKey: string): string | null => {
+  if (!isGenerationalCacheKey(cacheKey)) {
+    return raw;
+  }
+  const envelope = parseStaleDetailSectionEnvelope(raw);
+  return envelope?.freshUntil !== undefined && envelope.freshUntil > Date.now()
+    ? envelope.payload
+    : null;
+};
+
 const readCachedDetailSectionForKey = async (
   cacheKey: string,
   populateCurrentCacheApi: boolean,
@@ -122,7 +141,8 @@ const readCachedDetailSectionForKey = async (
   }
 
   const { env, ctx } = await safeGetCloudflareRuntime();
-  const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
+  const kvRaw = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey);
+  const kvBody = kvRaw ? readFreshKvBody(kvRaw, cacheKey) : null;
   if (
     !kvBody ||
     isEmptyDataSectionBody(kvBody, cacheKey) ||
@@ -148,23 +168,22 @@ const readCachedDetailSectionForKey = async (
   return buildCachedResponse(kvBody, "kv");
 };
 
+// A null key means the race generation could not be read: never serve cache.
 export const getCachedDetailSectionResponse = async (
-  cacheKey: string,
+  cacheKey: string | null,
 ): Promise<Response | null> => {
-  const readKeys = expandDetailSectionCacheReadKeys(cacheKey);
-  const firstKey = readKeys[0];
-  if (firstKey === undefined) {
+  if (cacheKey === null) {
     return null;
   }
-  const currentHit = await readCachedDetailSectionForKey(firstKey, true);
-  if (currentHit !== null) {
-    return currentHit;
-  }
-  const fallbackKey = readKeys[1];
-  return fallbackKey === undefined ? null : readCachedDetailSectionForKey(fallbackKey, false);
+  const currentHit = await readCachedDetailSectionForKey(cacheKey, true);
+  const legacyKey = getLegacyCacheKey(cacheKey);
+  return (
+    currentHit ?? (legacyKey === null ? null : readCachedDetailSectionForKey(legacyKey, false))
+  );
 };
 
-const getStaleCacheKey = (cacheKey: string): string => `${STALE_CACHE_KEY_PREFIX}:${cacheKey}`;
+const getStaleCacheKey = (cacheKey: string): string =>
+  isGenerationalCacheKey(cacheKey) ? cacheKey : `${STALE_CACHE_KEY_PREFIX}:${cacheKey}`;
 
 // Read-time freshness gate.  Cached envelope is rejected when:
 //   1. Body is not a `{ payload, writtenAt }` envelope (legacy raw entry =
@@ -205,17 +224,11 @@ export const getStaleDetailSectionBody = async (
   cacheKey: string,
   nowMs = Date.now(),
 ): Promise<string | null> => {
-  const readKeys = expandDetailSectionCacheReadKeys(cacheKey);
-  const firstKey = readKeys[0];
-  if (firstKey === undefined) {
-    return null;
-  }
-  const currentHit = await readStaleDetailSectionBodyForKey(firstKey, nowMs);
-  if (currentHit !== null) {
-    return currentHit;
-  }
-  const fallbackKey = readKeys[1];
-  return fallbackKey === undefined ? null : readStaleDetailSectionBodyForKey(fallbackKey, nowMs);
+  const currentHit = await readStaleDetailSectionBodyForKey(cacheKey, nowMs);
+  const legacyKey = getLegacyCacheKey(cacheKey);
+  return (
+    currentHit ?? (legacyKey === null ? null : readStaleDetailSectionBodyForKey(legacyKey, nowMs))
+  );
 };
 
 export const buildStaleDetailSectionResponse = (body: string): Response =>
@@ -303,19 +316,24 @@ export const putDetailSectionCache = async ({
 }): Promise<void> => {
   const { env } = await safeGetCloudflareRuntime();
   if (isEmptyDataSectionBody(body, cacheKey)) return;
-  const ttlSeconds = getDetailSectionCacheTtlSeconds(race, env);
+  const nowMs = Date.now();
+  const ttlSeconds = getDetailSectionCacheTtlSeconds(race, env, nowMs);
   const cacheControl = CACHE_CONTROL_HEADER.replace("%d", String(ttlSeconds));
-  // The 30-day stale snapshot is written even when fresh TTL is already
-  // 0 (the race finished more than 6h ago) so future visits still get an
-  // instant render via the SWR path.  Stored as `{ payload, writtenAt }`
-  // so the read path can enforce a max-stale cap + JST-midnight boundary
-  // without depending on KV's `expirationTtl` for freshness.
-  const staleEnvelope = serializeStaleDetailSectionEnvelope(body, Date.now());
-  const stalePut = env?.DETAIL_SECTION_CACHE_KV?.put(getStaleCacheKey(cacheKey), staleEnvelope, {
-    expirationTtl: STALE_TTL_SECONDS,
-  }).catch(() => undefined);
+  // Kept for 30 days even when the fresh TTL is already 0 (the race finished
+  // more than 6h ago) so future visits still get an instant render via the
+  // SWR path. `writtenAt` lets the read path enforce a max-stale cap +
+  // JST-midnight boundary without depending on KV's `expirationTtl`.
+  const kvPut = env?.DETAIL_SECTION_CACHE_KV?.put(
+    cacheKey,
+    serializeFreshDetailSectionEnvelope({
+      freshUntil: nowMs + ttlSeconds * MS_PER_SECOND,
+      payload: body,
+      writtenAt: nowMs,
+    }),
+    { expirationTtl: STALE_TTL_SECONDS },
+  ).catch(() => undefined);
   if (ttlSeconds <= 0) {
-    await stalePut;
+    await kvPut;
     return;
   }
   await Promise.all([
@@ -330,12 +348,20 @@ export const putDetailSectionCache = async ({
         }),
       )
       .catch(() => undefined),
-    env?.DETAIL_SECTION_CACHE_KV?.put(cacheKey, body, { expirationTtl: ttlSeconds }).catch(
-      () => undefined,
-    ),
-    stalePut,
+    kvPut,
   ]);
 };
+
+// Null when the race generation cannot be read; callers then skip the cache.
+export const resolveDetailSectionCacheKey = (
+  input: DetailSectionCacheKeyInput,
+): Promise<string | null> =>
+  resolveRaceCacheKey(buildDetailSectionCacheKey(input), {
+    keibajoCode: input.keibajoCode,
+    mmdd: `${input.month}${input.day}`,
+    raceBango: input.raceNumber,
+    year: input.year,
+  });
 
 export const buildDetailSectionCacheKeyForMessage = (
   message: Omit<DetailSectionCacheWarmMessage, "section" | "source"> & {

@@ -171,9 +171,17 @@ vi.mock("../../../lib/win-rate-heatmap-catalog.server", () => ({
   groupCatalogSimilarRows: (rows: unknown) => rows,
 }));
 
-vi.mock("../../../lib/race-detail-section-cache.server", () => ({
-  getCachedDetailSectionResponse: getCachedDetailSectionResponseMock,
-}));
+vi.mock("../../../lib/race-detail-section-cache.server", async () => {
+  const { buildDetailSectionCacheKey } = await vi.importActual<
+    typeof import("../../../lib/race-detail-section-cache")
+  >("../../../lib/race-detail-section-cache");
+  return {
+    getCachedDetailSectionResponse: getCachedDetailSectionResponseMock,
+    resolveDetailSectionCacheKey: async (
+      input: Parameters<typeof buildDetailSectionCacheKey>[0],
+    ): Promise<string> => buildDetailSectionCacheKey(input),
+  };
+});
 
 vi.mock("../../../lib/premium-data-top-cache.server", () => ({
   getPremiumDataTopHorsesWithCache: vi.fn<() => Promise<unknown[]>>(),

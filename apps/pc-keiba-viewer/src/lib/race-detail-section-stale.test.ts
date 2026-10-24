@@ -6,6 +6,7 @@ import {
   getJstMidnightMsForToday,
   isStaleDetailSectionEnvelope,
   parseStaleDetailSectionEnvelope,
+  serializeFreshDetailSectionEnvelope,
   serializeStaleDetailSectionEnvelope,
 } from "./race-detail-section-stale";
 
@@ -88,4 +89,22 @@ it("getJstMidnightMsForToday rolls over to next-day midnight exactly at JST midn
   expect(getJstMidnightMsForToday(Date.parse("2026-06-28T23:59:59+09:00"))).toBe(
     Date.parse("2026-06-28T00:00:00+09:00"),
   );
+});
+
+it("isStaleDetailSectionEnvelope accepts a numeric freshUntil", () => {
+  expect(isStaleDetailSectionEnvelope({ freshUntil: 5, payload: "{}", writtenAt: 1 })).toBe(true);
+});
+
+it("isStaleDetailSectionEnvelope rejects a non-numeric freshUntil", () => {
+  expect(isStaleDetailSectionEnvelope({ freshUntil: "5", payload: "{}", writtenAt: 1 })).toBe(
+    false,
+  );
+});
+
+it("serializeFreshDetailSectionEnvelope round-trips freshUntil", () => {
+  expect(
+    parseStaleDetailSectionEnvelope(
+      serializeFreshDetailSectionEnvelope({ freshUntil: 99, payload: "body", writtenAt: 42 }),
+    ),
+  ).toStrictEqual({ freshUntil: 99, payload: "body", writtenAt: 42 });
 });

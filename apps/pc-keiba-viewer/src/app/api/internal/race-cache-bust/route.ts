@@ -1,7 +1,7 @@
 // Run with bun (Next.js route). Per-race cache-bust endpoint hit by
-// sync-realtime-data after `fetchAndStoreResults` lands. Deletes both main
-// and stale-tier KV entries for every detail-section variant of the given
-// race, and bumps a generation counter so the Cache API tier is defeated.
+// sync-realtime-data after `fetchAndStoreResults` lands. Rotates the race's
+// cache generation, which every detail-section / SSR key (KV and Cache API)
+// ends with, so one put invalidates them all.
 import { NextResponse } from "next/server";
 
 import { safeGetCloudflareExecutionContext } from "../../../../lib/cloudflare-context.server";

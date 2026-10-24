@@ -1,6 +1,7 @@
 // Run with bun (vitest).
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+import { parseStaleDetailSectionEnvelope } from "./race-detail-section-stale";
 import type { RaceDetail } from "./race-types";
 
 vi.mock("server-only", () => ({}));
@@ -17,6 +18,7 @@ import {
   getDetailSectionCacheTtlSeconds,
   getStaleDetailSectionBody,
   putDetailSectionCache,
+  resolveDetailSectionCacheKey,
 } from "./race-detail-section-cache.server";
 
 type KvGetFn = (key: string) => Promise<string | null>;
@@ -77,6 +79,9 @@ const buildCacheStub = (): CacheStub => ({
   match: vi.fn<CacheMatchFn>().mockResolvedValue(undefined),
   put: vi.fn<CachePutFn>().mockResolvedValue(undefined),
 });
+
+const readFreshUntil = (raw: string | undefined): number | undefined =>
+  parseStaleDetailSectionEnvelope(raw ?? "")?.freshUntil;
 
 const mockEnvWithKv = (kv: KvStub): void => {
   getCloudflareContextMock.mockResolvedValue({ ctx: null, env: { DETAIL_SECTION_CACHE_KV: kv } });
@@ -206,9 +211,9 @@ it("caches a training section body with a compact workout date using the full lo
     cacheKey: "training-key",
     race: FUTURE_RACE,
   });
-  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(FUTURE_RACE, null, FIXED_NOW_MS);
   const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "training-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
+  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: 2592000 });
+  expect(readFreshUntil(mainPutCall?.[1])).toBe(1783242000000);
 });
 
 it("caches a training section body with a premium evaluation grade using the full long TTL", async () => {
@@ -219,9 +224,9 @@ it("caches a training section body with a premium evaluation grade using the ful
     cacheKey: "training-key",
     race: FUTURE_RACE,
   });
-  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(FUTURE_RACE, null, FIXED_NOW_MS);
   const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "training-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
+  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: 2592000 });
+  expect(readFreshUntil(mainPutCall?.[1])).toBe(1783242000000);
 });
 
 it("does not cache an empty premium-data-top section body", async () => {
@@ -243,9 +248,9 @@ it("caches a non-empty premium-data-top section body using the full long TTL", a
     cacheKey: "data-top-key",
     race: FUTURE_RACE,
   });
-  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(FUTURE_RACE, null, FIXED_NOW_MS);
   const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "data-top-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
+  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: 2592000 });
+  expect(readFreshUntil(mainPutCall?.[1])).toBe(1783242000000);
 });
 
 it("does not cache an empty NAR training section body", async () => {
@@ -286,9 +291,9 @@ it("uses the full long TTL for a section type the emptiness check does not recog
   mockEnvWithKv(kv);
   const body = JSON.stringify({ overallScore: 87, type: "overall-score" });
   await putDetailSectionCache({ body, cacheKey: "overall-score-key", race: FUTURE_RACE });
-  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(FUTURE_RACE, null, FIXED_NOW_MS);
   const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "overall-score-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
+  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: 2592000 });
+  expect(readFreshUntil(mainPutCall?.[1])).toBe(1783242000000);
 });
 
 it("treats malformed JSON as non-empty and uses the full long TTL", async () => {
@@ -299,9 +304,9 @@ it("treats malformed JSON as non-empty and uses the full long TTL", async () => 
     cacheKey: "broken-key",
     race: FUTURE_RACE,
   });
-  const fullTtlSeconds = getDetailSectionCacheTtlSeconds(FUTURE_RACE, null, FIXED_NOW_MS);
   const mainPutCall = kv.put.mock.calls.find((call) => call[0] === "broken-key");
-  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: fullTtlSeconds });
+  expect(mainPutCall?.[2]).toStrictEqual({ expirationTtl: 2592000 });
+  expect(readFreshUntil(mainPutCall?.[1])).toBe(1783242000000);
 });
 
 it("does not write an empty training body to edge cache", async () => {
@@ -389,4 +394,190 @@ it("rejects a legacy overseas condition cache without gate provenance", async ()
       "race-detail-section:v19:2026:10:04:A8:05:condition:default",
     ),
   ).toBeNull();
+});
+
+it("never reads the cache when the race generation could not be resolved", async () => {
+  const kv = buildKvStub();
+  mockEnvWithKv(kv);
+  expect(await getCachedDetailSectionResponse(null)).toBeNull();
+  expect(kv.get).not.toHaveBeenCalled();
+});
+
+it("serves a generational envelope as fresh before freshUntil", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(
+    JSON.stringify({
+      freshUntil: 1783090860000,
+      payload: '{"type":"results"}',
+      writtenAt: 1783090000000,
+    }),
+  );
+  mockEnvWithKv(kv);
+  const response = await getCachedDetailSectionResponse(
+    "race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000",
+  );
+  expect(await response?.text()).toBe('{"type":"results"}');
+  expect(response?.headers.get("X-Detail-Section-Cache")).toBe("HIT-kv");
+  expect(kv.get.mock.calls).toStrictEqual([
+    ["race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000"],
+  ]);
+});
+
+it("treats a generational envelope past freshUntil as a fresh-tier miss", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(
+    JSON.stringify({
+      freshUntil: 1783090800000,
+      payload: '{"type":"results"}',
+      writtenAt: 1783090000000,
+    }),
+  );
+  mockEnvWithKv(kv);
+  expect(
+    await getCachedDetailSectionResponse(
+      "race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000",
+    ),
+  ).toBeNull();
+  expect(kv.get.mock.calls).toStrictEqual([
+    ["race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000"],
+  ]);
+});
+
+it("treats a generational envelope without freshUntil as a fresh-tier miss", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(
+    JSON.stringify({ payload: '{"type":"results"}', writtenAt: 1783090000000 }),
+  );
+  mockEnvWithKv(kv);
+  expect(
+    await getCachedDetailSectionResponse(
+      "race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000",
+    ),
+  ).toBeNull();
+});
+
+it("falls back to the legacy raw entry while the race has never been busted", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValueOnce(null).mockResolvedValueOnce('{"type":"results"}');
+  mockEnvWithKv(kv);
+  const response = await getCachedDetailSectionResponse(
+    "race-detail-section:v4:2026:07:05:05:11:results:default:g0",
+  );
+  expect(await response?.text()).toBe('{"type":"results"}');
+  expect(kv.get.mock.calls).toStrictEqual([
+    ["race-detail-section:v4:2026:07:05:05:11:results:default:g0"],
+    ["race-detail-section:v4:2026:07:05:05:11:results:default"],
+  ]);
+});
+
+it("reads the stale tier from the generational envelope itself", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(
+    JSON.stringify({
+      freshUntil: 1783090800000,
+      payload: '{"type":"results"}',
+      writtenAt: 1783090800000,
+    }),
+  );
+  mockEnvWithKv(kv);
+  expect(
+    await getStaleDetailSectionBody(
+      "race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000",
+      FIXED_NOW_MS,
+    ),
+  ).toBe('{"type":"results"}');
+  expect(kv.get.mock.calls).toStrictEqual([
+    ["race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000"],
+  ]);
+});
+
+it("reads the legacy stale key while the race has never been busted", async () => {
+  const kv = buildKvStub();
+  kv.get
+    .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce(
+      JSON.stringify({ payload: '{"type":"results"}', writtenAt: 1783090800000 }),
+    );
+  mockEnvWithKv(kv);
+  expect(
+    await getStaleDetailSectionBody(
+      "race-detail-section:v4:2026:07:05:05:11:results:default:g0",
+      FIXED_NOW_MS,
+    ),
+  ).toBe('{"type":"results"}');
+  expect(kv.get.mock.calls).toStrictEqual([
+    ["race-detail-section:v4:2026:07:05:05:11:results:default:g0"],
+    ["stale:race-detail-section:v4:2026:07:05:05:11:results:default"],
+  ]);
+});
+
+it("does not read legacy stale keys once the race has been busted", async () => {
+  const kv = buildKvStub();
+  mockEnvWithKv(kv);
+  expect(
+    await getStaleDetailSectionBody(
+      "race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000",
+      FIXED_NOW_MS,
+    ),
+  ).toBeNull();
+  expect(kv.get.mock.calls).toStrictEqual([
+    ["race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000"],
+  ]);
+});
+
+it("writes one KV entry and the edge cache for an upcoming race", async () => {
+  const kv = buildKvStub();
+  const cache = buildCacheStub();
+  mockEnvWithKv(kv);
+  Object.defineProperty(globalThis, "caches", { configurable: true, value: { default: cache } });
+  await putDetailSectionCache({
+    body: '{"type":"results"}',
+    cacheKey: "race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000",
+    race: FUTURE_RACE,
+  });
+  expect(kv.put.mock.calls).toStrictEqual([
+    [
+      "race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000",
+      '{"freshUntil":1783242000000,"payload":"{\\"type\\":\\"results\\"}","writtenAt":1783090800000}',
+      { expirationTtl: 2592000 },
+    ],
+  ]);
+  expect(cache.put).toHaveBeenCalledTimes(1);
+});
+
+it("writes only a stale-tier envelope once the fresh window has passed", async () => {
+  const kv = buildKvStub();
+  const cache = buildCacheStub();
+  mockEnvWithKv(kv);
+  Object.defineProperty(globalThis, "caches", { configurable: true, value: { default: cache } });
+  await putDetailSectionCache({
+    body: '{"type":"results"}',
+    cacheKey: "race-detail-section:v4:2026:07:01:05:11:results:default:g1783000000000",
+    race: { ...FUTURE_RACE, kaisaiTsukihi: "0701" },
+  });
+  expect(kv.put.mock.calls).toStrictEqual([
+    [
+      "race-detail-section:v4:2026:07:01:05:11:results:default:g1783000000000",
+      '{"freshUntil":1783090800000,"payload":"{\\"type\\":\\"results\\"}","writtenAt":1783090800000}',
+      { expirationTtl: 2592000 },
+    ],
+  ]);
+  expect(cache.put).not.toHaveBeenCalled();
+});
+
+it("resolveDetailSectionCacheKey qualifies the section key with the race generation", async () => {
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue("1783000000000");
+  mockEnvWithKv(kv);
+  expect(
+    await resolveDetailSectionCacheKey({
+      day: "05",
+      keibajoCode: "05",
+      month: "07",
+      raceNumber: "11",
+      section: "results",
+      year: "2026",
+    }),
+  ).toBe("race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000");
+  expect(kv.get.mock.calls).toStrictEqual([["race-cache:gen:v2:2026:0705:05:11"]]);
 });

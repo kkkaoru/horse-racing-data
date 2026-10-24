@@ -9,6 +9,8 @@
 // write, hiding the recovery.
 
 export interface StaleDetailSectionEnvelope {
+  // Epoch ms until which the payload counts as fresh; absent means stale-only.
+  freshUntil?: number;
   payload: string;
   writtenAt: number;
 }
@@ -53,7 +55,8 @@ export const isStaleDetailSectionEnvelope = (
   return (
     typeof value.payload === "string" &&
     typeof value.writtenAt === "number" &&
-    Number.isFinite(value.writtenAt)
+    Number.isFinite(value.writtenAt) &&
+    (value.freshUntil === undefined || typeof value.freshUntil === "number")
   );
 };
 
@@ -71,3 +74,9 @@ export const parseStaleDetailSectionEnvelope = (raw: string): StaleDetailSection
 
 export const serializeStaleDetailSectionEnvelope = (payload: string, writtenAt: number): string =>
   JSON.stringify({ payload, writtenAt } satisfies StaleDetailSectionEnvelope);
+
+// One KV entry serves as both the fresh tier (until `freshUntil`) and the
+// stale tier, so a section write is one put instead of two.
+export const serializeFreshDetailSectionEnvelope = (
+  envelope: Required<StaleDetailSectionEnvelope>,
+): string => JSON.stringify(envelope);

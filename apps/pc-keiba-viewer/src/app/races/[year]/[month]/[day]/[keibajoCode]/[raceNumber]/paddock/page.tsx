@@ -24,10 +24,10 @@ import {
 import { getPaddockAdjacentNav } from "../../../../../../../../lib/paddock-adjacent-nav";
 import { getRaceTags } from "../../../../../../../../lib/race-classification";
 import {
-  buildRaceDetailSsrCacheKey,
   getCachedRaceDetailSsrSnapshot,
   putRaceDetailSsrSnapshot,
   refreshRaceDetailSsrSnapshotIfStale,
+  resolveRaceDetailSsrCacheKey,
 } from "../../../../../../../../lib/race-detail-ssr-cache.server";
 import { buildRaceGlobalSummaryItems } from "../../../../../../../../lib/race-global-summary";
 import { isBanEiKeibajoCode } from "../../../../../../../../lib/runner-format";
@@ -206,7 +206,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
   // sameVenueRaces) so the paddock-edit fan-out collapses to a single KV
   // read on warm requests. The cron at `0 12 * * *` / `*/15 0-14 * * *`
   // populates this for upcoming and today's races.
-  const ssrCacheKey = buildRaceDetailSsrCacheKey({
+  const ssrCacheKey = await resolveRaceDetailSsrCacheKey({
     day,
     keibajoCode,
     month,

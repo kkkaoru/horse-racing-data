@@ -26,7 +26,11 @@ import {
   markRaceCacheWarmGeneration,
   readRaceCacheWarmGeneration,
 } from "../../../../lib/race-cache-warm-generation";
-import { getJstDateParts, parseIsoDateParts } from "../../../../lib/race-detail-section-cache";
+import {
+  getJstDateParts,
+  parseIsoDateParts,
+  withCacheGeneration,
+} from "../../../../lib/race-detail-section-cache";
 import {
   buildRaceDetailSsrCacheKey,
   putRaceDetailSsrSnapshot,
@@ -150,7 +154,10 @@ const warmRecentResults = async (params: WarmRaceParams): Promise<void> => {
   await putRecentResultsCache(cacheKey, JSON.stringify({ results })).catch(() => undefined);
 };
 
-const warmRaceDetailSsr = async (params: WarmRaceParams): Promise<"warmed" | "missing"> => {
+const warmRaceDetailSsr = async (
+  params: WarmRaceParams,
+  cacheKey: string | null,
+): Promise<"warmed" | "missing"> => {
   const { day, keibajoCode, month, raceBango, source, year } = params;
   const race = await getRaceDetail(source, year, month, day, keibajoCode, raceBango);
   if (!race) {
@@ -163,14 +170,7 @@ const warmRaceDetailSsr = async (params: WarmRaceParams): Promise<"warmed" | "mi
   ]);
   await Promise.all([
     putRaceDetailSsrSnapshot({
-      cacheKey: buildRaceDetailSsrCacheKey({
-        day,
-        keibajoCode,
-        month,
-        raceNumber: raceBango,
-        source,
-        year,
-      }),
+      cacheKey,
       params: { day, keibajoCode, month, raceNumber: raceBango, source, year },
       snapshot: { courseInfo, race, runners, sameVenueRaces },
     }),
@@ -190,23 +190,29 @@ const warmRaceDetailSsrIfInvalidated = async (
     source: params.source,
     year: params.year,
   };
-  const cacheKey = buildRaceDetailSsrCacheKey({
-    day: params.day,
-    keibajoCode: params.keibajoCode,
-    month: params.month,
-    raceNumber: params.raceBango,
-    source: params.source,
-    year: params.year,
-  });
-  const [state, stored] = await Promise.all([
-    readRaceCacheWarmGeneration({ kind: "race-detail-ssr", kv, race }),
-    kv?.get(cacheKey),
-  ]);
+  const state = await readRaceCacheWarmGeneration({ kind: "race-detail-ssr", kv, race });
+  // The snapshot key carries the generation the marker was read with; an
+  // unreadable generation skips the cache write instead of guessing one.
+  const cacheKey =
+    state === null
+      ? null
+      : withCacheGeneration(
+          buildRaceDetailSsrCacheKey({
+            day: params.day,
+            keibajoCode: params.keibajoCode,
+            month: params.month,
+            raceNumber: params.raceBango,
+            source: params.source,
+            year: params.year,
+          }),
+          state.generation,
+        );
+  const stored = cacheKey === null ? null : await kv?.get(cacheKey);
   // The marker outlives an expired snapshot, so a missing snapshot is re-warmed regardless.
   if (state?.valid && stored) {
     return "valid";
   }
-  const outcome = await warmRaceDetailSsr(params);
+  const outcome = await warmRaceDetailSsr(params, cacheKey);
   if (outcome === "missing") {
     return outcome;
   }

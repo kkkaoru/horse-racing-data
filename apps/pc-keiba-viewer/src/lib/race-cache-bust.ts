@@ -6,35 +6,39 @@
 // 2026-06-28: introduced after a fetch-results outage left the detail-
 // section KV serving 6+ hours stale because no upstream signal forced an
 // invalidation across the main + stale KV tiers + Cache API.
+// 2026-10-24: busts rotate a per-race generation instead of deleting keys.
 
 import type { RaceSource } from "./codes";
 import {
-  DETAIL_SECTION_CACHEABLE_SECTIONS,
-  buildDetailSectionCacheFallbackKeys,
   buildDetailSectionCacheKey,
   type DetailSectionCacheableSection,
 } from "./race-detail-section-cache";
 
-// Generation counter key shape. Lives in `DETAIL_SECTION_CACHE_KV` next to
-// the actual cache entries so cache-warm / read paths can fold it into the
-// Cache-API request URL and defeat the per-edge Cache API tier without
-// purging it explicitly (Cloudflare Cache API does not expose a global
-// purge from inside a Worker).
-const RACE_CACHE_GEN_PREFIX = "race-cache:gen";
+// Generation key shape. Lives in `DETAIL_SECTION_CACHE_KV` next to the cache
+// entries; readers append its value to their section / SSR keys, so a bust is
+// one put here instead of deleting every key. It has no source segment
+// because the section keys have none either (a route is one race).
+const RACE_CACHE_GEN_PREFIX = "race-cache:gen:v2";
 const CACHE_WARM_MARKER_PREFIX = "race-cache:warm:v1";
 const RACE_DETAIL_SSR_CACHE_VERSION = "v4";
-const STALE_KEY_PREFIX = "stale";
+const TRAINING_SCOPE_SECTIONS: readonly DetailSectionCacheableSection[] = [
+  "training",
+  "premium-data-top",
+];
 
 // PC_KEIBA_INTERNAL_TOKEN-protected internal endpoint path.
 export const RACE_CACHE_BUST_INTERNAL_PATH = "/api/internal/race-cache-bust";
 
-export interface RaceCacheBustRequest {
+export interface RaceCacheGenerationInput {
   keibajoCode: string;
   mmdd: string;
   raceBango: string;
+  year: string;
+}
+
+export interface RaceCacheBustRequest extends RaceCacheGenerationInput {
   scope?: "training";
   source: RaceSource;
-  year: string;
 }
 
 export interface RaceDetailSsrCacheKeyParams {
@@ -48,9 +52,8 @@ export interface RaceDetailSsrCacheKeyParams {
 
 export interface RaceCacheBustKeySet {
   generationKey: string;
-  mainKeys: string[];
-  markerKeys: string[];
-  staleKeys: string[];
+  // Generation-less section keys a training-scope bust deletes.
+  trainingSectionKeys: string[];
 }
 
 export type RaceCacheWarmKind = "race-detail-ssr" | "race-trend";
@@ -88,7 +91,7 @@ export const parseRaceCacheBustRequest = (value: unknown): RaceCacheBustRequest 
 };
 
 const buildSectionMainKey = (
-  request: RaceCacheBustRequest,
+  request: RaceCacheGenerationInput,
   section: DetailSectionCacheableSection,
 ): string =>
   buildDetailSectionCacheKey({
@@ -100,15 +103,10 @@ const buildSectionMainKey = (
     year: request.year,
   });
 
-export const buildRaceCacheGenerationKey = (request: RaceCacheBustRequest): string =>
-  [
-    RACE_CACHE_GEN_PREFIX,
-    request.source,
-    request.year,
-    request.mmdd,
-    request.keibajoCode,
-    request.raceBango,
-  ].join(":");
+export const buildRaceCacheGenerationKey = (request: RaceCacheGenerationInput): string =>
+  [RACE_CACHE_GEN_PREFIX, request.year, request.mmdd, request.keibajoCode, request.raceBango].join(
+    ":",
+  );
 
 export const buildRaceDetailSsrCacheKey = (params: RaceDetailSsrCacheKeyParams): string =>
   [
@@ -124,54 +122,15 @@ export const buildRaceDetailSsrCacheKey = (params: RaceDetailSsrCacheKeyParams):
 
 export const buildRaceCacheWarmMarkerKey = (
   kind: RaceCacheWarmKind,
-  request: RaceCacheBustRequest,
+  request: RaceCacheGenerationInput,
 ): string => `${CACHE_WARM_MARKER_PREFIX}:${kind}:${buildRaceCacheGenerationKey(request)}`;
 
-export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCacheBustKeySet => {
-  const sections: readonly DetailSectionCacheableSection[] =
-    request.scope === "training"
-      ? ["training", "premium-data-top"]
-      : DETAIL_SECTION_CACHEABLE_SECTIONS;
-  const sectionMainKeys = sections.map((section) => buildSectionMainKey(request, section));
-  const previousSectionKeys = sections.flatMap((section) =>
-    buildDetailSectionCacheFallbackKeys({
-      day: request.mmdd.slice(2, 4),
-      keibajoCode: request.keibajoCode,
-      month: request.mmdd.slice(0, 2),
-      raceNumber: request.raceBango,
-      section,
-      year: request.year,
-    }),
-  );
-  const sectionKeys = [...sectionMainKeys, ...previousSectionKeys];
-  const staleKeys = sectionKeys.map((key) => `${STALE_KEY_PREFIX}:${key}`);
-  const ssrKey = buildRaceDetailSsrCacheKey({
-    day: request.mmdd.slice(2, 4),
-    keibajoCode: request.keibajoCode,
-    month: request.mmdd.slice(0, 2),
-    raceNumber: request.raceBango,
-    source: request.source,
-    year: request.year,
-  });
-  return {
-    generationKey: buildRaceCacheGenerationKey(request),
-    // Heatmap history excludes the current race date. Results and training
-    // busts must not remove its manifest; runner changes invalidate it via
-    // the runner signature and the scheduled heatmap sweep.
-    mainKeys:
-      request.scope === "training"
-        ? sectionKeys
-        : [...sectionMainKeys, ssrKey, ...previousSectionKeys],
-    markerKeys:
-      request.scope === "training"
-        ? []
-        : [
-            buildRaceCacheWarmMarkerKey("race-detail-ssr", request),
-            buildRaceCacheWarmMarkerKey("race-trend", request),
-          ],
-    staleKeys,
-  };
-};
+export const buildRaceCacheBustKeys = (request: RaceCacheBustRequest): RaceCacheBustKeySet => ({
+  generationKey: buildRaceCacheGenerationKey(request),
+  trainingSectionKeys: TRAINING_SCOPE_SECTIONS.map((section) =>
+    buildSectionMainKey(request, section),
+  ),
+});
 
 // Race-key helper used by sync-realtime-data when it only has the raceKey
 // shape (e.g. `nar:20260628:50:07`). The regex enforces alternative

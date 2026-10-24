@@ -1,42 +1,50 @@
-// Run with bun. Server-only wrapper around `race-cache-bust.ts` that
-// performs the per-race KV invalidation + generation bump triggered by
-// sync-realtime-data after `fetchAndStoreResults` lands.
+// Run with bun. Server-only wrapper around `race-cache-bust.ts`: rotates the
+// per-race cache generation triggered by sync-realtime-data after
+// `fetchAndStoreResults` lands, and resolves generation-qualified cache keys
+// for readers and writers.
 //
-// The generation key is bumped (atomic-ish via read-then-write — the
-// invariant is "after a bust the value is strictly greater than what any
-// in-flight reader saw", monotone is sufficient even under tiny races) so
-// downstream readers that fold the value into their Cache API request URL
-// see a brand-new cache key and bypass the per-edge Cache API tier.
+// The generation is the bust time in ms, written without reading the old
+// value: a failed read can never roll it back onto keys that still hold
+// pre-bust payloads, and every bust yields a value no reader has seen.
 
 import "server-only";
+import { cache } from "react";
+
 import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import {
   buildRaceCacheBustKeys,
+  buildRaceCacheGenerationKey,
   type RaceCacheBustKeySet,
   type RaceCacheBustRequest,
+  type RaceCacheGenerationInput,
 } from "./race-cache-bust";
+import { INITIAL_CACHE_GENERATION, withCacheGeneration } from "./race-detail-section-cache";
 
 const GENERATION_TTL_SECONDS = 60 * 60 * 24 * 30;
-const INITIAL_GENERATION = 1;
+const LEGACY_STALE_KEY_PREFIX = "stale";
 
 export interface BustRaceCacheResult {
   busted: number;
   generation: number;
 }
 
-const parseGeneration = (raw: string | null | undefined): number => {
-  if (raw === null || raw === undefined) return 0;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-};
+interface TrainingBustParams {
+  keys: RaceCacheBustKeySet;
+  kv: PcKeibaKvNamespace;
+}
 
-const bumpGeneration = async (kv: PcKeibaKvNamespace, generationKey: string): Promise<number> => {
-  const current = await kv.get(generationKey).catch(() => null);
-  const next = parseGeneration(current) + INITIAL_GENERATION;
-  await kv
-    .put(generationKey, String(next), { expirationTtl: GENERATION_TTL_SECONDS })
-    .catch(() => undefined);
-  return next;
+const bumpGeneration = async (
+  kv: PcKeibaKvNamespace,
+  generationKey: string,
+): Promise<BustRaceCacheResult> => {
+  const generation = Date.now();
+  const busted = await kv
+    .put(generationKey, String(generation), { expirationTtl: GENERATION_TTL_SECONDS })
+    .then(
+      () => 1,
+      () => 0,
+    );
+  return { busted, generation };
 };
 
 const deleteEvery = async (kv: PcKeibaKvNamespace, keys: string[]): Promise<number> => {
@@ -51,11 +59,32 @@ const deleteEvery = async (kv: PcKeibaKvNamespace, keys: string[]): Promise<numb
   return outcomes.filter(Boolean).length;
 };
 
-const collectAllKeys = (keys: RaceCacheBustKeySet): string[] => [
-  ...keys.mainKeys,
-  ...keys.markerKeys,
-  ...keys.staleKeys,
-];
+// Generation "0" readers still fall back to the legacy keys, so those go too.
+const collectTrainingDeleteKeys = (baseKey: string, generation: string): string[] =>
+  generation === INITIAL_CACHE_GENERATION
+    ? [withCacheGeneration(baseKey, generation), baseKey, `${LEGACY_STALE_KEY_PREFIX}:${baseKey}`]
+    : [withCacheGeneration(baseKey, generation)];
+
+// Training busts touch only the training sections, so they delete those keys
+// of the current generation instead of rotating every section of the race.
+const bustTrainingSections = async ({
+  keys,
+  kv,
+}: TrainingBustParams): Promise<BustRaceCacheResult> => {
+  const generation = await kv.get(keys.generationKey).then(
+    (value) => value ?? INITIAL_CACHE_GENERATION,
+    () => null,
+  );
+  // Without the current generation the targeted keys are unknown; rotate it.
+  if (generation === null) {
+    return bumpGeneration(kv, keys.generationKey);
+  }
+  const busted = await deleteEvery(
+    kv,
+    keys.trainingSectionKeys.flatMap((baseKey) => collectTrainingDeleteKeys(baseKey, generation)),
+  );
+  return { busted, generation: Number(generation) };
+};
 
 export const bustRaceCachesForRace = async (
   request: RaceCacheBustRequest,
@@ -66,9 +95,24 @@ export const bustRaceCachesForRace = async (
     return { busted: 0, generation: 0 };
   }
   const keys = buildRaceCacheBustKeys(request);
-  const [busted, generation] = await Promise.all([
-    deleteEvery(kv, collectAllKeys(keys)),
-    bumpGeneration(kv, keys.generationKey),
-  ]);
-  return { busted, generation };
+  return request.scope === "training"
+    ? bustTrainingSections({ keys, kv })
+    : bumpGeneration(kv, keys.generationKey);
 };
+
+// One generation read per race per server render; route handlers read once.
+const readRaceCacheGeneration = cache(async (generationKey: string): Promise<string> => {
+  const { env } = await safeGetCloudflareRuntime();
+  return (await env?.DETAIL_SECTION_CACHE_KV?.get(generationKey)) ?? INITIAL_CACHE_GENERATION;
+});
+
+// Null when the generation cannot be read: callers then bypass the cache
+// entirely, because any guessed generation could serve a pre-bust payload.
+export const resolveRaceCacheKey = async (
+  baseKey: string,
+  race: RaceCacheGenerationInput,
+): Promise<string | null> =>
+  readRaceCacheGeneration(buildRaceCacheGenerationKey(race)).then(
+    (generation) => withCacheGeneration(baseKey, generation),
+    () => null,
+  );

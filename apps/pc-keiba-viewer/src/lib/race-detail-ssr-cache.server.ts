@@ -6,7 +6,11 @@
 import "server-only";
 import { safeGetCloudflareRuntime } from "./cloudflare-context.server";
 import { buildRaceDetailSsrCacheKey, type RaceDetailSsrCacheKeyParams } from "./race-cache-bust";
-import { DETAIL_SECTION_CACHE_AFTER_START_SECONDS } from "./race-detail-section-cache";
+import { resolveRaceCacheKey } from "./race-cache-bust.server";
+import {
+  DETAIL_SECTION_CACHE_AFTER_START_SECONDS,
+  getLegacyCacheKey,
+} from "./race-detail-section-cache";
 import type { CourseInfo, RaceDetail, RaceListItem, Runner } from "./race-types";
 
 export interface RaceDetailSsrSnapshot {
@@ -19,7 +23,7 @@ export interface RaceDetailSsrSnapshot {
 }
 
 interface RefreshRaceDetailSsrSnapshotParams {
-  cacheKey: string;
+  cacheKey: string | null;
   load: () => Promise<RaceDetailSsrSnapshot | null>;
   params: RaceDetailSsrCacheKeyParams;
   snapshot: RaceDetailSsrSnapshot;
@@ -134,9 +138,32 @@ const promoteKvHitToCacheApi = async (body: string, cacheKey: string): Promise<v
   );
 };
 
-export const getCachedRaceDetailSsrSnapshot = async (
+// Null when the race generation cannot be read; callers then skip the cache.
+export const resolveRaceDetailSsrCacheKey = (
+  params: RaceDetailSsrCacheKeyParams,
+): Promise<string | null> =>
+  resolveRaceCacheKey(buildRaceDetailSsrCacheKey(params), {
+    keibajoCode: params.keibajoCode,
+    mmdd: `${params.month}${params.day}`,
+    raceBango: params.raceNumber,
+    year: params.year,
+  });
+
+const readKvSnapshotBody = async (
+  kv: PcKeibaKvNamespace,
   cacheKey: string,
+): Promise<string | null> => {
+  const body = await kv.get(cacheKey).catch(() => null);
+  const legacyKey = getLegacyCacheKey(cacheKey);
+  return body || legacyKey === null ? body : kv.get(legacyKey).catch(() => null);
+};
+
+export const getCachedRaceDetailSsrSnapshot = async (
+  cacheKey: string | null,
 ): Promise<RaceDetailSsrSnapshot | null> => {
+  if (cacheKey === null) {
+    return null;
+  }
   // Defensive try/catch on each tier: a transient Cache API or KV failure
   // must degrade to "cache miss" so the page handler can fall back to the
   // Hyperdrive fan-out instead of throwing all the way to the error
@@ -152,7 +179,8 @@ export const getCachedRaceDetailSsrSnapshot = async (
     }
   }
   const { env, ctx } = await safeGetCloudflareRuntime();
-  const kvBody = await env?.DETAIL_SECTION_CACHE_KV?.get(cacheKey).catch(() => null);
+  const kv = env?.DETAIL_SECTION_CACHE_KV;
+  const kvBody = kv ? await readKvSnapshotBody(kv, cacheKey) : null;
   if (!kvBody) {
     return null;
   }
@@ -161,7 +189,7 @@ export const getCachedRaceDetailSsrSnapshot = async (
 };
 
 interface PutRaceDetailSsrSnapshotParams {
-  cacheKey: string;
+  cacheKey: string | null;
   params: RaceDetailSsrCacheKeyParams;
   snapshot: RaceDetailSsrSnapshot;
 }
@@ -171,6 +199,9 @@ export const putRaceDetailSsrSnapshot = async ({
   params,
   snapshot,
 }: PutRaceDetailSsrSnapshotParams): Promise<void> => {
+  if (cacheKey === null) {
+    return;
+  }
   const { env } = await safeGetCloudflareRuntime();
   const nowMs = Date.now();
   const kvTtlSeconds = getRaceDetailSsrKvTtlSeconds(params, snapshot, env, nowMs);

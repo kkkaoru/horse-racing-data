@@ -163,6 +163,11 @@ export interface DetailSectionCacheKeyInput {
 
 const DETAIL_SECTION_CACHE_KEY_PREFIX = "race-detail-section";
 const DETAIL_SECTION_CACHE_KEY_QUERY = "default";
+const CACHE_GENERATION_SEGMENT = ":g";
+// Generation of a race that has never been busted (its generation key is absent).
+export const INITIAL_CACHE_GENERATION = "0";
+const INITIAL_GENERATION_SUFFIX = `${CACHE_GENERATION_SEGMENT}${INITIAL_CACHE_GENERATION}`;
+const GENERATIONAL_KEY_PATTERN = /:g\d+$/u;
 
 const joinDetailSectionCacheKey = (input: DetailSectionCacheKeyInput, version: string): string =>
   [
@@ -185,12 +190,20 @@ export const buildDetailSectionCacheKey = (input: DetailSectionCacheKeyInput): s
       : getDetailSectionCacheVersion(input.section, input.keibajoCode),
   );
 
-// Preserve the public helpers while preventing reads of incompatible scores.
-export const buildDetailSectionCacheFallbackKeys = (
-  _input: DetailSectionCacheKeyInput,
-): string[] => [];
+// The race's cache generation is the last key segment, so a bust rotates every
+// key (KV and the Cache API URL derived from it) with one generation put.
+export const withCacheGeneration = (baseKey: string, generation: string): string =>
+  `${baseKey}${CACHE_GENERATION_SEGMENT}${generation}`;
 
-export const expandDetailSectionCacheReadKeys = (cacheKey: string): string[] => [cacheKey];
+// shortcut: keys written before generations existed stay readable only while a
+// race has never been busted (generation "0"); drop this once they expire (30 d).
+export const getLegacyCacheKey = (cacheKey: string): string | null =>
+  cacheKey.endsWith(INITIAL_GENERATION_SUFFIX)
+    ? cacheKey.slice(0, -INITIAL_GENERATION_SUFFIX.length)
+    : null;
+
+export const isGenerationalCacheKey = (cacheKey: string): boolean =>
+  GENERATIONAL_KEY_PATTERN.test(cacheKey);
 
 export const buildDetailSectionApiPath = ({
   day,
