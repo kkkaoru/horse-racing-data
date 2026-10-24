@@ -38,6 +38,8 @@ it("selects owner-only venue history and all-venue exact triples for thirty year
   );
   expect(owner).toMatch("se.keibajo_code = '06'");
   expect(owner).toMatch(">= '19960913'");
+  expect(owner).toMatch("se.kaisai_nen >= '1996'");
+  expect(owner).toMatch("se.kaisai_nen <= '2026'");
   expect(owner).toMatch("END = '芝'");
   const triple = buildPartnershipCountsQuery({
     ...input,
@@ -82,6 +84,7 @@ it("selects a shared three-year venue cohort matching the surface independently 
   expect(sql).toMatch("FROM pc_keiba.jvd_se se");
   expect(sql).toMatch("< '20260913'");
   expect(sql).toMatch(">= '20230913'");
+  expect(sql).toMatch("se.kaisai_nen >= '2023'");
   expect(sql).toMatch("se.keibajo_code = '06'");
   expect(sql).toMatch("ra.track_code");
   expect(sql).toMatch("END = '芝'");

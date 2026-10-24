@@ -99,7 +99,9 @@ const historySources = (input: PartnershipQueryInput): readonly CatalogSource[] 
 const historyWhere = (input: PartnershipQueryInput, source: CatalogSource): string => {
   const start: string | null = partnershipStartDate(input.scope);
   const lower: string =
-    start === null ? "" : `AND concat(se.kaisai_nen, se.kaisai_tsukihi) >= '${start}'`;
+    start === null
+      ? ""
+      : `AND concat(se.kaisai_nen, se.kaisai_tsukihi) >= '${start}'\n    AND se.kaisai_nen >= '${start.slice(0, 4)}'`;
   const venue: string =
     input.scope.kind === "horseJockey" || input.scope.kind === "jockeyTrainerOwner"
       ? ""
@@ -122,7 +124,8 @@ const historyWhere = (input: PartnershipQueryInput, source: CatalogSource): stri
   const identities: string = [...new Set(identityColumns)]
     .map((column) => `AND nullif(replace(btrim(se.${column}), '0', ''), '') IS NOT NULL`)
     .join("\n    ");
-  return `concat(se.kaisai_nen, se.kaisai_tsukihi) < '${input.scope.date}'\n    ${lower}\n    ${venue}\n    ${surfacePredicate}\n    ${horsePredicate(input)}\n    ${ownerTargetPredicate(input)}\n    ${input.scope.eventScope === undefined ? "" : `AND EXISTS (SELECT 1 FROM ${tableName(input.config, currentTables(source).raceTable)} arc WHERE arc.kaisai_nen = se.kaisai_nen AND arc.kaisai_tsukihi = se.kaisai_tsukihi AND arc.keibajo_code = se.keibajo_code AND arc.race_bango = se.race_bango AND ${arcTitleSql("arc.kyosomei_hondai")})`}\n    ${identities}`;
+  // The plain kaisai_nen bounds let R2 SQL prune partitions; concat() cannot.
+  return `concat(se.kaisai_nen, se.kaisai_tsukihi) < '${input.scope.date}'\n    AND se.kaisai_nen <= '${input.scope.date.slice(0, 4)}'\n    ${lower}\n    ${venue}\n    ${surfacePredicate}\n    ${horsePredicate(input)}\n    ${ownerTargetPredicate(input)}\n    ${input.scope.eventScope === undefined ? "" : `AND EXISTS (SELECT 1 FROM ${tableName(input.config, currentTables(source).raceTable)} arc WHERE arc.kaisai_nen = se.kaisai_nen AND arc.kaisai_tsukihi = se.kaisai_tsukihi AND arc.keibajo_code = se.keibajo_code AND arc.race_bango = se.race_bango AND ${arcTitleSql("arc.kyosomei_hondai")})`}\n    ${identities}`;
 };
 
 // Venue cohorts always match the target surface, independently of the
