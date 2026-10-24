@@ -44,8 +44,13 @@ VIEW_PREFIX: Final[str] = "\ncreate view pg.race_entry_corner_features as\n"
 # NAR venue codes are 30-65 and 83; overseas codes are alphanumeric and sort above.
 NAR_VENUE_MIN: Final[str] = "30"
 NAR_VENUE_MAX: Final[str] = "99"
+# umaban is part of the key: production keeps overseas races whose foreign
+# runners all share ketto_toroku_bango '0000000000' (5,376 rows locally), which
+# build-corner-feature-table.ts dropped via its numeric-venue filter. Its
+# 6-column ON CONFLICT upsert therefore no longer applies to the rebuilt table.
 PRIMARY_KEY: Final[str] = (
-    "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango"
+    "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, "
+    "ketto_toroku_bango, umaban"
 )
 IDENTIFIER_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[a-z_][a-z0-9_]*$")
 DATE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{8}$")

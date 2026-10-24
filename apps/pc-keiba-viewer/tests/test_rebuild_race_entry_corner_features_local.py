@@ -164,7 +164,7 @@ def test_swap_sql_replaces_target_and_restores_indexes_in_order() -> None:
     assert statements[2:] == [
         "drop table if exists t",
         "alter table t__rebuilt rename to t",
-        "alter table t add primary key (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango)",
+        "alter table t add primary key (source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango, umaban)",
         "CREATE INDEX a ON public.t (x)",
         "drop table t__staging",
     ]
