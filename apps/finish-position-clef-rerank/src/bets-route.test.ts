@@ -10,7 +10,7 @@ import {
   type BetEnv,
 } from "./bets-route";
 
-const race = { ymd: "20261018", keibajoCode: "08", raceBango: "11", budget: 500 };
+const race = { ymd: "20261018", keibajoCode: "08", raceBango: "11", budget: 500, types: null };
 
 const heatmapPath = "/api/races/2026/10/18/08/11/sections/win-rate-heatmap?source=jra";
 const realtimePath = "/api/races/2026/10/18/08/11/realtime?source=jra";
@@ -435,4 +435,14 @@ it("does not mark a race warmed when the suggestion is unavailable", async () =>
   const env = makeEnv({ "pred:fp:v1:20261018:08:11": basePrediction }, {});
   expect(await warmRaceBets(env, warmRace)).toBe(404);
   expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenCalledTimes(0);
+});
+
+it("caches a bet-type selection under its own result key", async () => {
+  const env = makeEnv({}, { [heatmapPath]: heatmap, [realtimePath]: realtime });
+  vi.mocked(env.AI.run).mockResolvedValue(clefAnswers);
+  const outcome = await suggestRaceBets(env, { ...race, types: new Set(["tansho"]) });
+  expect(outcome.status).toBe(200);
+  expect(vi.mocked(env.DETAIL_SECTION_CACHE_KV.put).mock.calls[1]?.[0]).toBe(
+    "clefbet:v2:result:20261018:08:11:500:tansho",
+  );
 });

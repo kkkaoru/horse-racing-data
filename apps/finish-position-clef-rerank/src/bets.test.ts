@@ -5,6 +5,7 @@ import {
   allocateUnits,
   buildBetRequest,
   parseBetAnswers,
+  parseBetTypes,
   planTickets,
   readOdds,
   readRunners,
@@ -350,15 +351,15 @@ it("scores every bet type with Harville probabilities", () => {
     [3, 0.14893855004693082],
     [4, 0.03474961787754513],
   ]);
-  expect(ticketProbability(p, "tansho", [1])).toBe(0.5175160109810499);
-  expect(ticketProbability(p, "fukusho", [1])).toBe(0.9828147891515896);
-  expect(ticketProbability(p, "umaren", [1, 2])).toBe(0.5410136398562542);
-  expect(ticketProbability(p, "wide", [1, 2])).toBe(0.9308849359548772);
-  expect(ticketProbability(p, "umatan", [1, 2])).toBe(0.3204906793799254);
-  expect(ticketProbability(p, "3renpuku", [1, 2, 3])).toBe(0.7713789680549261);
-  expect(ticketProbability(p, "3rentan", [1, 2, 3])).toBe(0.2598611420090362);
-  expect(ticketProbability(p, "tansho", [])).toBe(0);
-  expect(ticketProbability(p, "umatan", [9, 1])).toBe(0);
+  expect(ticketProbability(p, "tansho", [1], new Map())).toBe(0.5175160109810499);
+  expect(ticketProbability(p, "fukusho", [1], new Map())).toBe(0.9828147891515896);
+  expect(ticketProbability(p, "umaren", [1, 2], new Map())).toBe(0.5410136398562542);
+  expect(ticketProbability(p, "wide", [1, 2], new Map())).toBe(0.9308849359548772);
+  expect(ticketProbability(p, "umatan", [1, 2], new Map())).toBe(0.3204906793799254);
+  expect(ticketProbability(p, "3renpuku", [1, 2, 3], new Map())).toBe(0.7713789680549261);
+  expect(ticketProbability(p, "3rentan", [1, 2, 3], new Map())).toBe(0.2598611420090362);
+  expect(ticketProbability(p, "tansho", [], new Map())).toBe(0);
+  expect(ticketProbability(p, "umatan", [9, 1], new Map())).toBe(0);
 });
 
 it("plans boxes for unordered and ordered pair types", () => {
@@ -984,4 +985,143 @@ it("orders tied styles by name and falls back to a flow without any style answer
     budget: 1000,
   });
   expect(none?.plans[0].style).toBe("nagashi");
+});
+
+const frameRunners = (): RunnerProfile[] => [
+  { horseNumber: 1, frameNumber: 1, horseName: "H1", jockey: "J1", trainer: "T1", owner: "O1" },
+  { horseNumber: 2, frameNumber: 1, horseName: "H2", jockey: "J2", trainer: "T2", owner: "O2" },
+  { horseNumber: 3, frameNumber: 2, horseName: "H3", jockey: "J3", trainer: "T3", owner: "O3" },
+  { horseNumber: 4, frameNumber: 2, horseName: "H4", jockey: "J4", trainer: "T4", owner: "O4" },
+];
+
+const frameOdds = (): OddsBook => ({
+  tansho: [
+    { combination: "1", odds: 2, minOdds: null, maxOdds: null },
+    { combination: "2", odds: 4, minOdds: null, maxOdds: null },
+  ],
+  wakuren: [
+    { combination: "1-1", odds: 6, minOdds: null, maxOdds: null },
+    { combination: "1-2", odds: 2.5, minOdds: null, maxOdds: null },
+    { combination: "2-2", odds: 15, minOdds: null, maxOdds: null },
+  ],
+});
+
+it("parses the selected bet types", () => {
+  expect(parseBetTypes("tansho,wakuren,")).toStrictEqual(new Set(["tansho", "wakuren"]));
+});
+
+it("rejects an empty or unknown bet type list", () => {
+  expect(parseBetTypes("")).toBeNull();
+  expect(parseBetTypes("tansho,wakufuku")).toBeNull();
+});
+
+it("prices a 枠連 frame pair from the horse pairs in those frames", () => {
+  const p = new Map([
+    [1, 0.4],
+    [2, 0.3],
+    [3, 0.2],
+    [4, 0.1],
+  ]);
+  const frames = new Map([
+    [1, 1],
+    [2, 1],
+    [3, 2],
+    [4, 2],
+  ]);
+  expect(ticketProbability(p, "wakuren", [1, 1], frames)).toBe(0.37142857142857144);
+  expect(ticketProbability(p, "wakuren", [1, 2], frames)).toBe(0.5813492063492065);
+});
+
+it("suggests 枠連 tickets as frame pairs when only 枠連 is selected", () => {
+  expect(
+    suggestPlans({
+      race: { runners: frameRunners(), odds: frameOdds(), ranks: ranks() },
+      answers: {
+        winner: { "1": 0.5, "2": 0.3, "3": 0.1, "4": 0.1 },
+        top3: {},
+        axis: { "1": 1 },
+        style: { nagashi: 1 },
+        betType: { tansho: 1 },
+      },
+      budget: 1000,
+      types: new Set(["wakuren"]),
+    })?.plans.map((plan) => ({
+      betType: plan.betType,
+      legs: plan.legs,
+      tickets: plan.tickets.map((ticket) => [ticket.horses, ticket.stake]),
+    })),
+  ).toStrictEqual([
+    {
+      betType: "wakuren",
+      legs: [[1], [2, 3, 4]],
+      tickets: [
+        [[1, 2], 700],
+        [[1, 1], 300],
+      ],
+    },
+  ]);
+});
+
+it("suggests only the selected bet types", () => {
+  expect(
+    suggestPlans({
+      race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+      answers: {
+        winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+        top3: {},
+        axis: { "1": 1 },
+        style: { nagashi: 1 },
+        betType: { tansho: 0.6, umaren: 0.4 },
+      },
+      budget: 1000,
+      types: new Set(["umaren"]),
+    })?.plans.map((plan) => plan.betType),
+  ).toStrictEqual(["umaren"]);
+});
+
+it("returns null when no selected bet type has odds", () => {
+  expect(
+    suggestPlans({
+      race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+      answers: {
+        winner: { "1": 1 },
+        top3: {},
+        axis: { "1": 1 },
+        style: { nagashi: 1 },
+        betType: { tansho: 1 },
+      },
+      budget: 1000,
+      types: new Set(["wakuren"]),
+    }),
+  ).toBeNull();
+});
+
+it("keeps 枠連 out of the clef-flash bet type question", () => {
+  const built = buildBetRequest({
+    heatmap: { runners: [{ umaban: "01", wakuban: "1", bamei: "A" }] },
+    realtime: {
+      odds: {
+        latest: {
+          tansho: [{ combination: "1", odds: 2 }],
+          wakuren: [{ combination: "1-1", odds: 6 }],
+        },
+      },
+    },
+    recent: null,
+    training: null,
+    trends: null,
+    ranks: new Map(),
+  });
+  const questions = built.request.questions;
+  expect(
+    typeof questions === "object" && questions !== null && "bet_type" in questions
+      ? questions.bet_type
+      : null,
+  ).toStrictEqual({
+    type: "choice",
+    instructions:
+      "Which bet type gives the best expected return for a small fixed budget given the odds and how predictable this race is?",
+    criteria: { tansho: "単勝: 1着を当てる" },
+  });
+  expect(built.odds.wakuren?.length).toBe(1);
 });

@@ -9,6 +9,7 @@ import {
   type BetAnswers,
   type BetPlanSet,
   type BetSuggestion,
+  type BetType,
   type RunnerProfile,
 } from "./bets";
 import { latestBase, parseBasePredictions, toBaseRanks } from "./fuse";
@@ -31,6 +32,8 @@ export interface BetRaceAddress {
   keibajoCode: string;
   raceBango: string;
   budget: number;
+  // Bet types the viewer selected; null means every type with odds.
+  types: ReadonlySet<BetType> | null;
 }
 
 export interface BetOutcome {
@@ -153,8 +156,9 @@ export const oddsSignature = (realtime: unknown): string =>
 const answerKey = (race: BetRaceAddress, baseGeneratedAt: string, signature: string): string =>
   `clefbet:v2:answers:${raceSuffix(race)}:${baseGeneratedAt}:${signature}`;
 
+// The all-types key is unchanged so the cron warm keeps serving the default view.
 const resultKey = (race: BetRaceAddress): string =>
-  `clefbet:v2:result:${raceSuffix(race)}:${String(race.budget)}`;
+  `clefbet:v2:result:${raceSuffix(race)}:${String(race.budget)}${race.types === null ? "" : `:${[...race.types].toSorted().join(",")}`}`;
 
 // Results are written only by suggestRaceBets, so matching cache keys are trusted as BetResponse.
 const isBetResponse = (value: unknown): value is BetResponse =>
@@ -219,7 +223,12 @@ export const suggestRaceBets = async (env: BetEnv, race: BetRaceAddress): Promis
     horses,
   );
   if (answers === null) return { status: 502, body: { error: "clef-flash answer was malformed" } };
-  const plans = suggestPlans({ race: built, answers, budget: race.budget });
+  const plans = suggestPlans({
+    race: built,
+    answers,
+    budget: race.budget,
+    ...(race.types === null ? {} : { types: race.types }),
+  });
   if (plans === null) return { status: 404, body: { error: "no ticket has published odds" } };
   const body: BetResponse = {
     raceKey: raceSuffix(race),
@@ -240,16 +249,16 @@ export const suggestRaceBets = async (env: BetEnv, race: BetRaceAddress): Promis
   return { status: 200, body };
 };
 
-const warmedKey = (race: Omit<BetRaceAddress, "budget">): string =>
+const warmedKey = (race: Omit<BetRaceAddress, "budget" | "types">): string =>
   `clefbet:v2:warmed:${race.ymd}:${race.keibajoCode}:${race.raceBango}`;
 
 // Cron path: regenerate the default-budget suggestion only for races whose served prediction
 // was (re)generated since the last warm, including the post-horse-weight rescore.
 export const warmRaceBets = async (
   env: BetEnv,
-  race: Omit<BetRaceAddress, "budget">,
+  race: Omit<BetRaceAddress, "budget" | "types">,
 ): Promise<number> => {
-  const target = { ...race, budget: DEFAULT_BUDGET };
+  const target = { ...race, budget: DEFAULT_BUDGET, types: null };
   const [{ baseGeneratedAt }, warmed] = await Promise.all([
     loadRanks(env, target),
     env.DETAIL_SECTION_CACHE_KV.get(warmedKey(race)),

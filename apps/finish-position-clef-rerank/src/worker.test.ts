@@ -416,6 +416,69 @@ it("rejects a budget that is not a multiple of 100", async () => {
   });
 });
 
+it("rejects an unknown bet type selection", async () => {
+  const response = await worker.fetch(
+    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=300&types=tansho,foo"),
+    makeEnv({}),
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toStrictEqual({
+    error: "types must be a comma-separated list of bet types",
+  });
+});
+
+it("suggests only the selected bet types", async () => {
+  const env = makeEnv({});
+  vi.mocked(env.VIEWER.fetch).mockImplementation(async (request: Request) =>
+    request.url.includes("win-rate-heatmap")
+      ? Response.json({
+          runners: [
+            { umaban: "01", wakuban: "1", bamei: "A" },
+            { umaban: "02", wakuban: "2", bamei: "B" },
+          ],
+        })
+      : Response.json({
+          odds: {
+            fetchedAt: "t",
+            latest: {
+              tansho: [
+                { combination: "1", odds: 2 },
+                { combination: "2", odds: 3 },
+              ],
+              fukusho: [{ combination: "1", minOdds: 1.1, maxOdds: 1.4 }],
+            },
+          },
+        }),
+  );
+  vi.mocked(env.AI.run).mockResolvedValue({
+    answers: {
+      winner: { probabilities: { "1": 0.7, "2": 0.3 } },
+      bet_type: { probabilities: { tansho: 1 } },
+      bet_style: { probabilities: { box: 1 } },
+      axis: { probabilities: { "1": 1 } },
+      top3_1: { noul: 0.9 },
+      top3_2: { noul: 0.8 },
+    },
+  });
+  const response = await worker.fetch(
+    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=300&types=fukusho"),
+    env,
+  );
+  expect(response.status).toBe(200);
+  const body: unknown = await response.json();
+  expect(
+    typeof body === "object" &&
+      body !== null &&
+      "plans" in body &&
+      typeof body.plans === "object" &&
+      body.plans !== null &&
+      "plans" in body.plans &&
+      Array.isArray(body.plans.plans)
+      ? body.plans.plans.map((plan: { betType: string }) => plan.betType)
+      : null,
+  ).toStrictEqual(["fukusho"]);
+});
+
 it("fails closed when the viewer cannot be reached", async () => {
   vi.spyOn(console, "error").mockImplementation(() => undefined);
   const env = makeEnv({});

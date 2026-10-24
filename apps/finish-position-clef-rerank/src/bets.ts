@@ -1,7 +1,15 @@
 // Run with bun (bunx vitest). clef-flash bet suggestions: builds the decision request from the
 // viewer's race data, then turns the answers into tickets and a budget split.
 
-export type BetType = "tansho" | "fukusho" | "umaren" | "wide" | "umatan" | "3renpuku" | "3rentan";
+export type BetType =
+  | "tansho"
+  | "fukusho"
+  | "umaren"
+  | "wide"
+  | "umatan"
+  | "3renpuku"
+  | "3rentan"
+  | "wakuren";
 export type BetStyle = "single" | "box" | "nagashi" | "multi" | "formation";
 
 export interface OddsEntry {
@@ -73,6 +81,8 @@ export interface SuggestInput {
   race: Pick<BetRace, "runners" | "odds" | "ranks">;
   answers: BetAnswers;
   budget: number;
+  // Bet types the viewer selected; absent means every type with odds.
+  types?: ReadonlySet<BetType>;
 }
 
 interface Candidate {
@@ -112,7 +122,11 @@ const BET_TYPES: readonly BetType[] = [
   "umatan",
   "3renpuku",
   "3rentan",
+  "wakuren",
 ];
+// 枠連 is offered only on request and stays out of the clef-flash question, so cached answers
+// and the default suggestions keep their bet-type ranking.
+const PROMPT_EXCLUDED_TYPES: ReadonlySet<BetType> = new Set(["wakuren"]);
 const BET_TYPE_LABELS: Record<BetType, string> = {
   tansho: "単勝: 1着を当てる",
   fukusho: "複勝: 3着以内を当てる",
@@ -121,6 +135,7 @@ const BET_TYPE_LABELS: Record<BetType, string> = {
   umatan: "馬単: 1-2着を着順通り",
   "3renpuku": "3連複: 1-3着の組み合わせ（順不同）",
   "3rentan": "3連単: 1-3着を着順通り",
+  wakuren: "枠連: 1-2着の枠の組み合わせ（順不同）",
 };
 const STYLE_LABELS: Record<Exclude<BetStyle, "single">, string> = {
   box: "ボックス: 上位馬の全組み合わせ",
@@ -175,6 +190,12 @@ const finite = (value: unknown): number | null =>
 const toNumber = (value: unknown): number => Number(text(value));
 
 const isBetType = (value: string): value is BetType => BET_TYPES.some((type) => type === value);
+
+// Parses the viewer's comma-separated bet type list; an unknown or empty list is rejected.
+export const parseBetTypes = (value: string): Set<BetType> | null => {
+  const ids = value.split(",").filter((id) => id !== "");
+  return ids.length > 0 && ids.every(isBetType) ? new Set(ids.filter(isBetType)) : null;
+};
 
 const isStyle = (value: string): value is Exclude<BetStyle, "single"> =>
   Object.hasOwn(STYLE_LABELS, value);
@@ -321,7 +342,9 @@ export const buildBetRequest = (sources: BetSources): Omit<BetRace, "raceKey"> =
   const recent = recentSummary(sources.recent);
   const training = trainingSummary(sources.training);
   const styles = styleSummary(sources.trends);
-  const types = BET_TYPES.filter((type) => (book[type]?.length ?? 0) > 0);
+  const types = BET_TYPES.filter(
+    (type) => (book[type]?.length ?? 0) > 0 && !PROMPT_EXCLUDED_TYPES.has(type),
+  );
   const horses = horseCriteria(runners);
   const state = {
     race: { todayPlacings: trendSummary(sources.trends) },
@@ -478,11 +501,30 @@ const othersOf = (p: ReadonlyMap<number, number>, horses: readonly number[]): nu
 const pairsOf = (horses: readonly number[]): number[][] =>
   horses.flatMap((first, index) => horses.slice(index + 1).map((second) => [first, second]));
 
-// Harville probability that a ticket of the given type pays out.
+const frameKey = (frames: ReadonlyMap<number, number>, horses: readonly number[]): string =>
+  horses
+    .map((horse) => Number(frames.get(horse)))
+    .toSorted((a, b) => a - b)
+    .join("-");
+
+// 枠連 pays when the first two horses come from the two frames, so a frame pair sums the
+// probabilities of every horse pair drawn from those frames (a frame may pair with itself).
+const framePairProbability = (
+  p: ReadonlyMap<number, number>,
+  frames: ReadonlyMap<number, number>,
+  pair: readonly number[],
+): number =>
+  pairsOf([...p.keys()])
+    .filter((horses) => frameKey(frames, horses) === pair.join("-"))
+    .reduce((sum, horses) => sum + setProbability(p, horses), 0);
+
+// Harville probability that a ticket of the given type pays out. For 枠連 the combination
+// holds frame numbers, resolved through the horse-to-frame map.
 export const ticketProbability = (
   p: ReadonlyMap<number, number>,
   betType: BetType,
   horses: readonly number[],
+  frames: ReadonlyMap<number, number>,
 ): number => {
   const table: Record<BetType, () => number> = {
     tansho: () => p.get(horses[0] ?? 0) ?? 0,
@@ -497,6 +539,7 @@ export const ticketProbability = (
     umatan: () => orderedProbability(p, horses),
     "3renpuku": () => setProbability(p, horses),
     "3rentan": () => orderedProbability(p, horses),
+    wakuren: () => framePairProbability(p, frames, horses),
   };
   return table[betType]();
 };
@@ -566,8 +609,24 @@ export const planTickets = ({ betType, style, axis, order }: PlanInput): Plan =>
 const oddsKey = (betType: BetType, horses: readonly number[]): string =>
   (ORDERED_TYPES.has(betType) ? [...horses] : horses.toSorted((a, b) => a - b)).join("-");
 
+const frameMap = (race: Pick<BetRace, "runners">): Map<number, number> =>
+  new Map(race.runners.map((runner) => [runner.horseNumber, runner.frameNumber]));
+
+// A horse-pair plan becomes the distinct frame pairs its tickets fall in.
+const toFramePairs = (
+  combos: readonly number[][],
+  frames: ReadonlyMap<number, number>,
+): number[][] => [
+  ...new Map(
+    combos.map((combo) => {
+      const key = frameKey(frames, combo);
+      return [key, key.split("-").map(Number)];
+    }),
+  ).values(),
+];
+
 const toCandidate = (
-  race: Pick<BetRace, "odds">,
+  race: Pick<BetRace, "odds" | "runners">,
   p: ReadonlyMap<number, number>,
   betType: BetType,
   horses: number[],
@@ -576,7 +635,12 @@ const toCandidate = (
   const odds = entry?.minOdds ?? entry?.odds ?? null;
   return entry === undefined || odds === null
     ? null
-    : { horses, odds, maxOdds: entry.maxOdds, probability: ticketProbability(p, betType, horses) };
+    : {
+        horses,
+        odds,
+        maxOdds: entry.maxOdds,
+        probability: ticketProbability(p, betType, horses, frameMap(race)),
+      };
 };
 
 const compareProbabilityDesc = (a: Candidate, b: Candidate): number =>
@@ -671,11 +735,11 @@ export interface BetPlanSet {
   budget: number;
   totalStake: number;
   expectedReturn: number;
-  plans: [BetSuggestion, BetSuggestion, ...BetSuggestion[]];
+  plans: [BetSuggestion, ...BetSuggestion[]];
 }
 
 interface PlanContext {
-  race: Pick<BetRace, "odds">;
+  race: Pick<BetRace, "odds" | "runners">;
   p: ReadonlyMap<number, number>;
   order: readonly number[];
   axis: number;
@@ -699,12 +763,19 @@ const PLAN_COUNT_STEPS: readonly (readonly [number, number])[] = [
   [0, 2],
 ];
 const MIN_PARTNER_POOL: number = 3;
+// The default view always suggests at least two bet types; a viewer's selection needs only as
+// many as its selected types that have odds.
+const MIN_PLAN_TYPES: number = 2;
 
 const compareEntryDesc = (a: [string, number], b: [string, number]): number =>
   b[1] - a[1] || a[0].localeCompare(b[0]);
 
-const rankedTypes = (race: Pick<BetRace, "odds">, answers: BetAnswers): BetType[] =>
-  BET_TYPES.filter((type) => (race.odds[type]?.length ?? 0) > 0).toSorted(
+const rankedTypes = (
+  race: Pick<BetRace, "odds">,
+  answers: BetAnswers,
+  selected: ReadonlySet<BetType>,
+): BetType[] =>
+  BET_TYPES.filter((type) => selected.has(type) && (race.odds[type]?.length ?? 0) > 0).toSorted(
     (a, b) => (answers.betType[b] ?? 0) - (answers.betType[a] ?? 0),
   );
 
@@ -756,15 +827,19 @@ const buildPlan = (context: PlanContext, slot: PlanSlot): BetSuggestion | null =
         axis: context.axis,
         order: context.order.slice(0, size),
       });
-      const candidates = plan.combos
+      const combos =
+        slot.betType === "wakuren"
+          ? toFramePairs(plan.combos, frameMap(context.race))
+          : plan.combos;
+      const candidates = combos
         .map((horses) => toCandidate(context.race, context.p, slot.betType, horses))
         .filter((candidate) => candidate !== null);
-      return { plan, candidates };
+      return { plan, combos, candidates };
     })
     .find(
-      ({ plan, candidates }) =>
+      ({ combos, candidates }) =>
         candidates.length > 0 &&
-        candidates.length === plan.combos.length &&
+        candidates.length === combos.length &&
         candidates.length <= slot.units,
     );
   return fitted === undefined
@@ -781,13 +856,18 @@ const splitUnits = (weights: readonly number[], units: number): number[] => {
   return base.map((value, index) => (index === 0 ? value + units - used : value));
 };
 
-export const suggestPlans = ({ race, answers, budget }: SuggestInput): BetPlanSet | null => {
+export const suggestPlans = ({
+  race,
+  answers,
+  budget,
+  types: selected,
+}: SuggestInput): BetPlanSet | null => {
   const p = winProbabilities(race, answers.winner);
   const order = [...p].toSorted(compareWinDesc).map(([horse]) => horse);
   const chosenAxis = Number(argmax(answers.axis));
   const axis = p.has(chosenAxis) ? chosenAxis : (order[0] ?? 0);
   const units = Math.floor(budget / UNIT_YEN);
-  const types = rankedTypes(race, answers);
+  const types = rankedTypes(race, answers, selected ?? new Set(BET_TYPES));
   const styles = rankedStyles(answers);
   const target = Math.min(
     types.length,
@@ -815,13 +895,14 @@ export const suggestPlans = ({ race, answers, budget }: SuggestInput): BetPlanSe
     },
     { plans: [], carry: 0 },
   );
-  const [first, second, ...rest] = plans;
-  return first === undefined || second === undefined
+  const [first, ...rest] = plans;
+  const required = selected === undefined ? MIN_PLAN_TYPES : Math.min(types.length, MIN_PLAN_TYPES);
+  return first === undefined || plans.length < required
     ? null
     : {
         budget,
         totalStake: plans.reduce((sum, plan) => sum + plan.totalStake, 0),
         expectedReturn: plans.reduce((sum, plan) => sum + plan.expectedReturn, 0),
-        plans: [first, second, ...rest],
+        plans: [first, ...rest],
       };
 };

@@ -6,6 +6,7 @@ import {
   warmRaceBets,
   type ServiceFetcher,
 } from "./bets-route";
+import { parseBetTypes } from "./bets";
 import {
   buildClefInput,
   fuseRanks,
@@ -242,12 +243,17 @@ const safeBets = async (env: Env, url: URL, match: RegExpExecArray): Promise<Out
   const budget = parseBudget(url.searchParams.get("budget"));
   if (budget === null)
     return { status: 400, body: { error: "budget must be a multiple of 100 from 100 to 1000000" } };
+  const typesParam = url.searchParams.get("types");
+  const types = typesParam === null ? null : parseBetTypes(typesParam);
+  if (typesParam !== null && types === null)
+    return { status: 400, body: { error: "types must be a comma-separated list of bet types" } };
   try {
     return await suggestRaceBets(env, {
       ymd: String(match[1]),
       keibajoCode: String(match[2]),
       raceBango: String(match[3]),
       budget,
+      types,
     });
   } catch (error) {
     console.error("clef bets failed", url.pathname, String(error));
