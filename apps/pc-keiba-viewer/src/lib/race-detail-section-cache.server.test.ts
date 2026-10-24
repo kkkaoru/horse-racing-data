@@ -581,3 +581,23 @@ it("resolveDetailSectionCacheKey qualifies the section key with the race generat
   ).toBe("race-detail-section:v4:2026:07:05:05:11:results:default:g1783000000000");
   expect(kv.get.mock.calls).toStrictEqual([["race-cache:gen:v2:2026:0705:05:11"]]);
 });
+
+it("never serves a legacy Cache API entry through the never-busted fallback", async () => {
+  const kv = buildKvStub();
+  const cache = buildCacheStub();
+  cache.match.mockImplementation(async (request) =>
+    request.url.endsWith("results%3Adefault") ? new Response('{"type":"results"}') : undefined,
+  );
+  mockEnvWithKv(kv);
+  Object.defineProperty(globalThis, "caches", { configurable: true, value: { default: cache } });
+  expect(
+    await getCachedDetailSectionResponse(
+      "race-detail-section:v4:2026:07:05:05:11:results:default:g0",
+    ),
+  ).toBeNull();
+  expect(cache.match).toHaveBeenCalledTimes(1);
+  expect(kv.get.mock.calls).toStrictEqual([
+    ["race-detail-section:v4:2026:07:05:05:11:results:default:g0"],
+    ["race-detail-section:v4:2026:07:05:05:11:results:default"],
+  ]);
+});

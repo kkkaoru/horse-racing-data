@@ -100,7 +100,8 @@ export const bustRaceCachesForRace = async (
     : bumpGeneration(kv, keys.generationKey);
 };
 
-// One generation read per race per server render; route handlers read once.
+// Memoized per server-component render; route handlers (no React cache scope)
+// read once per resolve call.
 const readRaceCacheGeneration = cache(async (generationKey: string): Promise<string> => {
   const { env } = await safeGetCloudflareRuntime();
   return (await env?.DETAIL_SECTION_CACHE_KV?.get(generationKey)) ?? INITIAL_CACHE_GENERATION;

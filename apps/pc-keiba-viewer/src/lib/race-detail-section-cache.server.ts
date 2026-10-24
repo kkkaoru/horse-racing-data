@@ -123,11 +123,13 @@ const readFreshKvBody = (raw: string, cacheKey: string): string | null => {
     : null;
 };
 
+// Legacy reads skip the Cache API: old busts never purged it, so its legacy
+// entries may predate a bust that already removed the legacy KV keys.
 const readCachedDetailSectionForKey = async (
   cacheKey: string,
-  populateCurrentCacheApi: boolean,
+  useCacheApi: boolean,
 ): Promise<Response | null> => {
-  const defaultCache = getDefaultCache();
+  const defaultCache = useCacheApi ? getDefaultCache() : null;
   const cacheRequest = getCacheRequest(cacheKey);
   const cachedResponse = await defaultCache?.match(cacheRequest);
   if (cachedResponse?.ok) {
@@ -162,9 +164,7 @@ const readCachedDetailSectionForKey = async (
       }),
     );
   };
-  if (populateCurrentCacheApi) {
-    ctx?.waitUntil(putCache());
-  }
+  ctx?.waitUntil(putCache());
   return buildCachedResponse(kvBody, "kv");
 };
 
