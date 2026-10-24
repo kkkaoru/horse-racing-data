@@ -114,6 +114,7 @@ interface R2SqlMetricsInput extends R2SqlAttemptResult {
   env: R2SqlCatalogConfig;
   payload: unknown;
   query: string;
+  sqlHash: string;
   startedAt: number;
 }
 
@@ -602,6 +603,7 @@ const fetchR2SqlAttempt = async (params: {
   endpoint: string;
   fetchImpl: Fetcher;
   init: RequestInit;
+  sqlHash: string;
 }): Promise<R2SqlAttemptResult> => {
   const timeoutMs = R2_SQL_ATTEMPT_TIMEOUTS_MS[params.attempt];
   if (timeoutMs === undefined) throw new Error("R2 SQL did not answer any attempt");
@@ -615,6 +617,17 @@ const fetchR2SqlAttempt = async (params: {
     // Only this attempt's own silence is retried; a caller abort or a
     // network failure propagates unchanged.
     if (!attemptSignal.aborted) throw error;
+    // An abandoned attempt may still be scanned and billed; count them so
+    // the retry cost is measurable per route and query.
+    console.warn(
+      JSON.stringify({
+        event: "r2_sql_attempt_timeout",
+        route: r2SqlRoute.getStore() ?? "unknown",
+        sqlHash: params.sqlHash,
+        attempt: params.attempt + 1,
+        timeoutMs,
+      }),
+    );
     return fetchR2SqlAttempt({ ...params, attempt: params.attempt + 1 });
   }
 };
@@ -646,7 +659,7 @@ const logR2SqlMetrics = (input: R2SqlMetricsInput): void => {
       event: "r2_sql_metrics",
       route: r2SqlRoute.getStore() ?? "unknown",
       tables: referencedTables(input.env, input.query),
-      sqlHash: createHash("sha256").update(input.query).digest("hex").slice(0, SQL_HASH_LENGTH),
+      sqlHash: input.sqlHash,
       resultCache: input.response.headers.get(R2_SQL_RESULT_CACHE_HEADER) === "hit",
       attempts: input.attempts,
       durationMs: Date.now() - input.startedAt,
@@ -666,8 +679,10 @@ export const executeR2Sql = async (
   const warehouse = `${env.R2_SQL_ACCOUNT_ID}_${env.R2_SQL_BUCKET_NAME}`;
   const endpoint = `https://api.sql.cloudflarestorage.com/api/v1/accounts/${encodeURIComponent(env.R2_SQL_ACCOUNT_ID)}/r2-sql/query/${encodeURIComponent(env.R2_SQL_BUCKET_NAME)}`;
   const startedAt = Date.now();
+  const sqlHash = createHash("sha256").update(query).digest("hex").slice(0, SQL_HASH_LENGTH);
   const { attempts, response } = await fetchR2SqlAttempt({
     attempt: 0,
+    sqlHash,
     endpoint,
     fetchImpl,
     init: {
@@ -692,6 +707,6 @@ export const executeR2Sql = async (
   }
   const payload = parseJson(text);
   const rows = parseRows(payload);
-  logR2SqlMetrics({ attempts, env, payload, query, response, startedAt });
+  logR2SqlMetrics({ attempts, env, payload, query, response, sqlHash, startedAt });
   return rows;
 };

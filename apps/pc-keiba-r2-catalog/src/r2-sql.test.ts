@@ -513,9 +513,18 @@ it("retries an R2 SQL attempt that stayed silent until its own timeout", async (
     .mockImplementationOnce(async () =>
       Response.json({ result: { rows: [{ n: 1 }] }, success: true }),
     );
-  await expect(executeR2Sql(env(), "SELECT 1", fetchMock)).resolves.toStrictEqual([{ n: 1 }]);
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  await expect(
+    r2SqlRoute.run("/v1/win-rate-heatmap-stats", () => executeR2Sql(env(), "SELECT 1", fetchMock)),
+  ).resolves.toStrictEqual([{ n: 1 }]);
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(timeoutSpy.mock.calls).toStrictEqual([[20_000], [20_000]]);
+  expect(warn.mock.calls).toStrictEqual([
+    [
+      '{"event":"r2_sql_attempt_timeout","route":"/v1/win-rate-heatmap-stats","sqlHash":"e004ebd5b5532a4b","attempt":1,"timeoutMs":20000}',
+    ],
+  ]);
+  warn.mockRestore();
   timeoutSpy.mockRestore();
 });
 
