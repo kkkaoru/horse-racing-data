@@ -42,9 +42,22 @@ import duckdb
 from _catalog_attach import attach_source_catalog
 
 from _resource_defaults import add_resource_args, apply_to_connection
-from pedigree_staging import stage_horse_pedigree
+from pedigree_staging import (
+    normalized_pedigree_id_sql,
+    pedigree_id_variants,
+    stage_horse_pedigree,
+)
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
+# Cohort match on normalised ids: a superset of the raw-id cohort, so v1
+# (raw-id keyed) aggregates are unchanged and v2 aggregates are complete.
+SIRE_COHORT_MATCH = (
+    f"{normalized_pedigree_id_sql('te.sire_id')} = {normalized_pedigree_id_sql('hp.sire_id')}"
+)
+DAMSIRE_COHORT_MATCH = (
+    f"{normalized_pedigree_id_sql('te.damsire_id')} = "
+    f"{normalized_pedigree_id_sql('hp.damsire_id')}"
+)
 RACE_PARTITION_BY = "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 DISTANCE_TOLERANCE_M = 200
@@ -273,7 +286,7 @@ def stage_target_entities(
 def race_history_focus_filter_sql(focused_target: bool) -> str:
     if not focused_target:
         return ""
-    return """
+    return f"""
           and rec.source in (select distinct source from target_entities)
           and (
             exists (
@@ -293,8 +306,8 @@ def race_history_focus_filter_sql(focused_target: bool) -> str:
               join target_entities te
                 on te.source = rec.source
                 and (
-                  (te.sire_id is not null and te.sire_id = hp.sire_id)
-                  or (te.damsire_id is not null and te.damsire_id = hp.damsire_id)
+                  (te.sire_id is not null and {SIRE_COHORT_MATCH})
+                  or (te.damsire_id is not null and {DAMSIRE_COHORT_MATCH})
                 )
               where hp.ketto_toroku_bango = rec.ketto_toroku_bango
             )
@@ -334,7 +347,12 @@ def postgres_entity_scoped_race_history_query(
             ("sire", sire),
             ("damsire", damsire),
         ):
-            if value is not None:
+            if value is None:
+                continue
+            if key in {"sire", "damsire"}:
+                # Every raw spelling (8/10-digit) so history covers the v2 cohort.
+                source_values[key].update(pedigree_id_variants(str(value)))
+            else:
                 source_values[key].add(str(value))
     if not values_by_source:
         raise ValueError("entity-scoped race-history target cannot be empty")
@@ -553,8 +571,8 @@ def raw_catalog_race_history_sql(
                 join target_entities te
                   on te.source = '{source}'
                   and (
-                    (te.sire_id is not null and te.sire_id = hp.sire_id)
-                    or (te.damsire_id is not null and te.damsire_id = hp.damsire_id)
+                    (te.sire_id is not null and {SIRE_COHORT_MATCH})
+                    or (te.damsire_id is not null and {DAMSIRE_COHORT_MATCH})
                   )
                 where hp.ketto_toroku_bango = se.ketto_toroku_bango
               )
@@ -1369,6 +1387,57 @@ def stage_horse_pedigree_context(
     )
 
 
+def stage_horse_pedigree_context_v2(
+    con: duckdb.DuckDBPyConnection, focused_target: bool = True
+) -> None:
+    """Rerun the pedigree stages on normalised ids into ``horse_pedigree_context_v2``.
+
+    The v1 stages read ``horse_pedigree`` / ``target_context`` ids verbatim.
+    Rebinding both tables to normalised ids for one pass reuses the exact v1
+    SQL (so v1 output stays byte-identical); the raw tables are then restored.
+    """
+    con.execute(
+        "create or replace temp table horse_pedigree_raw as select * from horse_pedigree"
+    )
+    con.execute(
+        "create or replace temp table target_context_raw as select * from target_context"
+    )
+    con.execute(
+        f"""
+        create or replace temp table horse_pedigree as
+        select ketto_toroku_bango,
+          {normalized_pedigree_id_sql("sire_id")} as sire_id,
+          {normalized_pedigree_id_sql("damsire_id")} as damsire_id
+        from horse_pedigree_raw
+        """
+    )
+    con.execute(
+        f"""
+        create or replace temp table target_context as
+        select * replace (
+          {normalized_pedigree_id_sql("sire_id")} as sire_id,
+          {normalized_pedigree_id_sql("damsire_id")} as damsire_id
+        )
+        from target_context_raw
+        """
+    )
+    stage_pedigree_cumulatives(con)
+    stage_horse_pedigree_context(con, focused_target)
+    con.execute(
+        "create or replace temp table horse_pedigree_context_v2 as "
+        "select * from horse_pedigree_context"
+    )
+    con.execute(
+        "create or replace temp table horse_pedigree as select * from horse_pedigree_raw"
+    )
+    con.execute(
+        "create or replace temp table target_context as select * from target_context_raw"
+    )
+    drop_temp_tables(
+        con, ("horse_pedigree_raw", "target_context_raw", "horse_pedigree_context")
+    )
+
+
 def stage_horse_distance_grade(
     con: duckdb.DuckDBPyConnection, focused_target: bool = True
 ) -> None:
@@ -1740,7 +1809,16 @@ def append_features_sql(
              else null end as damsire_distance_place2_rate,
         case when hdg.dg_starts > 0
              then hdg.dg_p2::double / hdg.dg_starts
-             else null end as horse_distance_grade_place2_rate
+             else null end as horse_distance_grade_place2_rate,
+        case when hp2.sire_distance_starts > 0
+             then hp2.sire_distance_p2::double / hp2.sire_distance_starts
+             else null end as sire_distance_place2_rate_v2,
+        case when hp2.sire_grade_starts > 0
+             then hp2.sire_grade_p2::double / hp2.sire_grade_starts
+             else null end as sire_grade_place2_rate_v2,
+        case when hp2.damsire_distance_starts > 0
+             then hp2.damsire_distance_p2::double / hp2.damsire_distance_starts
+             else null end as damsire_distance_place2_rate_v2
       from base_with_meta b
       {horse_history_join}
       left join horse_context hc
@@ -1758,6 +1836,14 @@ def append_features_sql(
         and hp.keibajo_code = b.keibajo_code
         and hp.race_bango = b.race_bango
         and hp.ketto_toroku_bango = b.ketto_toroku_bango
+        and nullif(trim(b.ketto_toroku_bango), '{UNKNOWN_HORSE_REGISTRATION}') is not null
+      left join horse_pedigree_context_v2 hp2
+        on hp2.source = b.source
+        and hp2.kaisai_nen = b.kaisai_nen
+        and hp2.kaisai_tsukihi = b.kaisai_tsukihi
+        and hp2.keibajo_code = b.keibajo_code
+        and hp2.race_bango = b.race_bango
+        and hp2.ketto_toroku_bango = b.ketto_toroku_bango
         and nullif(trim(b.ketto_toroku_bango), '{UNKNOWN_HORSE_REGISTRATION}') is not null
       left join horse_distance_grade hdg
         on hdg.source = b.source
@@ -1878,6 +1964,7 @@ def main() -> None:
     stage_horse_near_miss(con)
     stage_target_context(con, input_glob, use_target_current)
     stage_horse_context(con, focused_target)
+    stage_horse_pedigree_context_v2(con, focused_target)
     stage_pedigree_cumulatives(con)
     if use_target_current:
         drop_temp_tables(

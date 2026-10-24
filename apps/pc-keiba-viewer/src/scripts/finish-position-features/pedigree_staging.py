@@ -17,6 +17,28 @@ from __future__ import annotations
 
 import duckdb
 
+# nvd_um stores breeding-registration ids as 8 digits (e.g. 11200715) while
+# nvd_nu / jvd_um store the same id as 10 digits (1120000715). Validated 100%
+# on the 100,452 local nvd_um/nvd_nu overlap pairs (sire and damsire).
+_LEGACY_ID_LENGTH = 8
+
+
+def normalized_pedigree_id_sql(expr: str) -> str:
+    """SQL mapping an 8-digit nvd_um breeding id onto the 10-digit form."""
+    return (
+        f"case when length({expr}) = {_LEGACY_ID_LENGTH} "
+        f"then left({expr}, 4) || '00' || right({expr}, 4) else {expr} end"
+    )
+
+
+def pedigree_id_variants(pedigree_id: str) -> tuple[str, ...]:
+    """Every raw spelling that normalises to ``pedigree_id`` (for IN-list pushdown)."""
+    if len(pedigree_id) == _LEGACY_ID_LENGTH:
+        pedigree_id = f"{pedigree_id[:4]}00{pedigree_id[4:]}"
+    if len(pedigree_id) == 10 and pedigree_id[4:6] == "00":
+        return (pedigree_id, pedigree_id[:4] + pedigree_id[6:])
+    return (pedigree_id,)
+
 
 def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
     """Build horse → sire / damsire mapping from jvd_um, nvd_um and nvd_nu.
@@ -30,6 +52,9 @@ def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
       ketto_toroku_bango  VARCHAR  — registration number
       sire_id             VARCHAR  — ketto_joho_01a (NULL when blank/missing)
       damsire_id          VARCHAR  — ketto_joho_05a (NULL when blank/missing)
+
+    The ids stay raw (8-digit nvd_um vs 10-digit nvd_nu/jvd_um) for models
+    trained on them; v2 features apply ``normalized_pedigree_id_sql`` instead.
     """
     con.execute(
         """

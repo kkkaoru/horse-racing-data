@@ -282,6 +282,10 @@ def _seed_join_temps(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
+        "create or replace temp table horse_pedigree_context_v2 as "
+        "select * from horse_pedigree_context"
+    )
+    con.execute(
         """
         create or replace temp table horse_distance_grade(
           source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
@@ -440,7 +444,7 @@ def test_append_features_sql_does_not_share_unknown_horse_history() -> None:
     guard = (
         "and nullif(trim(b.ketto_toroku_bango), '0000000000') is not null"
     )
-    assert sql.count(guard) == 4
+    assert sql.count(guard) == 5
 
 
 def test_append_features_sql_unknown_horse_keeps_one_row_and_null_horse_stats(
@@ -644,6 +648,10 @@ def test_upcoming_target_race_resolves_near_miss_features_via_asof(
         """
     )
     con.execute(
+        "create or replace temp table horse_pedigree_context_v2 as "
+        "select * from horse_pedigree_context"
+    )
+    con.execute(
         """
         create or replace temp table horse_distance_grade(
           source varchar, kaisai_nen varchar, kaisai_tsukihi varchar,
@@ -827,10 +835,10 @@ def test_stage_race_history_raw_catalog_filters_entities_and_future_rows() -> No
         create temp table horse_pedigree as
         select * from (
           values
-            ('target', 'sire_x', null),
-            ('jockey_horse', 'sire_y', null),
-            ('sire_child', 'sire_x', null),
-            ('irrelevant', 'sire_z', null)
+            ('target', 'sire_x', cast(null as varchar)),
+            ('jockey_horse', 'sire_y', cast(null as varchar)),
+            ('sire_child', 'sire_x', cast(null as varchar)),
+            ('irrelevant', 'sire_z', cast(null as varchar))
         ) as v(ketto_toroku_bango, sire_id, damsire_id)
         """
     )
@@ -1906,6 +1914,7 @@ def test_upcoming_target_race_resolves_pedigree_and_distance_grade_context(
     subject.stage_horse_near_miss(con)
     subject.stage_target_context(con, input_glob, True)
     subject.stage_horse_context(con)
+    subject.stage_horse_pedigree_context_v2(con)
     subject.stage_pedigree_cumulatives(con)
     subject.stage_horse_pedigree_context(con)
     subject.stage_horse_distance_grade(con)
@@ -1977,6 +1986,9 @@ def test_unknown_target_context_join_failure_yields_null_not_zero(
         "ketto_toroku_bango varchar, sire_distance_starts integer, sire_distance_p2 integer, "
         "sire_grade_starts integer, sire_grade_p2 integer, "
         "damsire_distance_starts integer, damsire_distance_p2 integer)"
+    )
+    con.execute(
+        "create temp table horse_pedigree_context_v2 as select * from horse_pedigree_context"
     )
     con.execute(
         "create temp table horse_distance_grade(source varchar, kaisai_nen varchar, "
@@ -2109,6 +2121,7 @@ def test_upcoming_target_race_resolves_horse_context_via_target_context(
     subject.stage_horse_near_miss(con)
     subject.stage_target_context(con, input_glob, True)
     subject.stage_horse_context(con)
+    subject.stage_horse_pedigree_context_v2(con)
     subject.stage_pedigree_cumulatives(con)
     subject.stage_horse_pedigree_context(con)
     subject.stage_horse_distance_grade(con)
@@ -2212,6 +2225,7 @@ def test_target_context_wins_over_horse_last_finished_row_when_differ(
     subject.stage_horse_near_miss(con)
     subject.stage_target_context(con, input_glob, True)
     subject.stage_horse_context(con)
+    subject.stage_horse_pedigree_context_v2(con)
     subject.stage_pedigree_cumulatives(con)
     subject.stage_horse_pedigree_context(con)
     subject.stage_horse_distance_grade(con)
@@ -2226,3 +2240,157 @@ def test_target_context_wins_over_horse_last_finished_row_when_differ(
     assert row is not None
     assert row[0] == pytest.approx(0.0)
     assert row[1] == pytest.approx(0.0)
+
+
+def _seed_v2_pedigree_fixture(con: duckdb.DuckDBPyConnection, tmp_path: Path) -> str:
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.race_entry_corner_features as
+        select * from (
+          values
+            ('nar','20240101','2024','0101','30','01','horse_a','J1',1,1600,'24','A'),
+            ('nar','20240102','2024','0102','30','02','horse_b','J2',2,1600,'24','A'),
+            ('nar','20240103','2024','0103','30','03','horse_b','J2',2,1600,'24','A'),
+            ('nar','20240201','2024','0201','30','09','horse_a','J1',3,1600,'24','A')
+        ) as v(source, race_date, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kishumei_ryakusho, finish_position, kyori, track_code,
+               grade_code)
+        """
+    )
+    con.execute("alter table pg.race_entry_corner_features add column tansho_odds double")
+    con.execute("alter table pg.race_entry_corner_features add column tansho_ninkijun integer")
+    con.execute("alter table pg.race_entry_corner_features add column shusso_tosu integer")
+    con.execute("alter table pg.race_entry_corner_features add column time_sa double")
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (values
+          ('horse_a', '1120000715', '1110000922'),
+          ('horse_b', '11200715', '11100922')
+        ) as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values ('nar', '2024', '0201', '30', '09', 'horse_a', '20240201', 2024,
+                  1::integer, 3.0::double, 1600::integer, '24'::varchar, 'A'::varchar)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year,
+               tansho_ninkijun, tansho_odds, kyori, track_code, grade_code)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    return f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+
+def test_v2_pedigree_rates_pool_split_sire_ids_in_focused_mode(
+    tmp_path: Path,
+) -> None:
+    """horse_b's nvd_um short sire id is the same stallion as horse_a's long
+    id. v1 keeps the raw split (horse_a's own race only, no P2); v2 pools
+    horse_b's two P2 races, and the focused history pulls horse_b via the
+    normalised cohort match."""
+    con = duckdb.connect(":memory:")
+    input_glob = _seed_v2_pedigree_fixture(con, tmp_path)
+
+    subject.stage_target_entities(con, input_glob)
+    subject.stage_race_history(con, "20000101", True)
+    history = con.execute(
+        "select distinct ketto_toroku_bango from race_history order by 1"
+    ).fetchall()
+    subject.stage_horse_near_miss(con)
+    subject.stage_target_context(con, input_glob, True)
+    subject.stage_horse_context(con)
+    subject.stage_horse_pedigree_context_v2(con)
+    subject.stage_pedigree_cumulatives(con)
+    subject.stage_horse_pedigree_context(con)
+    subject.stage_horse_distance_grade(con)
+    subject.stage_jockey_near_miss(con)
+    row = con.execute(
+        f"""
+        select sire_distance_place2_rate, sire_grade_place2_rate,
+          damsire_distance_place2_rate, sire_distance_place2_rate_v2,
+          sire_grade_place2_rate_v2, damsire_distance_place2_rate_v2
+        from ({subject.append_features_sql(input_glob)})
+        """
+    ).fetchone()
+    con.close()
+
+    assert history == [("horse_a",), ("horse_b",)]
+    assert row == (0.0, 0.0, 0.0, 2 / 3, 2 / 3, 2 / 3)
+
+
+def test_v2_pedigree_rates_match_between_bulk_and_focused_modes(
+    tmp_path: Path,
+) -> None:
+    """Same fixture built through the offline bulk path gives the same v1 and
+    v2 values as the focused (serving) path."""
+    con = duckdb.connect(":memory:")
+    input_glob = _seed_v2_pedigree_fixture(con, tmp_path)
+
+    subject.stage_race_history(con, "20000101", False)
+    subject.stage_horse_near_miss(con)
+    subject.stage_target_context(con, input_glob, False)
+    subject.stage_horse_context(con, False)
+    subject.stage_horse_pedigree_context_v2(con, False)
+    subject.stage_pedigree_cumulatives(con)
+    subject.stage_horse_pedigree_context(con, False)
+    subject.stage_horse_distance_grade(con, False)
+    subject.stage_jockey_near_miss(con)
+    subject.stage_bulk_prior_date_lookups(con)
+    row = con.execute(
+        f"""
+        select sire_distance_place2_rate, sire_grade_place2_rate,
+          damsire_distance_place2_rate, sire_distance_place2_rate_v2,
+          sire_grade_place2_rate_v2, damsire_distance_place2_rate_v2
+        from ({subject.append_features_sql(input_glob, False)})
+        """
+    ).fetchone()
+    con.close()
+
+    assert row == (0.0, 0.0, 0.0, 2 / 3, 2 / 3, 2 / 3)
+
+
+def test_stage_horse_pedigree_context_v2_restores_raw_pedigree_ids(
+    tmp_path: Path,
+) -> None:
+    con = duckdb.connect(":memory:")
+    input_glob = _seed_v2_pedigree_fixture(con, tmp_path)
+    subject.stage_target_entities(con, input_glob)
+    subject.stage_race_history(con, "20000101", True)
+    subject.stage_target_context(con, input_glob, True)
+    subject.stage_horse_context(con)
+    subject.stage_horse_pedigree_context_v2(con)
+    pedigree = con.execute(
+        "select sire_id, damsire_id from horse_pedigree order by 1"
+    ).fetchall()
+    context = con.execute("select sire_id, damsire_id from target_context").fetchall()
+    con.close()
+    assert pedigree == [("1120000715", "1110000922"), ("11200715", "11100922")]
+    assert context == [("1120000715", "1110000922")]
+
+
+def test_postgres_entity_scoped_query_expands_sire_ids_to_both_spellings() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table target_entities as select * from (
+          values ('nar', 'horse_n', cast(null as varchar), '11200715', '1110000922')
+        ) as v(source, ketto_toroku_bango, kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    sql = subject.postgres_entity_scoped_race_history_query(
+        con, "20100101", "20250131"
+    )
+    assert "hp.sire_id in ('1120000715', '11200715')" in sql
+    assert "hp.damsire_id in ('1110000922', '11100922')" in sql

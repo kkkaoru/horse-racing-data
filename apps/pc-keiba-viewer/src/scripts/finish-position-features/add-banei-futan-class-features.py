@@ -17,6 +17,9 @@ Features added (per horse × race):
   - damsire_futan_class_win_rate      : damsire の同 class win rate
   - field_futan_class_avg             : race の平均 class (race-level, 全馬同値)
   - self_futan_minus_field_avg        : 自分 class - field average
+  - sire_/damsire_futan_class_*_v2    : sire/damsire stats keyed on the
+    normalised breeding id (nvd_um 8-digit == nvd_nu 10-digit); v1 keeps the
+    raw ids, which split one stallion into two keys
 
 Data source:
   - pg.nvd_se with keibajo_code='83' (帯広 = ばんえい)
@@ -40,10 +43,12 @@ import duckdb
 from _catalog_attach import attach_source_catalog
 
 from _resource_defaults import add_resource_args, apply_to_connection
+from pedigree_staging import normalized_pedigree_id_sql, pedigree_id_variants
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 BAN_EI_KEIBAJO = "83"
+V2_SUFFIX = "_v2"
 
 # Bucket boundaries (kg) — 実データ分布 450-1000kg, p10=500 median=610 p99=760 max=1000.
 # 7 buckets: 0=<500, 1=500-549, 2=550-599, 3=600-649, 4=650-699, 5=700-799, 6=>=800
@@ -247,7 +252,11 @@ def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
         order by 1
         """
     ).fetchall()
-    lineage_ids = {str(row[0]) for row in lineage_rows}
+    # Every raw spelling of each id: the cohort then covers the v2 (normalised)
+    # lineage, a superset of the raw-id lineage that v1 aggregates key on.
+    lineage_ids = {
+        variant for row in lineage_rows for variant in pedigree_id_variants(str(row[0]))
+    }
     if lineage_ids:
         lineage_literals = _literal_list(lineage_ids)
         lineage_filter = (
@@ -319,11 +328,17 @@ def stage_horse_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def stage_sire_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
+def _lineage_key_sql(column: str, suffix: str) -> str:
+    """Raw id for v1; the normalised id for the ``_v2`` aggregates."""
+    return normalized_pedigree_id_sql(column) if suffix else column
+
+
+def stage_sire_futan_cumul(con: duckdb.DuckDBPyConnection, suffix: str = "") -> None:
     con.execute(
-        """
-        create or replace temp table sire_futan_daily as
-        select p.sire_id, h.futan_class, h.race_date,
+        f"""
+        create or replace temp table sire_futan_daily{suffix} as
+        select {_lineage_key_sql("p.sire_id", suffix)} as sire_id,
+          h.futan_class, h.race_date,
           count(*) as starts_on_day,
           sum(case when h.finish_position = 1 then 1 else 0 end) as wins_on_day
         from banei_history h
@@ -333,12 +348,12 @@ def stage_sire_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
-        """
-        create or replace temp table sire_futan_cumul as
+        f"""
+        create or replace temp table sire_futan_cumul{suffix} as
         select sire_id, futan_class, race_date,
           sum(starts_on_day) over sire_futan_career as past_starts,
           sum(wins_on_day) over sire_futan_career as past_wins
-        from sire_futan_daily
+        from sire_futan_daily{suffix}
         window sire_futan_career as (
           partition by sire_id, futan_class
           order by race_date
@@ -347,15 +362,17 @@ def stage_sire_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
-        "create index sire_futan_cumul_idx on sire_futan_cumul (sire_id, futan_class, race_date)"
+        f"create index sire_futan_cumul{suffix}_idx on sire_futan_cumul{suffix} "
+        "(sire_id, futan_class, race_date)"
     )
 
 
-def stage_damsire_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
+def stage_damsire_futan_cumul(con: duckdb.DuckDBPyConnection, suffix: str = "") -> None:
     con.execute(
-        """
-        create or replace temp table damsire_futan_daily as
-        select p.damsire_id, h.futan_class, h.race_date,
+        f"""
+        create or replace temp table damsire_futan_daily{suffix} as
+        select {_lineage_key_sql("p.damsire_id", suffix)} as damsire_id,
+          h.futan_class, h.race_date,
           count(*) as starts_on_day,
           sum(case when h.finish_position = 1 then 1 else 0 end) as wins_on_day
         from banei_history h
@@ -365,12 +382,12 @@ def stage_damsire_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
-        """
-        create or replace temp table damsire_futan_cumul as
+        f"""
+        create or replace temp table damsire_futan_cumul{suffix} as
         select damsire_id, futan_class, race_date,
           sum(starts_on_day) over damsire_futan_career as past_starts,
           sum(wins_on_day) over damsire_futan_career as past_wins
-        from damsire_futan_daily
+        from damsire_futan_daily{suffix}
         window damsire_futan_career as (
           partition by damsire_id, futan_class
           order by race_date
@@ -379,7 +396,8 @@ def stage_damsire_futan_cumul(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
-        "create index damsire_futan_cumul_idx on damsire_futan_cumul (damsire_id, futan_class, race_date)"
+        f"create index damsire_futan_cumul{suffix}_idx on damsire_futan_cumul{suffix} "
+        "(damsire_id, futan_class, race_date)"
     )
 
 
@@ -433,13 +451,15 @@ def append_features_sql(input_glob: str) -> str:
         and crf.ketto_toroku_bango = b.ketto_toroku_bango
     ),
     base_with_pedigree as (
-      select bwf.*, p.sire_id, p.damsire_id
+      select bwf.*, p.sire_id, p.damsire_id,
+        {normalized_pedigree_id_sql("p.sire_id")} as sire_id_v2,
+        {normalized_pedigree_id_sql("p.damsire_id")} as damsire_id_v2
       from base_with_futan bwf
       left join banei_pedigree p on p.ketto_toroku_bango = bwf.ketto_toroku_bango
     ),
     joined as (
       select
-        bwp.* exclude (sire_id, damsire_id),
+        bwp.* exclude (sire_id, damsire_id, sire_id_v2, damsire_id_v2),
         hfc.past_starts as horse_futan_class_career_starts,
         case when hfc.past_starts > 0
              then hfc.past_wins::double / hfc.past_starts
@@ -454,7 +474,15 @@ def append_features_sql(input_glob: str) -> str:
         dfc.past_starts as damsire_futan_class_starts,
         case when dfc.past_starts > 0
              then dfc.past_wins::double / dfc.past_starts
-             else null end as damsire_futan_class_win_rate
+             else null end as damsire_futan_class_win_rate,
+        sfc2.past_starts as sire_futan_class_starts_v2,
+        case when sfc2.past_starts > 0
+             then sfc2.past_wins::double / sfc2.past_starts
+             else null end as sire_futan_class_win_rate_v2,
+        dfc2.past_starts as damsire_futan_class_starts_v2,
+        case when dfc2.past_starts > 0
+             then dfc2.past_wins::double / dfc2.past_starts
+             else null end as damsire_futan_class_win_rate_v2
       from base_with_pedigree bwp
       asof left join horse_futan_cumul hfc
         on hfc.source = bwp.source
@@ -469,6 +497,14 @@ def append_features_sql(input_glob: str) -> str:
         on dfc.damsire_id = bwp.damsire_id
         and dfc.futan_class = bwp.current_futan_class
         and dfc.race_date < bwp.race_date
+      asof left join sire_futan_cumul_v2 sfc2
+        on sfc2.sire_id = bwp.sire_id_v2
+        and sfc2.futan_class = bwp.current_futan_class
+        and sfc2.race_date < bwp.race_date
+      asof left join damsire_futan_cumul_v2 dfc2
+        on dfc2.damsire_id = bwp.damsire_id_v2
+        and dfc2.futan_class = bwp.current_futan_class
+        and dfc2.race_date < bwp.race_date
     )
     select * from joined
     """
@@ -498,6 +534,8 @@ def main() -> None:
     stage_horse_futan_cumul(con)
     stage_sire_futan_cumul(con)
     stage_damsire_futan_cumul(con)
+    stage_sire_futan_cumul(con, V2_SUFFIX)
+    stage_damsire_futan_cumul(con, V2_SUFFIX)
     stage_current_race_futan(con)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()

@@ -117,7 +117,7 @@ def test_sire_history_focus_filter_sql_false_is_empty() -> None:
 def test_sire_history_focus_filter_sql_true_uses_target_sires() -> None:
     sql = subject.sire_history_focus_filter_sql(True)
     assert "target_sires" in sql
-    assert "ts.sire_id = p.sire_id" in sql
+    assert "ts.sire_id_v2 = case when length(p.sire_id) = 8" in sql
 
 
 def test_sql_literal_escapes_quotes() -> None:
@@ -279,7 +279,9 @@ def test_stage_sire_race_history_raw_scan_preserves_normalized_filters() -> None
         ) pedigree(ketto_toroku_bango, sire_id)
         """
     )
-    conn.execute("create temp table target_sires as select 'sire01' as sire_id")
+    conn.execute(
+        "create temp table target_sires as select 'sire01' as sire_id, 'sire01' as sire_id_v2"
+    )
 
     subject.stage_sire_race_history(conn, "20200101", "jra", focused_target=True)
 
@@ -359,7 +361,7 @@ def test_upcoming_target_gets_strictly_prior_non_null_features(
     subject.stage_target_sire_cells(conn, input_glob)
     conn.execute(
         """
-        create temp table sire_race_history as select * from (values
+        create temp table sire_race_history as select *, sire_id as sire_id_v2 from (values
           ('sire01', '01', 'turf', 1600, '20240101', 1),
           ('sire01', '01', 'turf', 1600, '20240201', 9),
           ('sire01', '01', 'turf', 1600, '20240301', 1),
@@ -371,6 +373,8 @@ def test_upcoming_target_gets_strictly_prior_non_null_features(
 
     subject.stage_svsd_cumul(conn)
     subject.stage_svs_cumul(conn)
+    subject.stage_svsd_cumul(conn, "_v2")
+    subject.stage_svs_cumul(conn, "_v2")
 
     assert conn.execute(
         f"""
@@ -443,3 +447,71 @@ def test_append_features_sql_joins_pedigree_and_cumul_tables() -> None:
     assert "left join horse_pedigree" in sql
     assert "left join sire_svsd_cumul" in sql
     assert "left join sire_svs_cumul" in sql
+
+
+def test_v2_sire_bias_pools_short_and_long_sire_ids(tmp_path: Path) -> None:
+    """horse_b's nvd_um short sire id is the same stallion as the target's
+    long id: the raw-scan cohort pulls horse_b in, v1 still counts only the
+    raw long id (no prior race), v2 counts horse_b's win."""
+    conn = duckdb.connect(":memory:")
+    conn.execute("create schema pg")
+    conn.execute(
+        """
+        create table pg.nvd_se as select * from (values
+          ('2024', '0101', '30', '01', 'horse_b', '01', '01'),
+          ('2024', '0102', '30', '01', 'horse_c', '01', '01')
+        ) se(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+             ketto_toroku_bango, umaban, kakutei_chakujun)
+        """
+    )
+    conn.execute(
+        """
+        create table pg.nvd_ra as select * from (values
+          ('2024', '0101', '30', '01', '24', '1600'),
+          ('2024', '0102', '30', '01', '24', '1600')
+        ) ra(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, track_code, kyori)
+        """
+    )
+    conn.execute(
+        """
+        create temp table horse_pedigree as select * from (values
+          ('target01', '1120000715', 'd1'),
+          ('horse_b', '11200715', 'd2'),
+          ('horse_c', '99999999', 'd3')
+        ) pedigree(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+    partition_dir = tmp_path / "race_year=2024"
+    partition_dir.mkdir()
+    conn.execute(
+        f"""
+        copy (select 'target01' ketto_toroku_bango, '30' keibajo_code,
+          '24' track_code, 1600 kyori, '20240201' race_date, 2024 race_year)
+        to '{(partition_dir / "part.parquet").as_posix()}' (format parquet)
+        """
+    )
+    input_glob = f"{tmp_path.as_posix()}/race_year=*/*.parquet"
+    subject.stage_target_sires(conn, input_glob)
+    subject.stage_target_sire_cells(conn, input_glob)
+    subject.stage_sire_race_history(
+        conn, "20100101", "nar", focused_target=True, to_date="20240201"
+    )
+    history = conn.execute(
+        "select sire_id, sire_id_v2 from sire_race_history"
+    ).fetchall()
+    subject.stage_svsd_cumul(conn)
+    subject.stage_svs_cumul(conn)
+    subject.stage_svsd_cumul(conn, "_v2")
+    subject.stage_svs_cumul(conn, "_v2")
+    row = conn.execute(
+        f"""
+        select sire_venue_surface_dist_runs, sire_venue_surface_dist_win_rate,
+          sire_venue_surface_win_rate, sire_venue_surface_dist_runs_v2,
+          sire_venue_surface_dist_win_rate_v2, sire_venue_surface_dist_place_rate_v2,
+          sire_venue_surface_win_rate_v2, sire_venue_surface_place_rate_v2
+        from ({subject.append_features_sql(input_glob)})
+        """
+    ).fetchall()
+    conn.close()
+    assert history == [("11200715", "1120000715")]
+    assert row == [(0, None, None, 1, 1.0, 1.0, 1.0, 1.0)]

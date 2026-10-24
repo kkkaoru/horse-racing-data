@@ -139,6 +139,8 @@ def test_append_features_uses_latest_strictly_prior_cumulative_row(
     con.execute(
         "create table damsire_futan_cumul as select 'DAMSIRE'::varchar as damsire_id, 5::integer as futan_class, '20260818'::varchar as race_date, 10::bigint as past_starts, 1::hugeint as past_wins"
     )
+    con.execute("create table sire_futan_cumul_v2 as select * from sire_futan_cumul")
+    con.execute("create table damsire_futan_cumul_v2 as select * from damsire_futan_cumul")
 
     row = con.execute(subject.append_features_sql(input_path.as_posix())).fetchone()
 
@@ -150,6 +152,8 @@ def test_append_features_uses_latest_strictly_prior_cumulative_row(
     assert result["horse_futan_class_career_top3_rate"] == 0.75
     assert result["sire_futan_class_starts"] == 8
     assert result["damsire_futan_class_starts"] == 10
+    assert result["sire_futan_class_starts_v2"] == 8
+    assert result["damsire_futan_class_win_rate_v2"] == 0.1
     con.close()
 
 
@@ -201,3 +205,62 @@ def test_futan_staging_scopes_history_and_reads_upcoming_runner() -> None:
     assert history_rows == [("HORSE", 620, 1)]
     assert current_rows == [("HORSE", 620, 3)]
     con.close()
+
+
+def test_v2_lineage_stats_pool_short_and_long_breeding_ids(tmp_path: Path) -> None:
+    """PROGENY's nvd_um short sire id is the target's nvd_nu long sire id: the
+    lineage cohort pulls PROGENY in, v1 keeps the raw split (no prior sire
+    race), v2 counts PROGENY's same-class win."""
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        "create table pg.nvd_um (ketto_toroku_bango varchar, ketto_joho_01a varchar, ketto_joho_05a varchar)"
+    )
+    con.execute(
+        "create table pg.nvd_nu (ketto_toroku_bango varchar, ketto_joho_01a varchar, ketto_joho_05a varchar)"
+    )
+    con.execute(
+        "create table pg.nvd_se (kaisai_nen varchar, kaisai_tsukihi varchar, keibajo_code varchar, race_bango varchar, ketto_toroku_bango varchar, futan_juryo varchar, kakutei_chakujun varchar)"
+    )
+    input_dir = tmp_path / "race_year=2026"
+    input_dir.mkdir()
+    con.execute(
+        f"""
+        copy (
+          select 'nar'::varchar as source, '2026'::varchar as kaisai_nen,
+            '0826'::varchar as kaisai_tsukihi, '83'::varchar as keibajo_code,
+            '01'::varchar as race_bango, 'HORSE'::varchar as ketto_toroku_bango,
+            '20260826'::varchar as race_date
+        ) to '{(input_dir / "part.parquet").as_posix()}' (format parquet)
+        """
+    )
+    input_glob = f"{tmp_path.as_posix()}/race_year=*/*.parquet"
+    con.execute("insert into pg.nvd_nu values ('HORSE', '1120000715', '1110000922')")
+    con.execute("insert into pg.nvd_um values ('PROGENY', '11200715', '11100922')")
+    con.execute(
+        "insert into pg.nvd_se values ('2026', '0820', '83', '01', 'PROGENY', '26C', '01')"
+    )
+    con.execute(
+        "insert into pg.nvd_se values ('2026', '0826', '83', '01', 'HORSE', '26C', '')"
+    )
+
+    subject.stage_target_scope(con, input_glob)
+    subject.stage_horse_pedigree(con)
+    subject.stage_banei_history(con, "20200101")
+    subject.stage_horse_futan_cumul(con)
+    subject.stage_sire_futan_cumul(con)
+    subject.stage_damsire_futan_cumul(con)
+    subject.stage_sire_futan_cumul(con, "_v2")
+    subject.stage_damsire_futan_cumul(con, "_v2")
+    subject.stage_current_race_futan(con)
+    row = con.execute(
+        f"""
+        select sire_futan_class_starts, sire_futan_class_win_rate,
+          damsire_futan_class_starts, sire_futan_class_starts_v2,
+          sire_futan_class_win_rate_v2, damsire_futan_class_starts_v2,
+          damsire_futan_class_win_rate_v2
+        from ({subject.append_features_sql(input_glob)})
+        """
+    ).fetchall()
+    con.close()
+    assert row == [(None, None, None, 1, 1.0, 1, 1.0)]

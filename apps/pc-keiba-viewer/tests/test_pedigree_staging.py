@@ -304,3 +304,32 @@ def test_all_three_sources_dedup() -> None:
         ("SINGLE_HORSE", "SINGLE_SIRE_NVD_NU", "SINGLE_DAMSIRE_NVD_NU"),
         ("TRIPLE_HORSE", "TRIPLE_SIRE_JVD", "TRIPLE_DAMSIRE_JVD"),
     ]
+
+
+def test_normalized_pedigree_id_sql_maps_short_nvd_um_ids_to_long_form() -> None:
+    con = duckdb.connect(":memory:")
+    rows = con.execute(
+        f"""
+        select {subject.normalized_pedigree_id_sql("id")}
+        from (values ('11200715'), ('1120000715'), ('X1'), (cast(null as varchar)))
+          as v(id)
+        """
+    ).fetchall()
+    con.close()
+    assert rows == [("1120000715",), ("1120000715",), ("X1",), (None,)]
+
+
+def test_pedigree_id_variants_of_short_id_lists_both_spellings() -> None:
+    assert subject.pedigree_id_variants("11200715") == ("1120000715", "11200715")
+
+
+def test_pedigree_id_variants_of_long_id_with_zero_gap_lists_both_spellings() -> None:
+    assert subject.pedigree_id_variants("1120000715") == ("1120000715", "11200715")
+
+
+def test_pedigree_id_variants_of_long_id_without_zero_gap_is_itself() -> None:
+    assert subject.pedigree_id_variants("1120130715") == ("1120130715",)
+
+
+def test_pedigree_id_variants_of_other_length_is_itself() -> None:
+    assert subject.pedigree_id_variants("ABC") == ("ABC",)

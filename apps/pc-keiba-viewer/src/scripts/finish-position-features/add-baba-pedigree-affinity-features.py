@@ -16,6 +16,20 @@ Features added (per horse × race):
   - damsire_baba_career_starts     : damsire の同 baba 過去出走数
   - sire_horse_baba_combined_score : sire と self horse の win rate の平均 (NULL-safe)
 
+v2 columns (``*_v2``, every column above): only retrained models select them,
+the v1 columns stay byte-identical.
+  - sire/damsire keyed on the normalised breeding id (nvd_um 8-digit ==
+    nvd_nu/jvd_um 10-digit), so one stallion is no longer split in two.
+  - Ban-ei (keibajo 83) going is a sand-moisture reading, not 良/稍/重/不良.
+    v1 reads its two code bytes as going codes 1-9 (and drops 'A'-'F' rows as
+    NULL). v2 decodes ``babajotai_code_shiba || babajotai_code_dirt`` as two
+    hex digits = moisture x 10 (0x00-0x61 = 0.0-9.7%) and buckets it into
+    11-14. No JV/UmaConn code table for this is in the repo; the encoding is
+    derived from local nvd_ra data: the decoded value is continuous and the
+    winners' mean soha_time falls monotonically from 119.2s (0.5-0.9%) to
+    103.6s (3.5-3.9%) as moisture rises (2015-2026, ~20k races), i.e. wetter
+    sand runs faster. '00' (107 races) is treated as missing.
+
 Data leakage 防止: race_date strictly less than current race_date のみを集計。
 """
 
@@ -29,14 +43,18 @@ from pathlib import Path
 import duckdb
 from _catalog_attach import attach_source_catalog
 from _resource_defaults import add_resource_args, apply_to_connection
-from pedigree_staging import stage_horse_pedigree
+from pedigree_staging import normalized_pedigree_id_sql, stage_horse_pedigree
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 RACE_KEY_COLUMNS = ("kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango")
-# Columns this layer appends. A serve-time race-day refresh re-runs the layer
-# over an input that already carries them, so the base drops them first.
-BABA_OUTPUT_COLUMNS = (
+BAN_EI_KEIBAJO = "83"
+V2_SUFFIX = "_v2"
+# Ban-ei moisture buckets (moisture x 10 upper bounds) -> codes 11..14, kept
+# disjoint from the 1-4 going codes of the other venues.
+BAN_EI_MOISTURE_BUCKETS: tuple[tuple[int, int], ...] = ((10, 11), (20, 12), (30, 13))
+BAN_EI_MOISTURE_TOP_BUCKET = 14
+_BABA_V1_OUTPUT_COLUMNS = (
     "current_baba_condition",
     "horse_baba_career_starts",
     "horse_baba_win_rate",
@@ -45,6 +63,11 @@ BABA_OUTPUT_COLUMNS = (
     "damsire_baba_career_starts",
     "damsire_baba_win_rate",
     "sire_horse_baba_combined_score",
+)
+# Columns this layer appends. A serve-time race-day refresh re-runs the layer
+# over an input that already carries them, so the base drops them first.
+BABA_OUTPUT_COLUMNS = _BABA_V1_OUTPUT_COLUMNS + tuple(
+    f"{column}{V2_SUFFIX}" for column in _BABA_V1_OUTPUT_COLUMNS
 )
 
 
@@ -92,6 +115,24 @@ def baba_condition_sql(alias: str) -> str:
             try_cast(nullif({alias}.babajotai_code_shiba, '0') as int),
             try_cast(nullif({alias}.babajotai_code_dirt, '0') as int)
           )"""
+
+
+def baba_condition_v2_sql(alias: str) -> str:
+    """v1 going everywhere except Ban-ei, where the sand moisture is bucketed."""
+    moisture = (
+        "try_cast('0x' || nullif("
+        f"{alias}.babajotai_code_shiba || {alias}.babajotai_code_dirt, '00')"
+        " as integer)"
+    )
+    buckets = " ".join(
+        f"when {moisture} < {bound} then {code}" for bound, code in BAN_EI_MOISTURE_BUCKETS
+    )
+    return f"""case
+          when {alias}.keibajo_code = '{BAN_EI_KEIBAJO}' then
+            case when {moisture} is null then null {buckets}
+              else {BAN_EI_MOISTURE_TOP_BUCKET} end
+          else {baba_condition_sql(alias)}
+        end"""
 
 
 def sql_string_literal(value: str) -> str:
@@ -171,7 +212,8 @@ def stage_current_race_baba(con: duckdb.DuckDBPyConnection, from_date: str) -> N
         select
           'jra' as source,
           ra.kaisai_nen, ra.kaisai_tsukihi, ra.keibajo_code, ra.race_bango,
-          {baba_condition_sql("ra")} as baba_cond
+          {baba_condition_sql("ra")} as baba_cond,
+          {baba_condition_v2_sql("ra")} as baba_cond_v2
         from pg.jvd_ra ra
         where ra.kaisai_nen >= {from_year}
           and {jra_predicate}
@@ -179,7 +221,8 @@ def stage_current_race_baba(con: duckdb.DuckDBPyConnection, from_date: str) -> N
         select
           'nar' as source,
           ra.kaisai_nen, ra.kaisai_tsukihi, ra.keibajo_code, ra.race_bango,
-          {baba_condition_sql("ra")} as baba_cond
+          {baba_condition_sql("ra")} as baba_cond,
+          {baba_condition_v2_sql("ra")} as baba_cond_v2
         from pg.nvd_ra ra
         where ra.kaisai_nen >= {from_year}
           and {nar_predicate}
@@ -194,13 +237,19 @@ def apply_current_going(con: duckdb.DuckDBPyConnection, going_path: Path) -> Non
     The side record is RA-shaped, so the same ``baba_condition_sql`` maps it
     exactly like training maps a results RA row. RA keeps priority: the side
     record only fills races whose RA going is still '0' (pre-race RA).
+    ``baba_cond_v2`` takes the same 1-4 code (v2 jra/nar going is v1's);
+    Ban-ei v2 is a moisture bucket the side record never carries, so it stays NULL.
     """
     going = sql_string_literal(going_path.as_posix())
     con.execute(
         f"""
         create or replace temp table race_baba as
         select {RACE_PARTITION},
-          coalesce(rb.baba_cond, {baba_condition_sql("g")}) as baba_cond
+          coalesce(rb.baba_cond, {baba_condition_sql("g")}) as baba_cond,
+          coalesce(
+            rb.baba_cond_v2,
+            case when g.keibajo_code <> '{BAN_EI_KEIBAJO}' then {baba_condition_sql("g")} end
+          ) as baba_cond_v2
         from race_baba rb
         full outer join read_parquet({going}) g
           using ({RACE_PARTITION})
@@ -220,10 +269,14 @@ def stage_target_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute("create index target_horses_idx on target_horses (ketto_toroku_bango)")
+    # Normalised ids: the cohort then covers the v2 lineage, a superset of the
+    # raw-id lineage the v1 aggregates key on.
     con.execute(
-        """
+        f"""
         create or replace temp table target_pedigree_ids as
-        select distinct sire_id, damsire_id
+        select distinct
+          {normalized_pedigree_id_sql("sire_id")} as sire_id,
+          {normalized_pedigree_id_sql("damsire_id")} as damsire_id
         from base_input b
         left join horse_pedigree hp using (ketto_toroku_bango)
         where sire_id is not null or damsire_id is not null
@@ -243,7 +296,7 @@ def stage_race_history_with_baba(
 ) -> None:
     """Stage history for input horses and their sire/damsire cohorts."""
     history_horses = con.execute(
-        """
+        f"""
         select ketto_toroku_bango
         from (
           select ketto_toroku_bango
@@ -255,7 +308,8 @@ def stage_race_history_with_baba(
             select distinct sire_id
             from target_pedigree_ids
             where sire_id is not null
-          ) target_sires using (sire_id)
+          ) target_sires
+            on target_sires.sire_id = {normalized_pedigree_id_sql("hp.sire_id")}
           union
           select hp.ketto_toroku_bango
           from horse_pedigree hp
@@ -263,7 +317,8 @@ def stage_race_history_with_baba(
             select distinct damsire_id
             from target_pedigree_ids
             where damsire_id is not null
-          ) target_damsires using (damsire_id)
+          ) target_damsires
+            on target_damsires.damsire_id = {normalized_pedigree_id_sql("hp.damsire_id")}
         ) cohort
         where ketto_toroku_bango is not null
         order by ketto_toroku_bango
@@ -289,14 +344,16 @@ def stage_race_history_with_baba(
           se.race_bango,
           se.ketto_toroku_bango,
           {finish_position} as finish_position,
-          {baba_condition_sql("ra")} as baba_cond
+          {baba_condition_sql("ra")} as baba_cond,
+          {baba_condition_v2_sql("ra")} as baba_cond_v2
         from pg.{se_table} se
         inner join pg.{ra_table} ra
           using (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
         where se.kaisai_nen >= {from_year_literal}
           and se.kaisai_nen || se.kaisai_tsukihi >= {from_date_literal}
           and {finish_position} is not null
-          and {baba_condition_sql("ra")} is not null
+          and coalesce({baba_condition_sql("ra")}, {baba_condition_v2_sql("ra")})
+            is not null
           and {horse_predicate}
         """
 
@@ -313,7 +370,7 @@ def stage_race_history_with_baba(
     )
 
 
-def stage_horse_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
+def stage_horse_baba_cumul(con: duckdb.DuckDBPyConnection, suffix: str = "") -> None:
     """horse 自身の baba 別 cumul stats (lookback: 当該レース除外)。
 
     Pre-aggregate to (horse, race_date, baba_cond): starts + wins per day
@@ -339,22 +396,23 @@ def stage_horse_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
     dates.
     """
     con.execute(
-        """
-        create or replace temp table horse_baba_daily as
-        select source, ketto_toroku_bango, baba_cond, race_date,
+        f"""
+        create or replace temp table horse_baba_daily{suffix} as
+        select source, ketto_toroku_bango, baba_cond{suffix} as baba_cond, race_date,
           count(*) as starts_on_day,
           sum(case when finish_position = 1 then 1 else 0 end) as wins_on_day
         from race_history
+        where baba_cond{suffix} is not null
         group by all
         """
     )
     con.execute(
-        """
-        create or replace temp table horse_baba_cumul as
+        f"""
+        create or replace temp table horse_baba_cumul{suffix} as
         select source, ketto_toroku_bango, baba_cond, race_date,
           sum(starts_on_day) over horse_baba_career as past_starts,
           sum(wins_on_day) over horse_baba_career as past_wins
-        from horse_baba_daily
+        from horse_baba_daily{suffix}
         window horse_baba_career as (
           partition by source, ketto_toroku_bango, baba_cond
           order by race_date
@@ -363,11 +421,17 @@ def stage_horse_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
-        "create index horse_baba_cumul_idx on horse_baba_cumul (source, ketto_toroku_bango, baba_cond, race_date)"
+        f"create index horse_baba_cumul{suffix}_idx on horse_baba_cumul{suffix} "
+        "(source, ketto_toroku_bango, baba_cond, race_date)"
     )
 
 
-def stage_sire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
+def _lineage_key_sql(column: str, suffix: str) -> str:
+    """Raw id for v1; the normalised id for the ``_v2`` aggregates."""
+    return normalized_pedigree_id_sql(column) if suffix else column
+
+
+def stage_sire_baba_cumul(con: duckdb.DuckDBPyConnection, suffix: str = "") -> None:
     """sire 単位の baba 別 cumul stats。
 
     horse_pedigree で sire_id を取得 → race_history と join → 集計。
@@ -377,24 +441,25 @@ def stage_sire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
     inequality instead of an exact-date equality).
     """
     con.execute(
-        """
-        create or replace temp table sire_baba_daily as
-        select p.sire_id, h.baba_cond, h.race_date,
+        f"""
+        create or replace temp table sire_baba_daily{suffix} as
+        select {_lineage_key_sql("p.sire_id", suffix)} as sire_id,
+          h.baba_cond{suffix} as baba_cond, h.race_date,
           count(*) as starts_on_day,
           sum(case when h.finish_position = 1 then 1 else 0 end) as wins_on_day
         from race_history h
         join horse_pedigree p using (ketto_toroku_bango)
-        where p.sire_id is not null
+        where p.sire_id is not null and h.baba_cond{suffix} is not null
         group by all
         """
     )
     con.execute(
-        """
-        create or replace temp table sire_baba_cumul as
+        f"""
+        create or replace temp table sire_baba_cumul{suffix} as
         select sire_id, baba_cond, race_date,
           sum(starts_on_day) over sire_baba_career as past_starts,
           sum(wins_on_day) over sire_baba_career as past_wins
-        from sire_baba_daily
+        from sire_baba_daily{suffix}
         window sire_baba_career as (
           partition by sire_id, baba_cond
           order by race_date
@@ -403,11 +468,12 @@ def stage_sire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
-        "create index sire_baba_cumul_idx on sire_baba_cumul (sire_id, baba_cond, race_date)"
+        f"create index sire_baba_cumul{suffix}_idx on sire_baba_cumul{suffix} "
+        "(sire_id, baba_cond, race_date)"
     )
 
 
-def stage_damsire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
+def stage_damsire_baba_cumul(con: duckdb.DuckDBPyConnection, suffix: str = "") -> None:
     """damsire 単位の baba 別 cumul stats.
 
     Window is INCLUSIVE of the current row -- see stage_horse_baba_cumul's
@@ -415,24 +481,25 @@ def stage_damsire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
     inequality instead of an exact-date equality).
     """
     con.execute(
-        """
-        create or replace temp table damsire_baba_daily as
-        select p.damsire_id, h.baba_cond, h.race_date,
+        f"""
+        create or replace temp table damsire_baba_daily{suffix} as
+        select {_lineage_key_sql("p.damsire_id", suffix)} as damsire_id,
+          h.baba_cond{suffix} as baba_cond, h.race_date,
           count(*) as starts_on_day,
           sum(case when h.finish_position = 1 then 1 else 0 end) as wins_on_day
         from race_history h
         join horse_pedigree p using (ketto_toroku_bango)
-        where p.damsire_id is not null
+        where p.damsire_id is not null and h.baba_cond{suffix} is not null
         group by all
         """
     )
     con.execute(
-        """
-        create or replace temp table damsire_baba_cumul as
+        f"""
+        create or replace temp table damsire_baba_cumul{suffix} as
         select damsire_id, baba_cond, race_date,
           sum(starts_on_day) over damsire_baba_career as past_starts,
           sum(wins_on_day) over damsire_baba_career as past_wins
-        from damsire_baba_daily
+        from damsire_baba_daily{suffix}
         window damsire_baba_career as (
           partition by damsire_id, baba_cond
           order by race_date
@@ -441,8 +508,54 @@ def stage_damsire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
-        "create index damsire_baba_cumul_idx on damsire_baba_cumul (damsire_id, baba_cond, race_date)"
+        f"create index damsire_baba_cumul{suffix}_idx on damsire_baba_cumul{suffix} "
+        "(damsire_id, baba_cond, race_date)"
     )
+
+
+def affinity_columns_sql(suffix: str) -> str:
+    """The seven affinity columns from the ``*{suffix}`` cumulative joins."""
+    hbc, sbc, dbc = f"hbc{suffix}", f"sbc{suffix}", f"dbc{suffix}"
+    return f"""
+        {hbc}.past_starts as horse_baba_career_starts{suffix},
+        case when {hbc}.past_starts > 0
+             then {hbc}.past_wins::double / {hbc}.past_starts
+             else null end as horse_baba_win_rate{suffix},
+        {sbc}.past_starts as sire_baba_career_starts{suffix},
+        case when {sbc}.past_starts > 0
+             then {sbc}.past_wins::double / {sbc}.past_starts
+             else null end as sire_baba_win_rate{suffix},
+        {dbc}.past_starts as damsire_baba_career_starts{suffix},
+        case when {dbc}.past_starts > 0
+             then {dbc}.past_wins::double / {dbc}.past_starts
+             else null end as damsire_baba_win_rate{suffix},
+        case
+          when {hbc}.past_starts > 0 and {sbc}.past_starts > 0
+            then (({hbc}.past_wins::double / {hbc}.past_starts) + ({sbc}.past_wins::double / {sbc}.past_starts)) / 2.0
+          when {hbc}.past_starts > 0 then {hbc}.past_wins::double / {hbc}.past_starts
+          when {sbc}.past_starts > 0 then {sbc}.past_wins::double / {sbc}.past_starts
+          else null
+        end as sire_horse_baba_combined_score{suffix}"""
+
+
+def affinity_joins_sql(suffix: str) -> str:
+    """ASOF joins of the ``*{suffix}`` cumulative tables (strictly prior date)."""
+    hbc, sbc, dbc = f"hbc{suffix}", f"sbc{suffix}", f"dbc{suffix}"
+    condition = f"current_baba_condition{suffix}"
+    return f"""
+      asof left join horse_baba_cumul{suffix} {hbc}
+        on {hbc}.source = bwp.source
+        and {hbc}.ketto_toroku_bango = bwp.ketto_toroku_bango
+        and {hbc}.baba_cond = bwp.{condition}
+        and bwp.race_date > {hbc}.race_date
+      asof left join sire_baba_cumul{suffix} {sbc}
+        on {sbc}.sire_id = bwp.sire_id{suffix}
+        and {sbc}.baba_cond = bwp.{condition}
+        and bwp.race_date > {sbc}.race_date
+      asof left join damsire_baba_cumul{suffix} {dbc}
+        on {dbc}.damsire_id = bwp.damsire_id{suffix}
+        and {dbc}.baba_cond = bwp.{condition}
+        and bwp.race_date > {dbc}.race_date"""
 
 
 def append_features_sql(input_glob: str) -> str:
@@ -452,7 +565,8 @@ def append_features_sql(input_glob: str) -> str:
       from read_parquet('{input_glob}', hive_partitioning=true)
     ),
     base_with_baba as (
-      select b.*, rb.baba_cond as current_baba_condition
+      select b.*, rb.baba_cond as current_baba_condition,
+        rb.baba_cond_v2 as current_baba_condition_v2
       from base b
       left join race_baba rb
         on rb.source = b.source
@@ -462,46 +576,20 @@ def append_features_sql(input_glob: str) -> str:
         and rb.race_bango = b.race_bango
     ),
     base_with_pedigree as (
-      select bwb.*, hp.sire_id, hp.damsire_id
+      select bwb.*, hp.sire_id, hp.damsire_id,
+        {normalized_pedigree_id_sql("hp.sire_id")} as sire_id_v2,
+        {normalized_pedigree_id_sql("hp.damsire_id")} as damsire_id_v2
       from base_with_baba bwb
       left join horse_pedigree hp on hp.ketto_toroku_bango = bwb.ketto_toroku_bango
     ),
     joined as (
       select
-        bwp.* exclude (sire_id, damsire_id),
-        hbc.past_starts as horse_baba_career_starts,
-        case when hbc.past_starts > 0
-             then hbc.past_wins::double / hbc.past_starts
-             else null end as horse_baba_win_rate,
-        sbc.past_starts as sire_baba_career_starts,
-        case when sbc.past_starts > 0
-             then sbc.past_wins::double / sbc.past_starts
-             else null end as sire_baba_win_rate,
-        dbc.past_starts as damsire_baba_career_starts,
-        case when dbc.past_starts > 0
-             then dbc.past_wins::double / dbc.past_starts
-             else null end as damsire_baba_win_rate,
-        case
-          when hbc.past_starts > 0 and sbc.past_starts > 0
-            then ((hbc.past_wins::double / hbc.past_starts) + (sbc.past_wins::double / sbc.past_starts)) / 2.0
-          when hbc.past_starts > 0 then hbc.past_wins::double / hbc.past_starts
-          when sbc.past_starts > 0 then sbc.past_wins::double / sbc.past_starts
-          else null
-        end as sire_horse_baba_combined_score
+        bwp.* exclude (sire_id, damsire_id, sire_id_v2, damsire_id_v2),
+        {affinity_columns_sql("")},
+        {affinity_columns_sql(V2_SUFFIX)}
       from base_with_pedigree bwp
-      asof left join horse_baba_cumul hbc
-        on hbc.source = bwp.source
-        and hbc.ketto_toroku_bango = bwp.ketto_toroku_bango
-        and hbc.baba_cond = bwp.current_baba_condition
-        and bwp.race_date > hbc.race_date
-      asof left join sire_baba_cumul sbc
-        on sbc.sire_id = bwp.sire_id
-        and sbc.baba_cond = bwp.current_baba_condition
-        and bwp.race_date > sbc.race_date
-      asof left join damsire_baba_cumul dbc
-        on dbc.damsire_id = bwp.damsire_id
-        and dbc.baba_cond = bwp.current_baba_condition
-        and bwp.race_date > dbc.race_date
+      {affinity_joins_sql("")}
+      {affinity_joins_sql(V2_SUFFIX)}
     )
     select * from joined
     """
@@ -537,6 +625,9 @@ def main() -> None:
     stage_horse_baba_cumul(con)
     stage_sire_baba_cumul(con)
     stage_damsire_baba_cumul(con)
+    stage_horse_baba_cumul(con, V2_SUFFIX)
+    stage_sire_baba_cumul(con, V2_SUFFIX)
+    stage_damsire_baba_cumul(con, V2_SUFFIX)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()
 

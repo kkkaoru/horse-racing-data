@@ -13,6 +13,8 @@ Features added (per horse × race):
   - sire_venue_surface_dist_runs       : 同 venue × surface × distance での sire の過去出走数
   - sire_venue_surface_win_rate        : 同 venue × surface での sire の勝率 (距離を緩めた広い集計)
   - sire_venue_surface_place_rate      : 同 venue × surface での sire の place 率
+  - ``*_v2`` of the five above          : same stats keyed on the normalised
+    sire id (nvd_um 8-digit == nvd_nu/jvd_um 10-digit); v1 keeps raw ids
 
 Data leakage 防止: 集計は ``race_date`` が当該レースより strictly 前のものだけ
 (ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)。
@@ -42,13 +44,14 @@ from pathlib import Path
 import duckdb
 from _catalog_attach import attach_source_catalog
 from _resource_defaults import add_resource_args, apply_to_connection
-from pedigree_staging import stage_horse_pedigree
+from pedigree_staging import normalized_pedigree_id_sql, stage_horse_pedigree
 
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:15432/horse_racing"
 
 # Ban-ei is always keibajo_code '83'; for nar we exclude it, for ban-ei we keep
 # only it. JRA is isolated by source='jra' alone.
 BAN_EI_KEIBAJO_CODE = "83"
+V2_SUFFIX = "_v2"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -122,13 +125,14 @@ def stage_target_sires(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
     con.execute(
         f"""
         create or replace temp table target_sires as
-        select distinct hp.sire_id
+        select distinct hp.sire_id,
+          {normalized_pedigree_id_sql("hp.sire_id")} as sire_id_v2
         from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true) b
         join horse_pedigree hp on hp.ketto_toroku_bango = b.ketto_toroku_bango
         where hp.sire_id is not null
         """
     )
-    con.execute("create index target_sires_idx on target_sires (sire_id)")
+    con.execute("create index target_sires_idx on target_sires (sire_id_v2)")
 
 
 def stage_target_sire_cells(con: duckdb.DuckDBPyConnection, input_glob: str) -> None:
@@ -144,6 +148,7 @@ def stage_target_sire_cells(con: duckdb.DuckDBPyConnection, input_glob: str) -> 
         create or replace temp table target_sire_cells as
         select distinct
           hp.sire_id,
+          {normalized_pedigree_id_sql("hp.sire_id")} as sire_id_v2,
           b.keibajo_code,
           {_surface_sql("b.track_code")} as surface_type,
           try_cast(b.kyori as integer) as kyori,
@@ -166,8 +171,12 @@ def stage_target_sire_cells(con: duckdb.DuckDBPyConnection, input_glob: str) -> 
 
 
 def sire_history_focus_filter_sql(focused_target: bool) -> str:
+    # Normalised-id cohort: a superset of the raw-id cohort, so v1 stays exact.
     if focused_target:
-        return "and exists (select 1 from target_sires ts where ts.sire_id = p.sire_id)"
+        return (
+            "and exists (select 1 from target_sires ts where ts.sire_id_v2 = "
+            f"{normalized_pedigree_id_sql('p.sire_id')})"
+        )
     return ""
 
 
@@ -181,10 +190,11 @@ def target_sire_horse_filter_sql(con: duckdb.DuckDBPyConnection) -> str:
     pushed below its field-size window.
     """
     rows = con.execute(
-        """
+        f"""
         select distinct hp.ketto_toroku_bango
         from horse_pedigree hp
-        inner join target_sires ts on ts.sire_id = hp.sire_id
+        inner join target_sires ts
+          on ts.sire_id_v2 = {normalized_pedigree_id_sql("hp.sire_id")}
         where hp.ketto_toroku_bango is not null
         order by hp.ketto_toroku_bango
         """
@@ -235,6 +245,7 @@ def stage_sire_race_history(
         create or replace temp table sire_race_history as
         select
           p.sire_id,
+          {normalized_pedigree_id_sql("p.sire_id")} as sire_id_v2,
           se.keibajo_code,
           {_surface_sql("ra.track_code")} as surface_type,
           try_cast(nullif(trim(ra.kyori), '') as integer) as kyori,
@@ -266,19 +277,27 @@ def stage_sire_race_history(
     )
 
 
-def stage_svsd_cumul(con: duckdb.DuckDBPyConnection) -> None:
-    """Aggregate strictly-prior history for exact target cells only."""
+def stage_svsd_cumul(con: duckdb.DuckDBPyConnection, suffix: str = "") -> None:
+    """Aggregate strictly-prior history for exact target cells only.
+
+    ``suffix`` picks the sire key: ``""`` the raw ``sire_id`` or ``"_v2"`` the
+    normalised ``sire_id_v2``; the distinct target cells keep one row per key.
+    """
     con.execute(
-        """
-        create or replace temp table sire_svsd_cumul as
+        f"""
+        create or replace temp table sire_svsd_cumul{suffix} as
         select
           t.sire_id, t.keibajo_code, t.surface_type, t.kyori, t.race_date,
           count(h.finish_position) as past_starts,
           count(*) filter (where h.finish_position = 1) as past_wins,
           count(*) filter (where h.finish_position <= 3) as past_places
-        from target_sire_cells t
+        from (
+          select distinct sire_id{suffix} as sire_id, keibajo_code, surface_type,
+            kyori, race_date
+          from target_sire_cells
+        ) t
         left join sire_race_history h
-          on h.sire_id = t.sire_id
+          on h.sire_id{suffix} = t.sire_id
           and h.keibajo_code = t.keibajo_code
           and h.surface_type = t.surface_type
           and h.kyori = t.kyori
@@ -287,27 +306,28 @@ def stage_svsd_cumul(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
-        "create index sire_svsd_cumul_idx on sire_svsd_cumul "
+        f"create index sire_svsd_cumul{suffix}_idx on sire_svsd_cumul{suffix} "
         "(sire_id, keibajo_code, surface_type, kyori, race_date)"
     )
 
 
-def stage_svs_cumul(con: duckdb.DuckDBPyConnection) -> None:
+def stage_svs_cumul(con: duckdb.DuckDBPyConnection, suffix: str = "") -> None:
     """Aggregate broader target cells without a second remote scan."""
     con.execute(
-        """
-        create or replace temp table sire_svs_cumul as
+        f"""
+        create or replace temp table sire_svs_cumul{suffix} as
         select
           t.sire_id, t.keibajo_code, t.surface_type, t.race_date,
           count(h.finish_position) as past_starts,
           count(*) filter (where h.finish_position = 1) as past_wins,
           count(*) filter (where h.finish_position <= 3) as past_places
         from (
-          select distinct sire_id, keibajo_code, surface_type, race_date
+          select distinct sire_id{suffix} as sire_id, keibajo_code, surface_type,
+            race_date
           from target_sire_cells
         ) t
         left join sire_race_history h
-          on h.sire_id = t.sire_id
+          on h.sire_id{suffix} = t.sire_id
           and h.keibajo_code = t.keibajo_code
           and h.surface_type = t.surface_type
           and h.race_date < t.race_date
@@ -315,9 +335,43 @@ def stage_svs_cumul(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
     con.execute(
-        "create index sire_svs_cumul_idx on sire_svs_cumul "
+        f"create index sire_svs_cumul{suffix}_idx on sire_svs_cumul{suffix} "
         "(sire_id, keibajo_code, surface_type, race_date)"
     )
+
+
+def sire_bias_columns_sql(suffix: str) -> str:
+    """Five rate/count columns from the ``svsd{suffix}`` / ``svs{suffix}`` joins."""
+    return f"""
+        case when svsd{suffix}.past_starts > 0
+             then svsd{suffix}.past_wins::double / svsd{suffix}.past_starts
+             else null end as sire_venue_surface_dist_win_rate{suffix},
+        case when svsd{suffix}.past_starts > 0
+             then svsd{suffix}.past_places::double / svsd{suffix}.past_starts
+             else null end as sire_venue_surface_dist_place_rate{suffix},
+        svsd{suffix}.past_starts as sire_venue_surface_dist_runs{suffix},
+        case when svs{suffix}.past_starts > 0
+             then svs{suffix}.past_wins::double / svs{suffix}.past_starts
+             else null end as sire_venue_surface_win_rate{suffix},
+        case when svs{suffix}.past_starts > 0
+             then svs{suffix}.past_places::double / svs{suffix}.past_starts
+             else null end as sire_venue_surface_place_rate{suffix}"""
+
+
+def sire_bias_joins_sql(suffix: str, sire_col: str) -> str:
+    """LEFT JOIN the ``{suffix}`` cumulative tables on the given base sire column."""
+    return f"""
+      left join sire_svsd_cumul{suffix} svsd{suffix}
+        on svsd{suffix}.sire_id = bwsf.{sire_col}
+        and svsd{suffix}.keibajo_code = bwsf.keibajo_code
+        and svsd{suffix}.surface_type = bwsf._surface_type
+        and svsd{suffix}.kyori = bwsf.kyori
+        and svsd{suffix}.race_date = bwsf.race_date
+      left join sire_svs_cumul{suffix} svs{suffix}
+        on svs{suffix}.sire_id = bwsf.{sire_col}
+        and svs{suffix}.keibajo_code = bwsf.keibajo_code
+        and svs{suffix}.surface_type = bwsf._surface_type
+        and svs{suffix}.race_date = bwsf.race_date"""
 
 
 def append_features_sql(input_glob: str) -> str:
@@ -326,7 +380,8 @@ def append_features_sql(input_glob: str) -> str:
       select * from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true)
     ),
     base_with_sire as (
-      select b.*, hp.sire_id as _sire_id
+      select b.*, hp.sire_id as _sire_id,
+        {normalized_pedigree_id_sql("hp.sire_id")} as _sire_id_v2
       from base b
       left join horse_pedigree hp on hp.ketto_toroku_bango = b.ketto_toroku_bango
     ),
@@ -337,32 +392,12 @@ def append_features_sql(input_glob: str) -> str:
     ),
     joined as (
       select
-        bwsf.* exclude (_sire_id, _surface_type),
-        case when svsd.past_starts > 0
-             then svsd.past_wins::double / svsd.past_starts
-             else null end as sire_venue_surface_dist_win_rate,
-        case when svsd.past_starts > 0
-             then svsd.past_places::double / svsd.past_starts
-             else null end as sire_venue_surface_dist_place_rate,
-        svsd.past_starts as sire_venue_surface_dist_runs,
-        case when svs.past_starts > 0
-             then svs.past_wins::double / svs.past_starts
-             else null end as sire_venue_surface_win_rate,
-        case when svs.past_starts > 0
-             then svs.past_places::double / svs.past_starts
-             else null end as sire_venue_surface_place_rate
+        bwsf.* exclude (_sire_id, _sire_id_v2, _surface_type),
+        {sire_bias_columns_sql("")},
+        {sire_bias_columns_sql(V2_SUFFIX)}
       from base_with_surface bwsf
-      left join sire_svsd_cumul svsd
-        on svsd.sire_id = bwsf._sire_id
-        and svsd.keibajo_code = bwsf.keibajo_code
-        and svsd.surface_type = bwsf._surface_type
-        and svsd.kyori = bwsf.kyori
-        and svsd.race_date = bwsf.race_date
-      left join sire_svs_cumul svs
-        on svs.sire_id = bwsf._sire_id
-        and svs.keibajo_code = bwsf.keibajo_code
-        and svs.surface_type = bwsf._surface_type
-        and svs.race_date = bwsf.race_date
+      {sire_bias_joins_sql("", "_sire_id")}
+      {sire_bias_joins_sql(V2_SUFFIX, "_sire_id_v2")}
     )
     select * from joined
     """
@@ -408,6 +443,8 @@ def main() -> None:
     )
     stage_svsd_cumul(con)
     stage_svs_cumul(con)
+    stage_svsd_cumul(con, V2_SUFFIX)
+    stage_svs_cumul(con, V2_SUFFIX)
     write_partitioned(con, append_features_sql(input_glob), args.output_dir)
     con.close()
 

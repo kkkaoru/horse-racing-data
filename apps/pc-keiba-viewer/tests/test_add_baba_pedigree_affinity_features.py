@@ -499,6 +499,9 @@ def test_upcoming_target_race_resolves_baba_pedigree_features_via_asof(
     subject.stage_horse_baba_cumul(con)
     subject.stage_sire_baba_cumul(con)
     subject.stage_damsire_baba_cumul(con)
+    subject.stage_horse_baba_cumul(con, "_v2")
+    subject.stage_sire_baba_cumul(con, "_v2")
+    subject.stage_damsire_baba_cumul(con, "_v2")
 
     sql = subject.append_features_sql(input_glob)
     row = con.execute(
@@ -580,8 +583,8 @@ def test_stage_race_history_always_filters_to_input_pedigree_context() -> None:
     remote_sql = conn.sql[1]
     assert "from target_horses" in joined
     assert "from target_pedigree_ids" in joined
-    assert "target_sires using (sire_id)" in joined
-    assert "target_damsires using (damsire_id)" in joined
+    assert "on target_sires.sire_id = case when length(hp.sire_id) = 8" in joined
+    assert "on target_damsires.damsire_id = case when length(hp.damsire_id) = 8" in joined
     assert "se.ketto_toroku_bango in ('target''horse', 'pedigree_horse')" in remote_sql
     assert "select ketto_toroku_bango from target_horses" not in remote_sql
     assert "se.kaisai_nen >= '2010'" in remote_sql
@@ -616,9 +619,9 @@ def test_stage_race_history_keeps_jra_history_for_nar_pedigree_cohort() -> None:
         create temp table horse_pedigree as
         select * from (
           values
-            ('nar_target', 'shared_sire', null),
-            ('jra_runner', 'shared_sire', null),
-            ('unrelated', 'other_sire', null)
+            ('nar_target', 'shared_sire', cast(null as varchar)),
+            ('jra_runner', 'shared_sire', cast(null as varchar)),
+            ('unrelated', 'other_sire', cast(null as varchar))
         ) as v(ketto_toroku_bango, sire_id, damsire_id)
         """
     )
@@ -785,7 +788,8 @@ def test_apply_current_going_fills_only_races_without_ra_going(tmp_path: Path) -
               ('jra','2026','1025','08','01','0','3'),
               ('jra','2026','1025','05','04','2','3'),
               ('jra','2026','1025','05','11','0','2'),
-              ('nar','2026','1025','46','01','0','4')
+              ('nar','2026','1025','46','01','0','4'),
+              ('nar','2026','1025','83','01','1','0')
           ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
                  babajotai_code_shiba, babajotai_code_dirt)
         ) to '{going_path.as_posix()}' (format parquet)
@@ -798,32 +802,36 @@ def test_apply_current_going_fills_only_races_without_ra_going(tmp_path: Path) -
         create temp table race_baba as
         select * from (
           values
-            ('jra','2026','1025','08','11',cast(null as int)),
-            ('jra','2026','1025','08','01',cast(null as int)),
-            ('jra','2026','1025','05','04',cast(null as int)),
-            ('jra','2026','1025','05','11',1),
-            ('jra','2026','1025','05','12',cast(null as int))
-        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, baba_cond)
+            ('jra','2026','1025','08','11',cast(null as int),cast(null as int)),
+            ('jra','2026','1025','08','01',cast(null as int),cast(null as int)),
+            ('jra','2026','1025','05','04',cast(null as int),cast(null as int)),
+            ('jra','2026','1025','05','11',1,1),
+            ('jra','2026','1025','05','12',cast(null as int),cast(null as int))
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, baba_cond,
+               baba_cond_v2)
         """
     )
 
     subject.apply_current_going(con, going_path)
     rows = con.execute(
-        "select source, keibajo_code, race_bango, baba_cond from race_baba order by all"
+        "select source, keibajo_code, race_bango, baba_cond, baba_cond_v2"
+        " from race_baba order by all"
     ).fetchall()
     con.close()
 
     # 08-11 turf -> shiba; 08-01 dirt -> dirt; 05-04 turf-start dirt lists both
     # surfaces and resolves to shiba first exactly like results RA; 05-11 keeps
     # its RA going; 05-12 has no side record and stays NULL; a side record for
-    # a race outside the RA scan still resolves.
+    # a race outside the RA scan still resolves. v2 takes the same jra/nar
+    # code; a Ban-ei side record never feeds the v2 moisture bucket.
     assert rows == [
-        ("jra", "05", "04", 2),
-        ("jra", "05", "11", 1),
-        ("jra", "05", "12", None),
-        ("jra", "08", "01", 3),
-        ("jra", "08", "11", 2),
-        ("nar", "46", "01", 4),
+        ("jra", "05", "04", 2, 2),
+        ("jra", "05", "11", 1, 1),
+        ("jra", "05", "12", None, None),
+        ("jra", "08", "01", 3, 3),
+        ("jra", "08", "11", 2, 2),
+        ("nar", "46", "01", 4, 4),
+        ("nar", "83", "01", 1, None),
     ]
 
 
@@ -843,7 +851,9 @@ def test_append_features_sql_replaces_existing_baba_columns(tmp_path: Path) -> N
                  cast(null as double) as sire_baba_win_rate,
                  cast(null as bigint) as damsire_baba_career_starts,
                  cast(null as double) as damsire_baba_win_rate,
-                 cast(null as double) as sire_horse_baba_combined_score
+                 cast(null as double) as sire_horse_baba_combined_score,
+                 cast(null as int) as current_baba_condition_v2,
+                 cast(null as double) as horse_baba_win_rate_v2
         ) to '{input_dir.as_posix()}'
         (format parquet, partition_by (race_year), overwrite_or_ignore true)
         """
@@ -854,7 +864,8 @@ def test_append_features_sql_replaces_existing_baba_columns(tmp_path: Path) -> N
         """
         create temp table race_baba as
         select 'jra' as source, '2026' as kaisai_nen, '1025' as kaisai_tsukihi,
-               '08' as keibajo_code, '11' as race_bango, 2 as baba_cond
+               '08' as keibajo_code, '11' as race_bango, 2 as baba_cond,
+               2 as baba_cond_v2
         """
     )
     con.execute(
@@ -884,6 +895,27 @@ def test_append_features_sql_replaces_existing_baba_columns(tmp_path: Path) -> N
                5 as past_starts, 0 as past_wins
         """
     )
+    con.execute(
+        """
+        create temp table horse_baba_cumul_v2 as
+        select 'jra' as source, 'horse_a' as ketto_toroku_bango, 2 as baba_cond,
+               '20261018' as race_date, 5 as past_starts, 2 as past_wins
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_baba_cumul_v2 as
+        select 'sire_a' as sire_id, 2 as baba_cond, '20261018' as race_date,
+               20 as past_starts, 5 as past_wins
+        """
+    )
+    con.execute(
+        """
+        create temp table damsire_baba_cumul_v2 as
+        select 'dam_a' as damsire_id, 2 as baba_cond, '20261018' as race_date,
+               8 as past_starts, 2 as past_wins
+        """
+    )
     sql = subject.append_features_sql(f"{input_dir.as_posix()}/race_year=*/*.parquet")
     cursor = con.execute(sql)
     columns = [description[0] for description in cursor.description]
@@ -899,3 +931,124 @@ def test_append_features_sql_replaces_existing_baba_columns(tmp_path: Path) -> N
     assert values["sire_baba_win_rate"] == pytest.approx(0.2)
     assert values["damsire_baba_win_rate"] == pytest.approx(0.0)
     assert values["sire_horse_baba_combined_score"] == pytest.approx(0.225)
+    assert values["current_baba_condition_v2"] == 2
+    assert values["horse_baba_win_rate_v2"] == pytest.approx(0.4)
+    assert values["sire_baba_win_rate_v2"] == pytest.approx(0.25)
+    assert values["damsire_baba_win_rate_v2"] == pytest.approx(0.25)
+
+
+def test_baba_condition_v2_buckets_banei_moisture_and_keeps_other_venues() -> None:
+    con = duckdb.connect(":memory:")
+    rows = con.execute(
+        f"""
+        select keibajo_code, babajotai_code_shiba, babajotai_code_dirt,
+          {subject.baba_condition_sql("ra")} as v1,
+          {subject.baba_condition_v2_sql("ra")} as v2
+        from (values
+          ('83', '0', '5'),
+          ('83', '0', 'F'),
+          ('83', '1', 'A'),
+          ('83', '6', '1'),
+          ('83', '0', '0'),
+          ('30', '0', '2'),
+          ('06', '3', '0')
+        ) as ra(keibajo_code, babajotai_code_shiba, babajotai_code_dirt)
+        """
+    ).fetchall()
+    con.close()
+    assert rows == [
+        ("83", "0", "5", 5, 11),
+        ("83", "0", "F", None, 12),
+        ("83", "1", "A", 1, 13),
+        ("83", "6", "1", 6, 14),
+        ("83", "0", "0", None, None),
+        ("30", "0", "2", 2, 2),
+        ("06", "3", "0", 3, 3),
+    ]
+
+
+def test_v2_affinity_uses_banei_moisture_and_pools_split_sire_ids(
+    tmp_path: Path,
+) -> None:
+    """Ban-ei target at moisture 0x12 (1.8% -> bucket 12) whose v1 going reads
+    as 1 (good). History: horse_a (long sire id) lost at 1.0%, horse_b (the
+    same sire under its nvd_um short id) won at 1.1%; v1 drops both history
+    rows ('0A'/'0B' decode to NULL), v2 keeps them and pools the sire."""
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.nvd_ra as
+        select * from (
+          values
+            ('2024','0101','83','01','0','A'),
+            ('2024','0102','83','01','0','B'),
+            ('2024','0201','83','09','1','2')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               babajotai_code_shiba, babajotai_code_dirt)
+        """
+    )
+    con.execute("create table pg.jvd_ra as select * from pg.nvd_ra where false")
+    con.execute(
+        """
+        create table pg.nvd_se as
+        select * from (
+          values
+            ('2024','0101','83','01','horse_a','02'),
+            ('2024','0102','83','01','horse_b','01')
+        ) as v(kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, kakutei_chakujun)
+        """
+    )
+    con.execute("create table pg.jvd_se as select * from pg.nvd_se where false")
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select * from (values
+          ('horse_a', '1120000715', '1110000922'),
+          ('horse_b', '11200715', '11100922')
+        ) as v(ketto_toroku_bango, sire_id, damsire_id)
+        """
+    )
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    seed_con = duckdb.connect(":memory:")
+    seed_con.execute(
+        """
+        create or replace temp table seed as
+        select * from (
+          values ('nar', '2024', '0201', '83', '09', 'horse_a', '20240201', 2024)
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+               ketto_toroku_bango, race_date, race_year)
+        """
+    )
+    seed_con.execute(
+        f"copy (select * from seed) to '{input_dir.as_posix()}'"
+        " (format parquet, partition_by (race_year), overwrite_or_ignore true)"
+    )
+    seed_con.close()
+    input_glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+
+    subject.stage_base_input(con, input_glob)
+    subject.stage_current_race_baba(con, "20000101")
+    subject.stage_target_pedigree_context(con)
+    subject.stage_race_history_with_baba(con, "20000101")
+    subject.stage_horse_baba_cumul(con)
+    subject.stage_sire_baba_cumul(con)
+    subject.stage_damsire_baba_cumul(con)
+    subject.stage_horse_baba_cumul(con, "_v2")
+    subject.stage_sire_baba_cumul(con, "_v2")
+    subject.stage_damsire_baba_cumul(con, "_v2")
+    row = con.execute(
+        f"""
+        select current_baba_condition, horse_baba_career_starts,
+          sire_baba_career_starts, sire_horse_baba_combined_score,
+          current_baba_condition_v2, horse_baba_career_starts_v2,
+          horse_baba_win_rate_v2, sire_baba_career_starts_v2, sire_baba_win_rate_v2,
+          damsire_baba_career_starts_v2, damsire_baba_win_rate_v2,
+          sire_horse_baba_combined_score_v2
+        from ({subject.append_features_sql(input_glob)})
+        """
+    ).fetchone()
+    con.close()
+    assert row == (1, None, None, None, 12, 1, 0.0, 2, 0.5, 2, 0.5, 0.25)
