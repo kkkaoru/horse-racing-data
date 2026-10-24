@@ -528,49 +528,6 @@ const tryEnqueuePast14BuildCandidate = async (
     }),
   );
 
-const enqueueRaceInferenceJobs = async (
-  env: Env,
-  raceJobKey: RaceJobKey,
-  predictedAt: string,
-): Promise<void> => {
-  const runningStyleLocked = await isEnqueueLocked(
-    env,
-    raceJobKey.raceKey,
-    "predict-running-style",
-  );
-  if (!runningStyleLocked) {
-    await env.REALTIME_FEATURES_JOBS.send({
-      kaisaiNen: raceJobKey.kaisaiNen,
-      kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
-      keibajoCode: raceJobKey.keibajoCode,
-      predictedAt,
-      raceBango: raceJobKey.raceBango,
-      raceKey: raceJobKey.raceKey,
-      source: raceJobKey.source,
-      type: "predict-running-style",
-    });
-    await acquireEnqueueLock(env, raceJobKey.raceKey, "predict-running-style");
-  }
-  const finishPositionLocked = await isEnqueueLocked(
-    env,
-    raceJobKey.raceKey,
-    "predict-finish-position",
-  );
-  if (!finishPositionLocked) {
-    await env.REALTIME_FEATURES_JOBS.send({
-      kaisaiNen: raceJobKey.kaisaiNen,
-      kaisaiTsukihi: raceJobKey.kaisaiTsukihi,
-      keibajoCode: raceJobKey.keibajoCode,
-      predictedAt,
-      raceBango: raceJobKey.raceBango,
-      raceKey: raceJobKey.raceKey,
-      source: raceJobKey.source,
-      type: "predict-finish-position",
-    });
-    await acquireEnqueueLock(env, raceJobKey.raceKey, "predict-finish-position");
-  }
-};
-
 export interface ScheduledFeaturesPlanResult {
   ran: boolean;
   enqueuedRaceCount: number;
@@ -713,17 +670,6 @@ const runPast14EnqueueLoop = async (
   return total;
 };
 
-const runTodayInferenceEnqueueLoop = async (
-  env: Env,
-  todayJobs: RaceJobKey[],
-  predictedAt: string,
-): Promise<void> => {
-  await todayJobs.reduce<Promise<void>>(
-    (prev, job) => prev.then(() => enqueueRaceInferenceJobs(env, job, predictedAt)),
-    Promise.resolve(),
-  );
-};
-
 export const runScheduledFeaturesPlan = async (
   env: Env,
   now: Date,
@@ -763,7 +709,7 @@ export const runScheduledFeaturesPlan = async (
   const candidates = buildCandidateList(todayJobs, tomorrowJobs);
   const counts = await runBuildEnqueueLoop(env, candidates, todayJobs.length, batchSize, now);
   const past14Total = await runPast14EnqueueLoop(env, past14Jobs, now);
-  await runTodayInferenceEnqueueLoop(env, todayJobs, now.toISOString());
+  // No predict-* enqueue here: those queue handlers are stubs; real predictions come from finish-position-cron.
   return {
     batchSize,
     enqueuedRaceCount: counts.total + past14Total,

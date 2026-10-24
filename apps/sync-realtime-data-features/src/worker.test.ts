@@ -1222,7 +1222,7 @@ it("runScheduledFeaturesPlan runs inside polling window with empty catalog resul
   });
 });
 
-it("runScheduledFeaturesPlan enqueues today builds plus today inference jobs (batchSize=2 cap)", async () => {
+it("runScheduledFeaturesPlan enqueues today builds and no inference jobs (batchSize=2 cap)", async () => {
   const queueSend = vi.fn(async () => {});
   vi.mocked(readNextBatchSize).mockResolvedValueOnce(2);
   vi.mocked(listTodayRaceKeysWithKvCache).mockResolvedValueOnce([
@@ -1259,7 +1259,11 @@ it("runScheduledFeaturesPlan enqueues today builds plus today inference jobs (ba
   expect(result.tomorrowCount).toBe(0);
   expect(result.past14Count).toBe(25);
   expect(result.batchSize).toBe(2);
-  expect(queueSend).toHaveBeenCalledTimes(31);
+  expect(queueSend).toHaveBeenCalledTimes(27);
+  const predictMessages = queueSend.mock.calls.filter(
+    (call: unknown[]) => (call[0] as Job).type !== "build-race-features",
+  );
+  expect(predictMessages).toStrictEqual([]);
 });
 
 it("runScheduledFeaturesPlan skips enqueue when lock is held for every candidate", async () => {
