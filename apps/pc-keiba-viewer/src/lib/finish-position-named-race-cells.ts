@@ -32,6 +32,9 @@ export interface NamedRaceCell {
   base_variant: string;
   effective_after?: string;
   feature_count?: number;
+  lock_blend_feature_count?: number;
+  lock_blend_model_version?: string;
+  lock_blend_weight?: number;
   model_version?: string;
   prerace_router?: NamedRacePreraceRouter;
   race_name_token: string;
@@ -56,6 +59,8 @@ export interface NamedRaceVariantBase {
 
 export interface NamedRaceInheritedVariant extends NamedRaceVariantBase {
   base_variant: string;
+  lock_blend_model_version?: string;
+  lock_blend_weight?: number;
   rerank_model_version?: string;
   routing_mode?: string;
 }
@@ -134,6 +139,21 @@ export const NAMED_RACE_CELLS_BY_CATEGORY: Record<string, NamedRaceCell[]> = {
       routing_mode: "jra_lock1_rerank_rest",
       variant: "niigata_kinen",
       venue: "04",
+    },
+    {
+      architecture: "catboost",
+      base_variant: "sim",
+      feature_count: 234,
+      lock_blend_feature_count: 234,
+      lock_blend_model_version: "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+      lock_blend_weight: 0.25,
+      model_version: "jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+      race_name_token: "菊花賞",
+      rerank_feature_count: 234,
+      rerank_model_version: "jra-named-kyoto-kikka-sho-v1-noexo1",
+      routing_mode: "jra_lock1_rerank_rest",
+      variant: "kyoto_kikka_sho",
+      venue: "08",
     },
   ],
 };
@@ -224,6 +244,12 @@ export const inheritNamedRaceVariant = (
         model_version: cell.model_version ?? base.model_version,
         rerank_model_version: cell.rerank_model_version,
         routing_mode: cell.routing_mode,
+        ...(cell.lock_blend_model_version === undefined
+          ? {}
+          : {
+              lock_blend_model_version: cell.lock_blend_model_version,
+              lock_blend_weight: cell.lock_blend_weight,
+            }),
       };
 
 export const isNamedRacePreraceLockRoute = (
@@ -252,6 +278,12 @@ const withNamedRaceModelVersion = (
         model_version: modelVersion,
         rerank_model_version: inherited.rerank_model_version,
         routing_mode: inherited.routing_mode,
+        ...(inherited.lock_blend_model_version === undefined
+          ? {}
+          : {
+              lock_blend_model_version: inherited.lock_blend_model_version,
+              lock_blend_weight: inherited.lock_blend_weight,
+            }),
       };
 
 const preraceLockVariantPairs = (

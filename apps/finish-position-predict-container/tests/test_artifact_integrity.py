@@ -36,7 +36,7 @@ from predict_lib.dynamic_market_shadow import selected_artifact_versions
 from predict_lib.running_style_routing import RunningStyleRoutingValidationError
 from predict_lib.stage1_routing import Stage1RoutingValidationError, load_stage1_routing
 
-EXPECTED_MANIFEST_ROOT = "83a360ab9efe2ae46fd5ec32e8387e61869db686d7606c7bd87be7f4bc86ca3c"
+EXPECTED_MANIFEST_ROOT = "8e58440b69662cb846e86867fbec03a60e52b0265546c66aa3926db7b5c29e2e"
 JRA_RS_MODEL_KEY = "running-style/models/jra/latest.flatbin"
 JRA_RS_CALIBRATOR_KEY = "running-style/models/jra/calibrators.json"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -80,8 +80,8 @@ def test_manifest_is_deterministic_and_selector_complete() -> None:
     report = verify_selector_closure(manifest, selected)
 
     assert manifest.schema_version == "production-artifacts/v1"
-    assert len(manifest.artifacts) == 148
-    assert len(selected) == 138
+    assert len(manifest.artifacts) == 154
+    assert len(selected) == 144
     assert manifest_root_sha256(manifest) == EXPECTED_MANIFEST_ROOT
     assert report.status == "MATCH"
     assert report.exit_code == 0
@@ -195,7 +195,7 @@ def test_disabled_transformer_is_unselected_warning_only() -> None:
     selected = derive_selected_artifact_keys(nar_transformer_enabled=False)
     report = verify_selector_closure(manifest, selected)
 
-    assert len(selected) == 134
+    assert len(selected) == 140
     assert report.status == "MATCH"
     assert len(report.warnings) == 14
     assert (
@@ -1030,7 +1030,7 @@ def test_report_json_is_deterministic_and_redacted() -> None:
         + EXPECTED_MANIFEST_ROOT
         + '","not_applicable":[{"category":"ban-ei","reason":"Production running-style '
         'selectors and R2 keys support JRA and NAR only.","system":"running-style"}],'
-        '"observed_count":0,"selected_count":138,"status":"MATCH","warnings":['
+        '"observed_count":0,"selected_count":144,"status":"MATCH","warnings":['
         '"unselected manifest artifact: '
         'finish-position/jra/jra-cb-stage1-marketfree235-2013/metadata.json",'
         '"unselected manifest artifact: '
@@ -1060,7 +1060,7 @@ def test_main_static_match(capsys: pytest.CaptureFixture[str]) -> None:
 
     assert exit_code == 0
     assert output["status"] == "MATCH"
-    assert output["selected_count"] == 138
+    assert output["selected_count"] == 144
 
 
 def test_main_missing_local_artifacts_fail(
@@ -1087,7 +1087,7 @@ def test_main_without_system_verifies_all_selected_artifacts(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 1
-    assert output["selected_count"] == 138
+    assert output["selected_count"] == 144
 
 
 def test_main_stage_requires_artifact_root_and_system(
@@ -1197,7 +1197,7 @@ def test_main_nar_transformer_flag_overrides_tracked_declaration(
     output = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert output["selected_count"] == 134
+    assert output["selected_count"] == 140
 
 
 # ---------------------------------------------------------------------------

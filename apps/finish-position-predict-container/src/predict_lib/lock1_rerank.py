@@ -8,10 +8,38 @@ horse id) so predicted_score and predicted_rank stay consistent.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Final
 
 LOCK1_SCORE_GAP: Final[float] = 1.0
+
+
+def _race_z(scores: Sequence[float]) -> list[float]:
+    values = [float(score) for score in scores]
+    mean = math.fsum(values) / len(values)
+    std = math.sqrt(math.fsum((value - mean) ** 2 for value in values) / len(values))
+    scale = 1.0 if std == 0.0 else std
+    return [(value - mean) / scale for value in values]
+
+
+def blend_lock_scores(
+    lock_scores: Sequence[float],
+    blend_scores: Sequence[float],
+    weight: float,
+) -> list[float]:
+    """Return race_z(lock) + weight * race_z(blend) over one race's horses.
+
+    race_z uses the population std (ddof=0); a constant race treats std as 1.
+    Empty input returns an empty list; misaligned sequences fail closed.
+    """
+    if len(lock_scores) != len(blend_scores):
+        raise ValueError("lock_scores and blend_scores must have equal lengths")
+    if not lock_scores:
+        return []
+    lock_z = _race_z(lock_scores)
+    blend_z = _race_z(blend_scores)
+    return [lock + weight * blend for lock, blend in zip(lock_z, blend_z, strict=True)]
 
 
 def _top_index(horse_ids: Sequence[str], scores: Sequence[float]) -> int:

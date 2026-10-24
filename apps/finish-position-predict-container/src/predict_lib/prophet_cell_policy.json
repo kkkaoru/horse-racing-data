@@ -146,6 +146,18 @@
           "enabled": true,
           "weight": 0.07731493690174818
         },
+        "kyoto_kikka_sho": {
+          "enabled": true,
+          "weight": 0.03283382535396677
+        },
+        "kyoto_kikka_sho_lock_blend": {
+          "enabled": true,
+          "weight": 0.05
+        },
+        "kyoto_kikka_sho_rerank": {
+          "enabled": true,
+          "weight": 0.05
+        },
         "niigata_bsn": {
           "enabled": false,
           "weight": 0.05

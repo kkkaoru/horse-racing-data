@@ -278,6 +278,43 @@ def test_load_cell_router_routes_named_open_races() -> None:
         )
         == "niigata_kinen"
     )
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "A",
+                    "keibajo_code": "08",
+                    "kyosomei_fukudai": "　　　",
+                    "kyosomei_hondai": "菊花賞　　　",
+                    "kyoso_joken_code": "999",
+                    "kyori": "3000",
+                    "track_code": "18",
+                }
+            ],
+        )
+        == "kyoto_kikka_sho"
+    )
+
+
+def test_load_cell_router_kikka_sho_outside_kyoto_stays_on_sim() -> None:
+    router = load_cell_router()
+    assert (
+        router.resolve_variant(
+            "jra",
+            [
+                {
+                    "grade_code": "A",
+                    "keibajo_code": "09",
+                    "kyosomei_hondai": "菊花賞",
+                    "kyoso_joken_code": "999",
+                    "kyori": "3000",
+                    "track_code": "17",
+                }
+            ],
+        )
+        == "sim"
+    )
 
 
 def test_load_cell_router_named_race_variants_inherit_open_class_model() -> None:
@@ -337,6 +374,32 @@ def test_load_cell_router_named_race_variants_inherit_open_class_model() -> None
     assert ("01", "すずらん賞") in routing.named_race_index
     assert ("07", "中京2歳ステークス") in routing.named_race_index
     assert ("04", "新潟記念") in routing.named_race_index
+    assert routing.variants["kyoto_kikka_sho"].model_version == (
+        "jra-named-kyoto-kikka-sho-lock-v1-noexo1"
+    )
+    assert routing.variants["kyoto_kikka_sho"].feature_count == 234
+    assert routing.variants["kyoto_kikka_sho"].architecture == "catboost"
+    assert routing.variants["kyoto_kikka_sho"].base_variant == "sim"
+    assert routing.variants["kyoto_kikka_sho"].routing_mode == LOCK1_RERANK_REST_ROUTING_MODE
+    assert routing.variants["kyoto_kikka_sho"].rerank_variant == "kyoto_kikka_sho_rerank"
+    assert routing.variants["kyoto_kikka_sho"].lock_blend_variant == "kyoto_kikka_sho_lock_blend"
+    assert routing.variants["kyoto_kikka_sho"].lock_blend_weight == 0.25
+    assert routing.variants["kyoto_kikka_sho_lock_blend"] == VariantSpec(
+        model_version="jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+        feature_count=234,
+        architecture="catboost",
+        routing_mode="direct",
+        base_variant="sim",
+    )
+    assert routing.variants["niigata_kinen"].lock_blend_variant is None
+    assert routing.variants["niigata_kinen"].lock_blend_weight is None
+    assert routing.variants["kyoto_kikka_sho_rerank"].model_version == (
+        "jra-named-kyoto-kikka-sho-v1-noexo1"
+    )
+    assert routing.variants["kyoto_kikka_sho_rerank"].feature_count == 234
+    assert routing.variants["kyoto_kikka_sho_rerank"].routing_mode == "direct"
+    assert ("08", "菊花賞") in routing.named_race_index
+    assert ("09", "菊花賞") not in routing.named_race_index
     assert ("07", "長篠ステークス") not in routing.named_race_index
     assert "chukyo_nagashino" not in routing.variants
 
@@ -475,6 +538,133 @@ def test_apply_named_race_cells_injects_lock1_rerank_variant() -> None:
     assert list(applied.variants).index("niigata_kinen_rerank") < list(applied.variants).index(
         "niigata_kinen"
     )
+
+
+def test_apply_named_race_cells_injects_lock_blend_variant_before_lock_variant() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=234, architecture="catboost"),
+        },
+        rules=(),
+    )
+    applied = apply_named_race_cells(
+        routing=routing,
+        cells=(
+            NamedRaceCell(
+                variant="kyoto_kikka_sho",
+                venue="08",
+                race_name_token="菊花賞",
+                base_variant="sim",
+                model_version="jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+                rerank_model_version="jra-named-kyoto-kikka-sho-v1-noexo1",
+                routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
+                lock_blend_model_version="jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                lock_blend_weight=0.25,
+            ),
+        ),
+    )
+    assert applied.variants["kyoto_kikka_sho"] == VariantSpec(
+        model_version="jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+        feature_count=234,
+        architecture="catboost",
+        routing_mode=LOCK1_RERANK_REST_ROUTING_MODE,
+        base_variant="sim",
+        rerank_variant="kyoto_kikka_sho_rerank",
+        lock_blend_variant="kyoto_kikka_sho_lock_blend",
+        lock_blend_weight=0.25,
+    )
+    assert applied.variants["kyoto_kikka_sho_lock_blend"] == VariantSpec(
+        model_version="jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+        feature_count=234,
+        architecture="catboost",
+        routing_mode="direct",
+        base_variant="sim",
+    )
+    assert list(applied.variants) == [
+        "sim",
+        "kyoto_kikka_sho_rerank",
+        "kyoto_kikka_sho_lock_blend",
+        "kyoto_kikka_sho",
+    ]
+
+
+def test_apply_named_race_cells_lock_blend_feature_count_overrides_base() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=234, architecture="catboost"),
+        },
+        rules=(),
+    )
+    applied = apply_named_race_cells(
+        routing=routing,
+        cells=(
+            NamedRaceCell(
+                variant="kyoto_kikka_sho",
+                venue="08",
+                race_name_token="菊花賞",
+                base_variant="sim",
+                rerank_model_version="jra-named-kyoto-kikka-sho-v1-noexo1",
+                lock_blend_model_version="jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                lock_blend_feature_count=120,
+                lock_blend_weight=0.5,
+            ),
+        ),
+    )
+    assert applied.variants["kyoto_kikka_sho_lock_blend"].feature_count == 120
+
+
+def test_apply_named_race_cells_rejects_lock_blend_without_lock1_mode() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=234, architecture="catboost"),
+        },
+        rules=(),
+    )
+    with pytest.raises(ValueError, match="lock_blend_model_version requires routing_mode"):
+        apply_named_race_cells(
+            routing=routing,
+            cells=(
+                NamedRaceCell(
+                    variant="kyoto_kikka_sho",
+                    venue="08",
+                    race_name_token="菊花賞",
+                    base_variant="sim",
+                    lock_blend_model_version="jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                    lock_blend_weight=0.25,
+                ),
+            ),
+        )
+
+
+def test_apply_named_race_cells_rejects_lock_blend_variant_collision() -> None:
+    routing = CategoryRouting(
+        default_variant="sim",
+        variants={
+            "sim": VariantSpec(model_version="sim-v", feature_count=234, architecture="catboost"),
+            "kyoto_kikka_sho_lock_blend": VariantSpec(
+                model_version="existing-blend", feature_count=234, architecture="catboost"
+            ),
+        },
+        rules=(),
+    )
+    with pytest.raises(ValueError, match="variant 'kyoto_kikka_sho_lock_blend' already exists"):
+        apply_named_race_cells(
+            routing=routing,
+            cells=(
+                NamedRaceCell(
+                    variant="kyoto_kikka_sho",
+                    venue="08",
+                    race_name_token="菊花賞",
+                    base_variant="sim",
+                    rerank_model_version="jra-named-kyoto-kikka-sho-v1-noexo1",
+                    lock_blend_model_version="jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                    lock_blend_weight=0.25,
+                ),
+            ),
+        )
 
 
 def test_apply_named_race_cells_injects_prerace_lock_variant() -> None:
@@ -814,6 +1004,133 @@ def test_named_race_lookup_skips_when_race_name_is_missing() -> None:
     )
     router = CellRouter({"jra": routing})
     assert router.resolve_variant("jra", [{"keibajo_code": "04"}]) == "sim"
+
+
+def test_load_named_race_cells_parses_lock_blend_fields(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "sim",
+                        "lock_blend_feature_count": 234,
+                        "lock_blend_model_version": "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                        "lock_blend_weight": 0.25,
+                        "race_name_token": "菊花賞",
+                        "rerank_model_version": "jra-named-kyoto-kikka-sho-v1-noexo1",
+                        "variant": "kyoto_kikka_sho",
+                        "venue": "08",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_named_race_cells(path) == {
+        "jra": (
+            NamedRaceCell(
+                variant="kyoto_kikka_sho",
+                venue="08",
+                race_name_token="菊花賞",
+                base_variant="sim",
+                rerank_model_version="jra-named-kyoto-kikka-sho-v1-noexo1",
+                lock_blend_model_version="jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                lock_blend_feature_count=234,
+                lock_blend_weight=0.25,
+            ),
+        )
+    }
+
+
+def test_load_named_race_cells_rejects_lock_blend_weight_without_model(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "sim",
+                        "lock_blend_weight": 0.25,
+                        "race_name_token": "菊花賞",
+                        "variant": "kyoto_kikka_sho",
+                        "venue": "08",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be set together"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_lock_blend_model_without_weight(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "sim",
+                        "lock_blend_model_version": "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                        "race_name_token": "菊花賞",
+                        "variant": "kyoto_kikka_sho",
+                        "venue": "08",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be set together"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_non_positive_lock_blend_weight(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "sim",
+                        "lock_blend_model_version": "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                        "lock_blend_weight": 0,
+                        "race_name_token": "菊花賞",
+                        "variant": "kyoto_kikka_sho",
+                        "venue": "08",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be finite and > 0"):
+        load_named_race_cells(path)
+
+
+def test_load_named_race_cells_rejects_non_finite_lock_blend_weight(tmp_path: Path) -> None:
+    path = tmp_path / "named_race_cells.json"
+    path.write_text(
+        json.dumps(
+            {
+                "jra": [
+                    {
+                        "base_variant": "sim",
+                        "lock_blend_model_version": "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                        "lock_blend_weight": "inf",
+                        "race_name_token": "菊花賞",
+                        "variant": "kyoto_kikka_sho",
+                        "venue": "08",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must be finite and > 0"):
+        load_named_race_cells(path)
 
 
 def test_load_named_race_cells_rejects_unknown_prerace_when_key(tmp_path: Path) -> None:
@@ -1484,10 +1801,7 @@ def test_load_cell_router_real_config_has_jra_703_routing() -> None:
         routing.variants["jockey_pedigree_703"].feature_set_hash
         == "e1184e3d9e0726a29f6d44641e1b38be83289ffb1dae7ed1000d7a9da9c412f2"
     )
-    assert (
-        router.resolve_variant("jra", [{"grade_code": "", "kyoso_joken_code": "703"}])
-        == "sim"
-    )
+    assert router.resolve_variant("jra", [{"grade_code": "", "kyoso_joken_code": "703"}]) == "sim"
     assert (
         router.resolve_variant("jra", [{"grade_code": "E", "kyoso_joken_code": "703"}])
         == "jockey_pedigree_703"
@@ -1557,10 +1871,7 @@ def test_load_cell_router_real_config_prioritizes_005_dirt_mile_autumn_gate() ->
         router.resolve_variant("jra", [{**dirt_mile_autumn, "kyori": 1600}])
         == "joken_005_dirt_intermediate_autumn_yeti_gated_top1"
     )
-    assert (
-        router.resolve_variant("jra", [{**dirt_mile_autumn, "race_date": "20260712"}])
-        == "sim"
-    )
+    assert router.resolve_variant("jra", [{**dirt_mile_autumn, "race_date": "20260712"}]) == "sim"
     assert router.resolve_variant("jra", [{**dirt_mile_autumn, "race_date": None}]) == "sim"
 
 

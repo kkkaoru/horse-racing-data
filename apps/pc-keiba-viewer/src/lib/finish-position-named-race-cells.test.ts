@@ -113,6 +113,29 @@ it("lookupNamedRaceCell finds BSN, Suzuran, Chukyo 2yo Stakes, and Niigata Kinen
   ).toBeUndefined();
 });
 
+it("lookupNamedRaceCell finds Kikka-sho only at Kyoto", () => {
+  expect(
+    lookupNamedRaceCell({ category: "jra", raceNameToken: "菊花賞", venue: "08" }),
+  ).toStrictEqual({
+    architecture: "catboost",
+    base_variant: "sim",
+    feature_count: 234,
+    lock_blend_feature_count: 234,
+    lock_blend_model_version: "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+    lock_blend_weight: 0.25,
+    model_version: "jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+    race_name_token: "菊花賞",
+    rerank_feature_count: 234,
+    rerank_model_version: "jra-named-kyoto-kikka-sho-v1-noexo1",
+    routing_mode: "jra_lock1_rerank_rest",
+    variant: "kyoto_kikka_sho",
+    venue: "08",
+  });
+  expect(
+    lookupNamedRaceCell({ category: "jra", raceNameToken: "菊花賞", venue: "09" }),
+  ).toBeUndefined();
+});
+
 it("lookupNamedRaceCell misses an uncatalogued venue and token pair", () => {
   expect(
     lookupNamedRaceCell({ category: "jra", raceNameToken: "有馬記念", venue: "06" }),
@@ -166,6 +189,64 @@ it("inheritNamedRaceVariant copies lock1 rerank catalog fields", () => {
     model_version: "jra-named-niigata-kinen-draw-v2-noexo1",
     rerank_model_version: "jra-named-niigata-kinen-going-v2-noexo1",
     routing_mode: "jra_lock1_rerank_rest",
+  });
+});
+
+it("namedRaceVariantsForCategory carries lock blend fields onto prerace lock variants", () => {
+  expect(
+    namedRaceVariantsForCategory({
+      cells: [
+        {
+          base_variant: "sim",
+          lock_blend_feature_count: 234,
+          lock_blend_model_version: "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+          lock_blend_weight: 0.25,
+          model_version: "jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+          prerace_router: {
+            routes: [
+              {
+                model_version: "jra-named-kyoto-kikka-sho-lock-v2-noexo1",
+                variant: "kyoto_kikka_sho_long",
+                when: { kyori: ["3000"] },
+              },
+            ],
+          },
+          race_name_token: "菊花賞",
+          rerank_model_version: "jra-named-kyoto-kikka-sho-v1-noexo1",
+          routing_mode: "jra_lock1_rerank_rest",
+          variant: "kyoto_kikka_sho",
+          venue: "08",
+        },
+      ],
+      variants: {
+        sim: {
+          architecture: "catboost",
+          feature_count: 234,
+          model_version: "jra-cb-v9-sim-2013-clean-noexo1",
+        },
+      },
+    }),
+  ).toStrictEqual({
+    kyoto_kikka_sho: {
+      architecture: "catboost",
+      base_variant: "sim",
+      feature_count: 234,
+      lock_blend_model_version: "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+      lock_blend_weight: 0.25,
+      model_version: "jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+      rerank_model_version: "jra-named-kyoto-kikka-sho-v1-noexo1",
+      routing_mode: "jra_lock1_rerank_rest",
+    },
+    kyoto_kikka_sho_long: {
+      architecture: "catboost",
+      base_variant: "sim",
+      feature_count: 234,
+      lock_blend_model_version: "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+      lock_blend_weight: 0.25,
+      model_version: "jra-named-kyoto-kikka-sho-lock-v2-noexo1",
+      rerank_model_version: "jra-named-kyoto-kikka-sho-v1-noexo1",
+      routing_mode: "jra_lock1_rerank_rest",
+    },
   });
 });
 

@@ -847,6 +847,14 @@ def test_is_named_race_cell_score_matches_catalog_variant_or_named_prefix() -> N
     )
     assert (
         is_named_race_cell_score(
+            model_version="jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+            resolved_variant="kyoto_kikka_sho",
+            named_race_variants=("niigata_kinen", "kyoto_kikka_sho"),
+        )
+        is True
+    )
+    assert (
+        is_named_race_cell_score(
             model_version="jra-named-niigata-kinen-draw-v2-noexo1",
             resolved_variant=None,
             named_race_variants=(),

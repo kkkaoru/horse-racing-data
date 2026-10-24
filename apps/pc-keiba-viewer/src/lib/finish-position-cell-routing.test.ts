@@ -666,6 +666,39 @@ it("routes Niigata Kinen from the last 記念 token in the official title", () =
   );
 });
 
+it("routes Kyoto Kikka-sho to the named G1 cell", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    gradeCode: "A",
+    kaisaiTsukihi: "1025",
+    keibajoCode: "08",
+    kyori: "3000",
+    kyosoJokenCode: "999",
+    kyosomeiHondai: "菊花賞",
+    raceBango: "11",
+    trackCode: "18",
+  };
+  expect(resolveFinishPositionCellRoutingModelVersion({ category: "jra", race })).toBe(
+    "jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+  );
+  expect(resolveDimension({ category: "jra", dimension: "race_name_token", race })).toBe("菊花賞");
+});
+
+it("keeps Kikka-sho held at Hanshin off the named cell (default model)", () => {
+  const race: RaceDetail = {
+    ...BASE_RACE,
+    gradeCode: "A",
+    kaisaiTsukihi: "1024",
+    keibajoCode: "09",
+    kyori: "3000",
+    kyosoJokenCode: "999",
+    kyosomeiHondai: "菊花賞",
+    raceBango: "11",
+    trackCode: "17",
+  };
+  expect(resolveFinishPositionCellRoutingModelVersion({ category: "jra", race })).toBe(null);
+});
+
 it("routes NAR Funabashi 43 1700 C summer to the mile cell", () => {
   const race: RaceDetail = {
     ...BASE_RACE,
@@ -957,6 +990,7 @@ it("getAllFinishPositionCellRoutingModelVersions returns every distinct variant 
     "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1",
     "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
     "jra-named-niigata-kinen-draw-v2-noexo1",
+    "jra-named-kyoto-kikka-sho-lock-v1-noexo1",
     "banei-cb-v9-sim-2011-nowin2",
     "banei-cb-v8-window2011-wf-15y-nowin2",
     "iter12-nar-xgb-hpo-v8-clean188-nowin2",
@@ -1016,6 +1050,7 @@ it("getAllFinishPositionCellRoutingOffLabelVariantModelVersions excludes each ca
     "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1",
     "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
     "jra-named-niigata-kinen-draw-v2-noexo1",
+    "jra-named-kyoto-kikka-sho-lock-v1-noexo1",
     "banei-cb-v8-window2011-wf-15y-nowin2",
     "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1",
     "nar-cell-top2-30-mukatsu-sprint-summer-tc2-v1-nowin1",
@@ -1101,6 +1136,21 @@ it("named-race variants inherit the open-class model without joining the linear 
     rerank_model_version: "jra-named-niigata-kinen-going-v2-noexo1",
     routing_mode: "jra_lock1_rerank_rest",
   });
+  expect(FINISH_POSITION_CELL_ROUTING_CONFIG_FOR_TESTS.jra?.variants.kyoto_kikka_sho).toStrictEqual(
+    {
+      architecture: "catboost",
+      base_variant: "sim",
+      feature_count: 234,
+      lock_blend_model_version: "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+      lock_blend_weight: 0.25,
+      model_version: "jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+      rerank_model_version: "jra-named-kyoto-kikka-sho-v1-noexo1",
+      routing_mode: "jra_lock1_rerank_rest",
+    },
+  );
+  expect(
+    FINISH_POSITION_CELL_ROUTING_BASE_CONFIG_FOR_TESTS.jra?.variants.kyoto_kikka_sho,
+  ).toBeUndefined();
   expect(
     FINISH_POSITION_CELL_ROUTING_BASE_CONFIG_FOR_TESTS.jra?.variants.niigata_bsn,
   ).toBeUndefined();

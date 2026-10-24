@@ -124,7 +124,7 @@ from predict_lib.jra_joint_alternate_scorer import (
     JraJointAlternateScorer,
 )
 from predict_lib.late_binding import OddsSnapshot
-from predict_lib.lock1_rerank import apply_lock1_rerank_rest
+from predict_lib.lock1_rerank import apply_lock1_rerank_rest, blend_lock_scores
 from predict_lib.market_deviation import (
     RaceOddsPools,
     attach_market_deviation,
@@ -747,6 +747,8 @@ class VariantModel:
     consensus_members: tuple[VariantModel, ...] = ()
     consensus_required_votes: int | None = None
     lock1_rerank_model: VariantModel | None = None
+    lock1_blend_model: VariantModel | None = None
+    lock1_blend_weight: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1034,6 +1036,8 @@ def _load_model_bundle(
                     continue
                 top1_swap_base = variant_pool[base_variant]
             lock1_rerank_model: VariantModel | None = None
+            lock1_blend_model: VariantModel | None = None
+            lock1_blend_weight: float | None = None
             if routing_mode == "jra_lock1_rerank_rest":
                 rerank_variant = getattr(variant_spec, "rerank_variant", None)
                 if (
@@ -1047,6 +1051,16 @@ def _load_model_bundle(
                     )
                     continue
                 lock1_rerank_model = variant_pool[rerank_variant]
+                lock_blend_variant = getattr(variant_spec, "lock_blend_variant", None)
+                if lock_blend_variant is not None:
+                    if lock_blend_variant not in variant_pool:
+                        debug_log(
+                            f"[cell-routing] variant={variant_name} category={category} "
+                            f"missing lock1 lock_blend_variant={lock_blend_variant} -> not loaded"
+                        )
+                        continue
+                    lock1_blend_model = variant_pool[lock_blend_variant]
+                    lock1_blend_weight = getattr(variant_spec, "lock_blend_weight", None)
             consensus_members: tuple[VariantModel, ...] = ()
             if routing_mode == "nar_transformer_top2_consensus_swap":
                 consensus_names = getattr(variant_spec, "consensus_variants", ())
@@ -1070,6 +1084,8 @@ def _load_model_bundle(
                 consensus_members=consensus_members,
                 consensus_required_votes=getattr(variant_spec, "consensus_required_votes", None),
                 lock1_rerank_model=lock1_rerank_model,
+                lock1_blend_model=lock1_blend_model,
+                lock1_blend_weight=lock1_blend_weight,
             )
             debug_log(
                 f"[cell-routing] loaded variant={variant_name} category={category} "
@@ -1657,9 +1673,12 @@ def _score_one_race_lock1_rerank_rest(
     rest = primary.lock1_rerank_model
     if rest is None:
         raise ValueError("Cell variant lock1 rerank requires a rest model")
-    if is_degenerate_feature_matrix(entries, primary.feature_names) or is_degenerate_feature_matrix(
-        entries, rest.feature_names
-    ):
+    blend = primary.lock1_blend_model
+    blend_weight = primary.lock1_blend_weight
+    if blend is not None and blend_weight is None:
+        raise ValueError("Cell variant lock1 blend requires a blend weight")
+    guarded_models = (primary, rest) if blend is None else (primary, rest, blend)
+    if any(is_degenerate_feature_matrix(entries, model.feature_names) for model in guarded_models):
         debug_log(
             f"[feature-guard] race_id={race_id} category={category} "
             f"model_version={primary.model_version} rejected: feature matrix mostly missing "
@@ -1674,6 +1693,12 @@ def _score_one_race_lock1_rerank_rest(
         rest.booster,
         build_feature_matrix(entries, rest.feature_names, rest.architecture),
     )
+    if blend is not None and blend_weight is not None:
+        blend_scores = score_matrix(
+            blend.booster,
+            build_feature_matrix(entries, blend.feature_names, blend.architecture),
+        )
+        lock_scores = blend_lock_scores(lock_scores, blend_scores, blend_weight)
     horse_ids = [str(entry["ketto_toroku_bango"]) for entry in entries]
     adjusted_scores = apply_lock1_rerank_rest(horse_ids, lock_scores, rest_scores)
     ranked = rank_race_entries(entries, adjusted_scores)

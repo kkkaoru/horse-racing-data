@@ -105,6 +105,7 @@ _LOAD_MODEL_METADATA_ATTR = "_load_model_metadata"
 _LOAD_NAR_TRANSFORMER_ATTR = "_load_nar_transformer"
 _LOAD_STAGE1_MODEL_ATTR = "_load_stage1_model"
 _SCORE_ONE_RACE_JRA_VARIANT_TOP1_SWAP_ATTR = "_score_one_race_variant_top1_swap"
+_SCORE_ONE_RACE_LOCK1_RERANK_REST_ATTR = "_score_one_race_lock1_rerank_rest"
 _SCORE_ONE_RACE_NAR_TOP1_SWAP_ATTR = "_score_one_race_nar_top1_swap"
 _SCORE_ONE_RACE_NAR_TOP2_SWAP_ATTR = "_score_one_race_nar_top2_swap"
 _SCORE_ONE_RACE_NAR_TOP2_CONSENSUS_SWAP_ATTR = "_score_one_race_nar_top2_consensus_swap"
@@ -3286,6 +3287,192 @@ def test_score_races_routes_jra_lock1_rerank_rest(tmp_path: Path) -> None:
     assert {row[0] for row in rows} == {lock_version}
 
 
+def test_score_races_routes_jra_lock1_rerank_rest_with_lock_blend(tmp_path: Path) -> None:
+    lock_version = "jra-named-kyoto-kikka-sho-lock-v1-noexo1"
+    blend_version = "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1"
+    rest_version = "jra-named-kyoto-kikka-sho-v1-noexo1"
+    _write_variant_metadata(tmp_path, "jra", rest_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", blend_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", lock_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
+            "kyoto_kikka_sho_rerank": _FakeVariantSpec(rest_version, 1, "catboost"),
+            "kyoto_kikka_sho_lock_blend": _FakeVariantSpec(blend_version, 1, "catboost"),
+            "kyoto_kikka_sho": _FakeVariantSpec(
+                lock_version,
+                1,
+                "catboost",
+                routing_mode="jra_lock1_rerank_rest",
+                rerank_variant="kyoto_kikka_sho_rerank",
+                lock_blend_variant="kyoto_kikka_sho_lock_blend",
+                lock_blend_weight=0.25,
+            ),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="kyoto_kikka_sho")
+    fallback = _ScoreByUmaban([0.8, 0.4, 0.2])
+    rest = _ScoreByUmaban([0.1, 0.4, 0.8])
+    blend = _ScoreByUmaban([0.0, 1.0, 0.5])
+    lock = _ScoreByUmaban([0.9, 0.85, 0.1])
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch(
+            "predict_upcoming._load_booster_by_arch",
+            side_effect=[rest, blend, lock],
+        ),
+        patch("predict_upcoming._load_jra_dirt_hybrid", return_value=None),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+    ):
+        rows = score_races(
+            {"jra:20261025:08:04:11": _nar_entries()},
+            "jra",
+            tmp_path,
+            ["feat"],
+        )[0]
+
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank == {1: 2, 2: 3, 3: 1}
+    assert {row[0] for row in rows} == {"jra-named-kyoto-kikka-sho-lock-v1-noexo1"}
+
+
+def test_score_races_skips_lock1_cell_when_lock_blend_variant_missing(tmp_path: Path) -> None:
+    lock_version = "jra-named-kyoto-kikka-sho-lock-v1-noexo1"
+    rest_version = "jra-named-kyoto-kikka-sho-v1-noexo1"
+    _write_variant_metadata(tmp_path, "jra", rest_version, ["feat"])
+    _write_variant_metadata(tmp_path, "jra", lock_version, ["feat"])
+    routing = _FakeRouting(
+        variants={
+            "sim": _FakeVariantSpec("jra-cb-v9-sim-2013-clean-noexo1", 1, "catboost"),
+            "kyoto_kikka_sho_rerank": _FakeVariantSpec(rest_version, 1, "catboost"),
+            "kyoto_kikka_sho": _FakeVariantSpec(
+                lock_version,
+                1,
+                "catboost",
+                routing_mode="jra_lock1_rerank_rest",
+                rerank_variant="kyoto_kikka_sho_rerank",
+                lock_blend_variant="kyoto_kikka_sho_lock_blend",
+                lock_blend_weight=0.25,
+            ),
+        },
+        default_variant="sim",
+    )
+    router = _FakeRouter(routing, resolved="kyoto_kikka_sho")
+    fallback = _ScoreByUmaban([0.8, 0.4, 0.2])
+    rest = _ScoreByUmaban([0.1, 0.4, 0.8])
+    lock = _ScoreByUmaban([0.9, 0.85, 0.1])
+    with (
+        patch("predict_upcoming.load_cell_router", return_value=router),
+        patch("predict_upcoming._load_booster", return_value=fallback),
+        patch(
+            "predict_upcoming._load_booster_by_arch",
+            side_effect=[rest, lock],
+        ),
+        patch("predict_upcoming._load_jra_dirt_hybrid", return_value=None),
+        patch("predict_upcoming.load_stage1_routing", return_value={}),
+    ):
+        rows = score_races(
+            {"jra:20261025:08:04:11": _nar_entries()},
+            "jra",
+            tmp_path,
+            ["feat"],
+        )[0]
+
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank == {1: 1, 2: 2, 3: 3}
+    assert {row[0] for row in rows} == {"jra-cb-v9-sim-2013-clean-noexo1"}
+
+
+def test_score_one_race_lock1_rerank_rest_without_blend_locks_lock_winner() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_LOCK1_RERANK_REST_ATTR),
+    )
+    rest = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.4, 0.8]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-named-kyoto-kikka-sho-v1-noexo1",
+    )
+    lock = VariantModel(
+        booster=_ScoreByUmaban([0.9, 0.85, 0.1]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+        routing_mode="jra_lock1_rerank_rest",
+        lock1_rerank_model=rest,
+    )
+
+    rows = helper(lock, "jra:20261025:08:04:11", "jra", _nar_entries())
+
+    by_rank = {row[9]: row[7] for row in rows}
+    assert by_rank == {1: 1, 2: 3, 3: 2}
+
+
+def test_score_one_race_lock1_rerank_rest_skips_when_blend_features_degenerate() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_LOCK1_RERANK_REST_ATTR),
+    )
+    rest = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.4, 0.8]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-named-kyoto-kikka-sho-v1-noexo1",
+    )
+    blend = VariantModel(
+        booster=_ScoreByUmaban([0.0, 1.0, 0.5]),
+        feature_names=["missing_feat"],
+        architecture="catboost",
+        model_version="jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+    )
+    lock = VariantModel(
+        booster=_ScoreByUmaban([0.9, 0.85, 0.1]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+        routing_mode="jra_lock1_rerank_rest",
+        lock1_rerank_model=rest,
+        lock1_blend_model=blend,
+        lock1_blend_weight=0.25,
+    )
+
+    assert helper(lock, "jra:20261025:08:04:11", "jra", _nar_entries()) == []
+
+
+def test_score_one_race_lock1_rerank_rest_rejects_blend_without_weight() -> None:
+    helper = cast(
+        Callable[..., list[list[object]]],
+        getattr(predict_upcoming, _SCORE_ONE_RACE_LOCK1_RERANK_REST_ATTR),
+    )
+    rest = VariantModel(
+        booster=_ScoreByUmaban([0.1, 0.4, 0.8]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-named-kyoto-kikka-sho-v1-noexo1",
+    )
+    blend = VariantModel(
+        booster=_ScoreByUmaban([0.0, 1.0, 0.5]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+    )
+    lock = VariantModel(
+        booster=_ScoreByUmaban([0.9, 0.85, 0.1]),
+        feature_names=["feat"],
+        architecture="catboost",
+        model_version="jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+        routing_mode="jra_lock1_rerank_rest",
+        lock1_rerank_model=rest,
+        lock1_blend_model=blend,
+    )
+
+    with pytest.raises(ValueError, match="requires a blend weight"):
+        helper(lock, "jra:20261025:08:04:11", "jra", _nar_entries())
+
+
 def test_score_races_routes_nar_top1_swap_variant(tmp_path: Path) -> None:
     version = "nar-cell-top1-30-mukatsu-sprint-summer-tc1-v1-nowin1"
     _write_variant_metadata(tmp_path, "nar", version, ["feat"])
@@ -3667,6 +3854,8 @@ class _FakeVariantSpec:
         base_variant: str | None = None,
         minimum_candidate_margin: float | None = None,
         rerank_variant: str | None = None,
+        lock_blend_variant: str | None = None,
+        lock_blend_weight: float | None = None,
     ) -> None:
         self.model_version = model_version
         self.feature_count = feature_count
@@ -3677,6 +3866,8 @@ class _FakeVariantSpec:
         self.base_variant = base_variant
         self.minimum_candidate_margin = minimum_candidate_margin
         self.rerank_variant = rerank_variant
+        self.lock_blend_variant = lock_blend_variant
+        self.lock_blend_weight = lock_blend_weight
 
 
 @final
@@ -4976,6 +5167,26 @@ def test_expected_model_version_uses_overlay_for_niigata_kinen() -> None:
         },
     )
     assert version == "jra-named-niigata-kinen-draw-v2-noexo1"
+
+
+def test_expected_model_version_uses_overlay_for_kyoto_kikka_sho() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [{"grade_code": "A", "keibajo_code": "08", "kyoso_joken_code": "999"}],
+        race_name={"kyosomei_hondai": "菊花賞　　　"},
+    )
+    assert version == "jra-named-kyoto-kikka-sho-lock-v1-noexo1"
+
+
+def test_expected_model_version_kikka_sho_at_hanshin_stays_on_sim() -> None:
+    expected_fn = predict_upcoming.__dict__["expected_model_version_for_entries"]
+    version = expected_fn(
+        "jra",
+        [{"grade_code": "A", "keibajo_code": "09", "kyoso_joken_code": "999"}],
+        race_name={"kyosomei_hondai": "菊花賞"},
+    )
+    assert version == "jra-cb-v9-sim-2013-clean-noexo1"
 
 
 def test_expected_model_version_without_overlay_stays_on_pooled_joken_999() -> None:

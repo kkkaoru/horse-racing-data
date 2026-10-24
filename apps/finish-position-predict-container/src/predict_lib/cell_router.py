@@ -42,6 +42,7 @@ VARIANT_SIM: Final[str] = "sim"
 VARIANT_BASE: Final[str] = "base"
 LOCK1_RERANK_REST_ROUTING_MODE: Final[str] = "jra_lock1_rerank_rest"
 NAMED_RACE_RERANK_VARIANT_SUFFIX: Final[str] = "_rerank"
+NAMED_RACE_LOCK_BLEND_VARIANT_SUFFIX: Final[str] = "_lock_blend"
 NAMED_RACE_PRERACE_DIMENSIONS: Final[frozenset[str]] = frozenset({"kyori", "month"})
 
 
@@ -73,6 +74,8 @@ class VariantSpec:
     consensus_variants: tuple[str, ...] = ()
     consensus_required_votes: int | None = None
     rerank_variant: str | None = None
+    lock_blend_variant: str | None = None
+    lock_blend_weight: float | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +110,9 @@ class NamedRaceCell:
     rerank_model_version: str | None = None
     routing_mode: str | None = None
     prerace_router: NamedRacePreraceRouter | None = None
+    lock_blend_model_version: str | None = None
+    lock_blend_feature_count: int | None = None
+    lock_blend_weight: float | None = None
 
 
 @dataclass(frozen=True)
@@ -808,6 +814,25 @@ def _optional_int(*, payload: Mapping[str, object], field: str) -> int | None:
     return int(str(payload[field]))
 
 
+def _optional_float(*, payload: Mapping[str, object], field: str) -> float | None:
+    if field not in payload:
+        return None
+    return float(str(payload[field]))
+
+
+def _validated_lock_blend(cell: Mapping[str, object]) -> tuple[str | None, float | None]:
+    model_version = _optional_str(payload=cell, field="lock_blend_model_version")
+    weight = _optional_float(payload=cell, field="lock_blend_weight")
+    if (model_version is None) != (weight is None):
+        raise ValueError(
+            "named_race_cells.json: lock_blend_model_version and lock_blend_weight "
+            "must be set together"
+        )
+    if weight is not None and not (math.isfinite(weight) and weight > 0.0):
+        raise ValueError("named_race_cells.json: lock_blend_weight must be finite and > 0")
+    return model_version, weight
+
+
 def _normalize_prerace_kyori(value: object) -> str:
     token = _kyori_token(value)
     if token is None:
@@ -894,6 +919,7 @@ def _parse_named_race_cell(value: object) -> NamedRaceCell:
     cell = _as_mapping(value, "named_race_cell")
     source = "named_race_cells.json"
     prerace_payload = cell.get("prerace_router")
+    lock_blend_model_version, lock_blend_weight = _validated_lock_blend(cell)
     return NamedRaceCell(
         variant=_required_str(payload=cell, field="variant", source=source),
         venue=_required_str(payload=cell, field="venue", source=source),
@@ -909,6 +935,9 @@ def _parse_named_race_cell(value: object) -> NamedRaceCell:
         prerace_router=(
             None if prerace_payload is None else _parse_named_race_prerace_router(prerace_payload)
         ),
+        lock_blend_model_version=lock_blend_model_version,
+        lock_blend_feature_count=_optional_int(payload=cell, field="lock_blend_feature_count"),
+        lock_blend_weight=lock_blend_weight,
     )
 
 
@@ -930,6 +959,16 @@ def named_race_rerank_variant_name(variant: str) -> str:
     return f"{variant}{NAMED_RACE_RERANK_VARIANT_SUFFIX}"
 
 
+def named_race_lock_blend_variant_name(variant: str) -> str:
+    return f"{variant}{NAMED_RACE_LOCK_BLEND_VARIANT_SUFFIX}"
+
+
+def _named_race_lock_blend_variant(cell: NamedRaceCell) -> str | None:
+    if cell.lock_blend_model_version is None:
+        return None
+    return named_race_lock_blend_variant_name(cell.variant)
+
+
 def _named_race_lock1_routing_mode(cell: NamedRaceCell) -> str:
     if cell.routing_mode is not None:
         return cell.routing_mode
@@ -949,6 +988,8 @@ def _inherit_named_race_variant_spec(*, cell: NamedRaceCell, base: VariantSpec) 
         routing_mode=_named_race_lock1_routing_mode(cell),
         base_variant=cell.base_variant,
         rerank_variant=rerank_variant,
+        lock_blend_variant=_named_race_lock_blend_variant(cell),
+        lock_blend_weight=cell.lock_blend_weight,
     )
 
 
@@ -963,6 +1004,26 @@ def _named_race_rerank_variant_spec(
     )
     return VariantSpec(
         model_version=rerank_model_version,
+        feature_count=feature_count,
+        architecture=base.architecture if cell.architecture is None else cell.architecture,
+        routing_mode="direct",
+        base_variant=cell.base_variant,
+    )
+
+
+def _named_race_lock_blend_variant_spec(
+    *,
+    cell: NamedRaceCell,
+    base: VariantSpec,
+    lock_blend_model_version: str,
+) -> VariantSpec:
+    feature_count = (
+        base.feature_count
+        if cell.lock_blend_feature_count is None
+        else cell.lock_blend_feature_count
+    )
+    return VariantSpec(
+        model_version=lock_blend_model_version,
         feature_count=feature_count,
         architecture=base.architecture if cell.architecture is None else cell.architecture,
         routing_mode="direct",
@@ -986,6 +1047,8 @@ def _named_race_lock_variant_spec(
         routing_mode=_named_race_lock1_routing_mode(cell),
         base_variant=cell.base_variant,
         rerank_variant=rerank_variant,
+        lock_blend_variant=_named_race_lock_blend_variant(cell),
+        lock_blend_weight=cell.lock_blend_weight,
     )
 
 
@@ -1050,6 +1113,20 @@ def apply_named_race_cells(
                 cell=cell,
                 base=base,
                 rerank_model_version=cell.rerank_model_version,
+            )
+        if cell.lock_blend_model_version is not None:
+            if routing_mode != LOCK1_RERANK_REST_ROUTING_MODE:
+                raise ValueError(
+                    f"named_race_cells.json: cell '{cell.variant}' lock_blend_model_version "
+                    f"requires routing_mode '{LOCK1_RERANK_REST_ROUTING_MODE}'"
+                )
+            blend_name = named_race_lock_blend_variant_name(cell.variant)
+            if blend_name in variants:
+                raise ValueError(f"named_race_cells.json: variant '{blend_name}' already exists")
+            variants[blend_name] = _named_race_lock_blend_variant_spec(
+                cell=cell,
+                base=base,
+                lock_blend_model_version=cell.lock_blend_model_version,
             )
         _register_named_race_prerace_lock_variants(cell=cell, base=base, variants=variants)
         if cell.variant in variants:

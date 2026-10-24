@@ -138,6 +138,9 @@ def test_production_model_allowlist_contains_clean_defaults_and_banei_cell_base(
                 "jra-named-chukyo-nisai-stakes-focal-v3-noexo1",
                 "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1",
                 "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
+                "jra-named-kyoto-kikka-sho-lock-v1-noexo1",
+                "jra-named-kyoto-kikka-sho-lockblend-v1-noexo1",
+                "jra-named-kyoto-kikka-sho-v1-noexo1",
                 "jra-named-niigata-bsn-v1-noexo1",
                 "jra-named-niigata-kinen-v1",
                 "jra-named-niigata-kinen-draw-v2-noexo1",
@@ -509,6 +512,11 @@ def test_named_race_artifacts_record_tokens_and_are_allowlisted() -> None:
     assert is_production_model_version_allowed("jra-named-niigata-kinen-v1") is True
     assert is_production_model_version_allowed("jra-named-niigata-kinen-draw-v2-noexo1") is True
     assert is_production_model_version_allowed("jra-named-niigata-kinen-going-v2-noexo1") is True
+    assert is_production_model_version_allowed("jra-named-kyoto-kikka-sho-v1-noexo1") is True
+    assert is_production_model_version_allowed("jra-named-kyoto-kikka-sho-lock-v1-noexo1") is True
+    assert (
+        is_production_model_version_allowed("jra-named-kyoto-kikka-sho-lockblend-v1-noexo1") is True
+    )
 
 
 def test_production_model_allowlist_rejects_historical_leaky_versions() -> None:
