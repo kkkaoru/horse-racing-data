@@ -2,6 +2,11 @@
 
 import type { R2SqlCatalogConfig, RaceTrainingFilters, RaceTrainingRow } from "./types";
 
+interface WorkoutWindow {
+  endDate: string;
+  startDate: string;
+}
+
 const IDENTIFIER_PATTERN: RegExp = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE_PATTERN: RegExp = /^\d{8}$/u;
 const CODE_PATTERN: RegExp = /^\d{2}$/u;
@@ -93,7 +98,7 @@ const officialWorkoutSelect = (
   table: string,
   trainingType: string,
   extendedColumns: boolean,
-  windowName: string,
+  window: WorkoutWindow,
 ): string => `SELECT
     r.umaban, r.bamei, r.current_jockey_name, r.trainer_name,
     r.ketto_toroku_bango,
@@ -126,8 +131,7 @@ const officialWorkoutSelect = (
     0 AS source_priority
   FROM runners r
   INNER JOIN ${table} w ON w.ketto_toroku_bango = r.ketto_toroku_bango
-  CROSS JOIN ${windowName} ww
-  WHERE w.chokyo_nengappi BETWEEN ww.start_date AND ww.end_date`;
+  WHERE w.chokyo_nengappi BETWEEN '${window.startDate}' AND '${window.endDate}'`;
 
 export const buildRaceTrainingsQuery = (
   env: R2SqlCatalogConfig,
@@ -144,20 +148,12 @@ export const buildRaceTrainingsQuery = (
   const hillTable = rawTableName(env, "jvd_hc");
   const woodTable = rawTableName(env, "jvd_wc");
   const netkeibaTable = rawTableName(env, "netkeiba_training_workouts");
-  const hillSelect = officialWorkoutSelect(hillTable, "坂路", false, "workout_window");
-  const woodSelect = officialWorkoutSelect(woodTable, "ウッド", true, "workout_window");
-  const fallbackHillSelect = officialWorkoutSelect(
-    hillTable,
-    "坂路",
-    false,
-    "fallback_workout_window",
-  );
-  const fallbackWoodSelect = officialWorkoutSelect(
-    woodTable,
-    "ウッド",
-    true,
-    "fallback_workout_window",
-  );
+  const window: WorkoutWindow = { endDate: date, startDate };
+  const fallbackWindow: WorkoutWindow = { endDate: date, startDate: fallbackStartDate };
+  const hillSelect = officialWorkoutSelect(hillTable, "坂路", false, window);
+  const woodSelect = officialWorkoutSelect(woodTable, "ウッド", true, window);
+  const fallbackHillSelect = officialWorkoutSelect(hillTable, "坂路", false, fallbackWindow);
+  const fallbackWoodSelect = officialWorkoutSelect(woodTable, "ウッド", true, fallbackWindow);
 
   return `WITH runners AS (
   SELECT
@@ -171,12 +167,6 @@ export const buildRaceTrainingsQuery = (
     AND kaisai_tsukihi = '${kaisaiTsukihi}'
     AND keibajo_code = '${keibajoCode}'
     AND race_bango = '${raceBango}'
-),
-workout_window AS (
-  SELECT '${startDate}' AS start_date, '${date}' AS end_date
-),
-fallback_workout_window AS (
-  SELECT '${fallbackStartDate}' AS start_date, '${date}' AS end_date
 ),
 official_workouts AS (
   ${hillSelect}
