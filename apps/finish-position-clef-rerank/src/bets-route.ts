@@ -172,7 +172,7 @@ const answerKey = (race: BetRaceAddress, baseGeneratedAt: string, signature: str
 
 // The all-types key carries no type list, so the cron warm serves the default view.
 const resultKey = (race: BetRaceAddress): string =>
-  `clefbet:v4:result:${raceSuffix(race)}:${String(race.budget)}:t${String(race.target ?? "-")}${race.types === null ? "" : `:${[...race.types].toSorted().join(",")}`}${race.requireAll ? ":all" : ""}`;
+  `clefbet:v5:result:${raceSuffix(race)}:${String(race.budget)}:t${String(race.target ?? "-")}${race.types === null ? "" : `:${[...race.types].toSorted().join(",")}`}${race.requireAll ? ":all" : ""}`;
 
 // Results are written only by suggestRaceBets, so matching cache keys are trusted as BetResponse.
 const isBetResponse = (value: unknown): value is BetResponse =>
@@ -325,7 +325,7 @@ export const suggestRaceBets = async (env: BetEnv, race: BetRaceAddress): Promis
 
 const warmedKey = (
   race: Omit<BetRaceAddress, "budget" | "types" | "target" | "requireAll">,
-): string => `clefbet:v4:warmed:${race.ymd}:${race.keibajoCode}:${race.raceBango}`;
+): string => `clefbet:v5:warmed:${race.ymd}:${race.keibajoCode}:${race.raceBango}`;
 
 // Cron path: regenerate the default-budget suggestion only for races whose served prediction
 // was (re)generated since the last warm, including the post-horse-weight rescore.

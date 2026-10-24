@@ -910,38 +910,42 @@ interface TargetInput {
 
 const TOP_PLACES: number = 3;
 
-const ticketHits = (
-  betType: BetType,
-  horses: readonly number[],
-  order: readonly number[],
-  frames: ReadonlyMap<number, number>,
-): boolean => {
-  const top2 = new Set(order.slice(0, 2));
-  const top3 = new Set(order);
-  const table: Record<BetType, () => boolean> = {
-    tansho: () => horses[0] === order[0],
-    fukusho: () => top3.has(horses[0] ?? 0),
-    wide: () => horses.every((horse) => top3.has(horse)),
-    umaren: () => horses.every((horse) => top2.has(horse)),
-    umatan: () => horses[0] === order[0] && horses[1] === order[1],
-    wakuren: () => frameKey(frames, order.slice(0, 2)) === horses.join("-"),
-    "3renpuku": () => horses.every((horse) => top3.has(horse)),
-    "3rentan": () => horses.every((horse, index) => order[index] === horse),
-  };
-  return table[betType]();
+interface Finish {
+  order: readonly number[];
+  top2: ReadonlySet<number>;
+  top3: ReadonlySet<number>;
+  frames: string;
+}
+
+const HIT_CHECKS: Record<BetType, (horses: readonly number[], finish: Finish) => boolean> = {
+  tansho: (horses, finish) => horses[0] === finish.order[0],
+  fukusho: (horses, finish) => finish.top3.has(horses[0] ?? 0),
+  wide: (horses, finish) => horses.every((horse) => finish.top3.has(horse)),
+  umaren: (horses, finish) => horses.every((horse) => finish.top2.has(horse)),
+  umatan: (horses, finish) => horses[0] === finish.order[0] && horses[1] === finish.order[1],
+  wakuren: (horses, finish) => finish.frames === horses.join("-"),
+  "3renpuku": (horses, finish) => horses.every((horse) => finish.top3.has(horse)),
+  "3rentan": (horses, finish) => horses.every((horse, index) => finish.order[index] === horse),
 };
 
 // The distinct groups of tickets a single finishing order pays out together.
 const hitSets = (tickets: readonly PricedTicket[], race: Pick<BetRace, "runners">): number[][] => {
   const frames = frameMap(race);
   const horses = race.runners.map((runner) => runner.horseNumber);
-  const orders = subsets(horses, Math.min(TOP_PLACES, horses.length)).flatMap(permutations);
+  const finishes = subsets(horses, Math.min(TOP_PLACES, horses.length))
+    .flatMap(permutations)
+    .map((order) => ({
+      order,
+      top2: new Set(order.slice(0, 2)),
+      top3: new Set(order),
+      frames: frameKey(frames, order.slice(0, 2)),
+    }));
   return [
     ...new Map(
-      orders
-        .map((order) =>
+      finishes
+        .map((finish) =>
           tickets.flatMap((ticket, index) =>
-            ticketHits(ticket.betType, ticket.candidate.horses, order, frames) ? [index] : [],
+            HIT_CHECKS[ticket.betType](ticket.candidate.horses, finish) ? [index] : [],
           ),
         )
         .filter((set) => set.length > 0)
@@ -1078,10 +1082,20 @@ interface FitInput extends Omit<TargetInput, "plans"> {
   required: number;
 }
 
-// Drops the lowest-ranked bet type until the rest can reach the target together.
+// Tries the bet types together first, then smaller combinations (higher-ranked types first),
+// so a cheap type that cannot fund its own hits does not sink the rest.
 const fitTarget = (plans: readonly BetSuggestion[], input: FitInput): BetSuggestion[] | null => {
-  if (plans.length < Math.max(input.required, 1)) return null;
-  return applyTarget({ ...input, plans }) ?? fitTarget(plans.slice(0, -1), input);
+  const indexes = plans.map((_, index) => index);
+  const sizes = indexes
+    .map((index) => plans.length - index)
+    .filter((size) => size >= Math.max(input.required, 1));
+  return sizes
+    .flatMap((size) => subsets(indexes, size))
+    .map((chosen) => chosen.map((index) => plans[index]).filter((plan) => plan !== undefined))
+    .reduce<BetSuggestion[] | null>(
+      (found, subset) => found ?? applyTarget({ ...input, plans: subset }),
+      null,
+    );
 };
 
 export const suggestPlans = ({
