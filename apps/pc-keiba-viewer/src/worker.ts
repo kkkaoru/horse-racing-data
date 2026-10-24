@@ -78,6 +78,10 @@ export default {
       return mcpResponse;
     }
     const sharedRequest = await resolveSharedPageRequest({
+      access:
+        env.ACCESS_AUD === undefined || env.ACCESS_TEAM_DOMAIN === undefined
+          ? undefined
+          : { aud: env.ACCESS_AUD, fetchImpl: fetch, teamDomain: env.ACCESS_TEAM_DOMAIN },
       kv: env.MCP_OAUTH_KV,
       nowMs: Date.now(),
       request,

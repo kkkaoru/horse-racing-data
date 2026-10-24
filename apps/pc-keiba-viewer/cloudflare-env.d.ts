@@ -150,6 +150,8 @@ declare global {
   }
 
   interface CloudflareEnv {
+    ACCESS_AUD?: string;
+    ACCESS_TEAM_DOMAIN?: string;
     PC_KEIBA_INTERNAL_TOKEN?: string;
     HEATMAP_EXECUTION_OWNER?: import("./src/lib/heatmap-execution").HeatmapExecutionNamespace;
     FINISH_POSITION_MODELS?: PcKeibaR2Bucket;

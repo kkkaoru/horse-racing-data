@@ -2,6 +2,8 @@
 // bypass app scoped to that race; Access cannot expire or restrict methods, so
 // the Worker enforces both from the KV share entry written by share-race-page.
 
+import { readAccessCookie, verifyAccessJwt, type AccessJwtConfig } from "./access-jwt";
+
 export const SHARED_PAGE_HEADER: string = "x-pc-keiba-shared-until";
 export const SHARED_PAGE_HOST: string = "pc-keiba-viewer.kkk4oru.com";
 const SHARED_PAGE_KEY_PREFIX: string = "shared-page:v1:";
@@ -26,6 +28,7 @@ interface RacePathMatch {
 }
 
 interface ResolveSharedPageRequestInput {
+  access: Omit<AccessJwtConfig, "nowMs"> | undefined;
   kv: SharedPageKv | undefined;
   nowMs: number;
   request: Request;
@@ -63,12 +66,24 @@ const parseSharedPageEntry = (value: string | null): SharedPageEntry | null => {
     : null;
 };
 
+// Access sends no identity on bypassed paths, but a signed-in browser still carries its
+// CF_Authorization cookie for the host.
+const isSignedInViewer = async (
+  request: Request,
+  access: Omit<AccessJwtConfig, "nowMs">,
+  nowMs: number,
+): Promise<boolean> => {
+  const token = readAccessCookie(request.headers.get("cookie"));
+  return token !== null && verifyAccessJwt(token, { ...access, nowMs });
+};
+
 const forbidden = (): Response =>
   new Response("This page is not shared.", { status: FORBIDDEN_STATUS });
 
 // Only races with a share entry are gated, so a request this cannot classify
 // keeps the decision the Access edge already made.
 export const resolveSharedPageRequest = async ({
+  access,
   kv,
   nowMs,
   request,
@@ -78,6 +93,8 @@ export const resolveSharedPageRequest = async ({
   if (match === null || kv === undefined) return request;
   const entry = parseSharedPageEntry(await kv.get(buildSharedPageKey(match.pagePath)));
   if (entry === null) return request;
+  // Viewers allowed by Access see and use the race as usual, without the share limits.
+  if (access !== undefined && (await isSignedInViewer(request, access, nowMs))) return request;
   const active = Date.parse(entry.expiresAt) > nowMs;
   if (!active || !match.shareable || !READ_METHODS.has(request.method)) return forbidden();
   const headers = new Headers(request.headers);

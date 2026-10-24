@@ -146,6 +146,10 @@
     "head_sampling_rate": 0.1,
   },
   "vars": {
+    // "PC Keiba Viewer" Access app; a shared race page verifies the CF_Authorization cookie
+    // against it so signed-in viewers are not limited by the share.
+    "ACCESS_AUD": "4f76b5a724fc9e7cdb0b3952cd11c3c71b9460524587479ff589d08b3a75fd69",
+    "ACCESS_TEAM_DOMAIN": "kkk4oru.cloudflareaccess.com",
     "NEXT_PUBLIC_REALTIME_DATA_API_BASE_URL": "https://sync-realtime-data.kkk4oru.com",
     "PC_KEIBA_DATABASE_TARGET": "cloudflare",
     "PC_KEIBA_DB_CACHE_TTL_SECONDS": "3600",
