@@ -17,6 +17,14 @@ _R2_CATALOG_ENV_NAMES = (
     "R2_CATALOG_TOKEN",
 )
 
+# DuckDB issues one Catalog loadTable per referenced table per statement (and per
+# CREATE VIEW) unless table metadata may be reused; each loadTable is a billed R2
+# Data Catalog operation. Short-lived feature subprocesses therefore reuse each
+# table's load for this window (one snapshot per window, refreshed after it).
+# shortcut: the R2 vended-credential TTL is undocumented; kept short so cached
+# S3 credentials should stay valid. Revisit if 403/ExpiredToken shows up.
+CATALOG_TABLE_STALENESS = "5 minutes"
+
 _RAW_CATALOG_TABLES = (
     "jvd_bt",
     "jvd_hc",
@@ -131,8 +139,17 @@ def _sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def attach_source_catalog(con: DuckDBConnectionLike, source_url: str) -> None:
-    """Attach PostgreSQL, a local DuckDB snapshot, or R2 as ``pg``."""
+def attach_source_catalog(
+    con: DuckDBConnectionLike,
+    source_url: str,
+    *,
+    max_table_staleness: str | None = CATALOG_TABLE_STALENESS,
+) -> None:
+    """Attach PostgreSQL, a local DuckDB snapshot, or R2 as ``pg``.
+
+    Long-lived connections that must observe every new Catalog snapshot (the
+    container's live freshness checks) pass ``max_table_staleness=None``.
+    """
     if source_url.startswith("duckdb://"):
         snapshot_path = Path(source_url.removeprefix("duckdb://")).expanduser()
         if not snapshot_path.is_absolute():
@@ -156,6 +173,11 @@ def attach_source_catalog(con: DuckDBConnectionLike, source_url: str) -> None:
     warehouse = _sql_literal(catalog_env["R2_CATALOG_WAREHOUSE"])
     uri = _sql_literal(catalog_env["R2_CATALOG_URI"])
     token = _sql_literal(catalog_env["R2_CATALOG_TOKEN"])
+    staleness = (
+        ""
+        if max_table_staleness is None
+        else f", max_table_staleness {_sql_literal(max_table_staleness)}"
+    )
 
     con.execute("install iceberg")
     con.execute("load iceberg")
@@ -167,7 +189,7 @@ def attach_source_catalog(con: DuckDBConnectionLike, source_url: str) -> None:
     )
     con.execute(
         f"attach {warehouse} as catalog_raw (type iceberg, endpoint {uri}, "
-        "secret finish_position_r2_catalog, default_schema 'pc_keiba', read_only)"
+        f"secret finish_position_r2_catalog, default_schema 'pc_keiba', read_only{staleness})"
     )
     con.execute("create schema pg")
     for table_name in _RAW_CATALOG_TABLES:
