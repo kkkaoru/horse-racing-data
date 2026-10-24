@@ -116,6 +116,8 @@ is_deploy_command() {
 # Wrangler pushes each deploy's images to the Cloudflare registry, so local
 # copies from earlier deploys only fill the VM disk. Keep what this run used
 # (the next build's cache) and return freed blocks to macOS via fstrim.
+# ext4 frees deleted blocks only at the next journal commit, so sync first:
+# an fstrim right after the prune otherwise misses most of them.
 prune_after_deploy() {
   if ! is_deploy_command || ! docker_info_ok; then
     return 0
@@ -126,7 +128,7 @@ prune_after_deploy() {
   docker image prune -a -f --filter "$age" >/dev/null 2>&1 || true
   docker builder prune -a -f --filter "$age" >/dev/null 2>&1 || true
   if command -v colima >/dev/null 2>&1 && colima status >/dev/null 2>&1; then
-    colima ssh -- sudo fstrim -a >/dev/null 2>&1 || true
+    colima ssh -- sh -c 'sync && sudo fstrim -a' >/dev/null 2>&1 || true
   fi
 }
 
