@@ -28,6 +28,11 @@ Phase 2 — per-horse entity stats inside the same similar-race pool:
   damsire : sim_damsire_win_rate / sim_damsire_offspring_count
   owner   : sim_owner_win_rate / sim_owner_race_count
   umaban  : sim_umaban_zone_win_rate (same inner/middle/outer tercile)
+  sire/damsire v2 : sim_sire_{win,place}_rate_v2 / sim_sire_offspring_count_v2 /
+            sim_damsire_{win,place}_rate_v2 / sim_damsire_offspring_count_v2.
+            v1 resolves names from the category's UM mirror only (nvd_um for
+            NAR/Ban-ei, missing every nvd_nu-only horse); v2 falls back across
+            every horse master (own mirror first, see PEDIGREE_V2_SOURCES).
 
 Data-leakage prevention: every similar race used for a target has a
 ``race_date`` strictly less than the target's ``race_date`` and within
@@ -101,6 +106,15 @@ KYORI_BAND_INTERMEDIATE_MAX: int = 2200
 # Ban-ei is always keibajo_code '83'; venue matching is therefore trivial.
 BAN_EI_KEIBAJO_CODE: str = "83"
 
+# v2 pedigree name lookup order per category: own UM mirror, then the NAR
+# native master, then the other organisation's mirror.
+_NAR_PEDIGREE_V2_SOURCES: tuple[str, ...] = ("nvd_um", "nvd_nu", "jvd_um")
+PEDIGREE_V2_SOURCES: dict[str, tuple[str, ...]] = {
+    "jra": ("jvd_um", "nvd_um", "nvd_nu"),
+    "nar": _NAR_PEDIGREE_V2_SOURCES,
+    "ban-ei": _NAR_PEDIGREE_V2_SOURCES,
+}
+
 
 @contextmanager
 def measure_stage(stage: str) -> Generator[None, None, None]:
@@ -146,6 +160,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     add_resource_args(parser)
     return parser.parse_args(argv)
+
+
+def pedigree_v2_sql(category: str, horse_filter: str = "true") -> str:
+    """Horse -> (sire_v2, damsire_v2) names, first master that knows the horse.
+
+    Mirrors the base build's nvd_um -> nvd_nu coalesce and extends it to the
+    other organisation's master so cross-registered horses resolve too.
+    """
+    branches = "\n          union all\n".join(
+        f"""select ketto_toroku_bango,
+            nullif(trim(ketto_joho_01b), '') as sire_v2,
+            nullif(trim(ketto_joho_05b), '') as damsire_v2,
+            {priority} as priority
+          from pg.{table}
+          where {horse_filter}"""
+        for priority, table in enumerate(PEDIGREE_V2_SOURCES[category])
+    )
+    return f"""(
+        select ketto_toroku_bango, sire_v2, damsire_v2
+        from (
+          {branches}
+        ) masters
+        where ketto_toroku_bango is not null
+        qualify row_number() over (
+          partition by ketto_toroku_bango order by priority
+        ) = 1
+      )"""
 
 
 def install_and_attach_pg(con: _DuckDBConnectionLike, pg_url: str) -> None:
@@ -340,11 +381,18 @@ def stage_pooled_pedigree(
         f"""
         create or replace temp table pooled_pedigree as
         select
-          ketto_toroku_bango,
-          nullif(trim(ketto_joho_01b), '') as sire,
-          nullif(trim(ketto_joho_05b), '') as damsire
-        from {um_table}
-        where {horse_filter}
+          coalesce(um.ketto_toroku_bango, v2.ketto_toroku_bango) as ketto_toroku_bango,
+          um.sire, um.damsire, v2.sire_v2, v2.damsire_v2
+        from (
+          select
+            ketto_toroku_bango,
+            nullif(trim(ketto_joho_01b), '') as sire,
+            nullif(trim(ketto_joho_05b), '') as damsire
+          from {um_table}
+          where {horse_filter}
+        ) um
+        full outer join {pedigree_v2_sql(category, horse_filter)} v2
+          using (ketto_toroku_bango)
         """
     )
     con.execute(
@@ -465,6 +513,7 @@ def stage_similar_history(
               nullif(trim(rec.banushimei), '') as banushimei,
               nullif(trim(um.ketto_joho_01b), '') as sire,
               nullif(trim(um.ketto_joho_05b), '') as damsire,
+              v2.sire_v2, v2.damsire_v2,
               case
                 when rec.umaban is null or rec.shusso_tosu is null or rec.shusso_tosu < 1 then null
                 when cast(rec.umaban as double) <= cast(rec.shusso_tosu as double) / 3.0 then 0
@@ -479,6 +528,8 @@ def stage_similar_history(
               and ra.race_bango = rec.race_bango
             left join {um_table} um
               on um.ketto_toroku_bango = rec.ketto_toroku_bango
+            left join {pedigree_v2_sql(category)} v2
+              on v2.ketto_toroku_bango = rec.ketto_toroku_bango
             where rec.source = '{source_value}'
               and rec.race_date >= '{from_date}'
               and rec.finish_position is not null
@@ -543,6 +594,8 @@ def stage_similar_history(
           nullif(trim(rec.banushimei), '') as banushimei,
           cast(null as varchar) as sire,
           cast(null as varchar) as damsire,
+          cast(null as varchar) as sire_v2,
+          cast(null as varchar) as damsire_v2,
           case
             when rec.umaban is null or rec.shusso_tosu is null or rec.shusso_tosu < 1 then null
             when cast(rec.umaban as double) <= cast(rec.shusso_tosu as double) / 3.0 then 0
@@ -1015,15 +1068,13 @@ def stage_entity_features(
     """
     if raw_catalog_category is not None:
         stage_pooled_pedigree(con, raw_catalog_category)
-        pedigree_sire = "ped.sire"
-        pedigree_damsire = "ped.damsire"
+        pedigree_prefix = "ped"
         pedigree_join = (
             "left join pooled_pedigree ped "
             "on ped.ketto_toroku_bango = sh.ketto_toroku_bango"
         )
     else:
-        pedigree_sire = "sh.sire"
-        pedigree_damsire = "sh.damsire"
+        pedigree_prefix = "sh"
         pedigree_join = ""
     con.execute(
         f"""
@@ -1031,7 +1082,8 @@ def stage_entity_features(
         select
           sp.source, sp.kaisai_nen, sp.kaisai_tsukihi, sp.keibajo_code, sp.race_bango,
           sh.kishumei_ryakusho, sh.chokyoshimei_ryakusho, sh.banushimei,
-          {pedigree_sire} as sire, {pedigree_damsire} as damsire, sh.umaban_zone,
+          {pedigree_prefix}.sire, {pedigree_prefix}.damsire,
+          {pedigree_prefix}.sire_v2, {pedigree_prefix}.damsire_v2, sh.umaban_zone,
           sh.finish_position
         from similar_pool sp
         join similar_history sh
@@ -1048,6 +1100,8 @@ def stage_entity_features(
         ("chokyoshimei_ryakusho", "sim_trainer_stats", "sim_trainer_win_rate", "sim_trainer_place_rate", "sim_trainer_ride_count", True),
         ("sire", "sim_sire_stats", "sim_sire_win_rate", "sim_sire_place_rate", "sim_sire_offspring_count", True),
         ("damsire", "sim_damsire_stats", "sim_damsire_win_rate", "sim_damsire_place_rate", "sim_damsire_offspring_count", True),
+        ("sire_v2", "sim_sire_stats_v2", "sim_sire_win_rate_v2", "sim_sire_place_rate_v2", "sim_sire_offspring_count_v2", True),
+        ("damsire_v2", "sim_damsire_stats_v2", "sim_damsire_win_rate_v2", "sim_damsire_place_rate_v2", "sim_damsire_offspring_count_v2", True),
         ("banushimei", "sim_owner_stats", "sim_owner_win_rate", "sim_owner_place_rate", "sim_owner_race_count", False),
         ("umaban_zone", "sim_umaban_zone_stats", "sim_umaban_zone_win_rate", "sim_umaban_zone_place_rate", "sim_umaban_zone_count", False),
     ):
@@ -1159,6 +1213,7 @@ def stage_target_entities(
                 nullif(trim(rec.banushimei), '') as banushimei,
                 nullif(trim(um.ketto_joho_01b), '') as sire,
                 nullif(trim(um.ketto_joho_05b), '') as damsire,
+                v2.sire_v2, v2.damsire_v2,
                 rec.umaban,
                 coalesce(
                   nullif(rec.shusso_tosu, 0),
@@ -1170,6 +1225,8 @@ def stage_target_entities(
               from pg.race_entry_corner_features rec
               left join {um_table} um
                 on um.ketto_toroku_bango = rec.ketto_toroku_bango
+              left join {pedigree_v2_sql(category)} v2
+                on v2.ketto_toroku_bango = rec.ketto_toroku_bango
               where rec.source = '{source_value}'
                 and rec.race_date >= '{from_date}'
                 and {keibajo_predicate}
@@ -1178,7 +1235,7 @@ def stage_target_entities(
             select
               source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
               ketto_toroku_bango, kishumei_ryakusho, chokyoshimei_ryakusho,
-              banushimei, sire, damsire,
+              banushimei, sire, damsire, sire_v2, damsire_v2,
               case
                 when umaban is null or effective_shusso_tosu is null
                   or effective_shusso_tosu < 1 then null
@@ -1228,15 +1285,23 @@ def stage_target_entities(
         """
     )
     target_horse_ids = fetch_table_horse_ids(con, "raw_target_entities")
+    horse_filter = pedigree_filter_sql(target_horse_ids)
     con.execute(
         f"""
         create or replace temp table target_pedigree as
         select
-          ketto_toroku_bango,
-          nullif(trim(ketto_joho_01b), '') as sire,
-          nullif(trim(ketto_joho_05b), '') as damsire
-        from {um_table}
-        where {pedigree_filter_sql(target_horse_ids)}
+          coalesce(um.ketto_toroku_bango, v2.ketto_toroku_bango) as ketto_toroku_bango,
+          um.sire, um.damsire, v2.sire_v2, v2.damsire_v2
+        from (
+          select
+            ketto_toroku_bango,
+            nullif(trim(ketto_joho_01b), '') as sire,
+            nullif(trim(ketto_joho_05b), '') as damsire
+          from {um_table}
+          where {horse_filter}
+        ) um
+        full outer join {pedigree_v2_sql(category, horse_filter)} v2
+          using (ketto_toroku_bango)
         """
     )
     con.execute(
@@ -1246,7 +1311,7 @@ def stage_target_entities(
           raw.source, raw.kaisai_nen, raw.kaisai_tsukihi,
           raw.keibajo_code, raw.race_bango, raw.ketto_toroku_bango,
           raw.kishumei_ryakusho, raw.chokyoshimei_ryakusho, raw.banushimei,
-          ped.sire, ped.damsire,
+          ped.sire, ped.damsire, ped.sire_v2, ped.damsire_v2,
           case
             when raw.umaban is null or raw.effective_shusso_tosu is null
               or raw.effective_shusso_tosu < 1 then null
@@ -1292,6 +1357,8 @@ def append_features_sql(input_glob: str) -> str:
         te.banushimei as _sim_banushi,
         te.sire as _sim_sire,
         te.damsire as _sim_damsire,
+        te.sire_v2 as _sim_sire_v2,
+        te.damsire_v2 as _sim_damsire_v2,
         te.umaban_zone as _sim_umaban_zone
       from base b
       left join target_entities te
@@ -1303,7 +1370,10 @@ def append_features_sql(input_glob: str) -> str:
         and te.ketto_toroku_bango = b.ketto_toroku_bango
     )
     select
-      we.* exclude (_sim_kishu, _sim_chokyoshi, _sim_banushi, _sim_sire, _sim_damsire, _sim_umaban_zone),
+      we.* exclude (
+        _sim_kishu, _sim_chokyoshi, _sim_banushi, _sim_sire, _sim_damsire,
+        _sim_sire_v2, _sim_damsire_v2, _sim_umaban_zone
+      ),
       srf.sim_odds_rank_correlation,
       srf.sim_fav_win_rate,
       srf.sim_odds_correlation_variance,
@@ -1322,7 +1392,13 @@ def append_features_sql(input_glob: str) -> str:
       ds.sim_damsire_offspring_count,
       os.sim_owner_win_rate,
       os.sim_owner_race_count,
-      uz.sim_umaban_zone_win_rate
+      uz.sim_umaban_zone_win_rate,
+      ss2.sim_sire_win_rate_v2,
+      ss2.sim_sire_place_rate_v2,
+      ss2.sim_sire_offspring_count_v2,
+      ds2.sim_damsire_win_rate_v2,
+      ds2.sim_damsire_place_rate_v2,
+      ds2.sim_damsire_offspring_count_v2
     from with_entities we
     left join sim_race_features srf on {race_key.format(a="srf", b="we")}
     left join sim_jockey_stats js
@@ -1337,6 +1413,10 @@ def append_features_sql(input_glob: str) -> str:
       on {race_key.format(a="os", b="we")} and os.banushimei = we._sim_banushi
     left join sim_umaban_zone_stats uz
       on {race_key.format(a="uz", b="we")} and uz.umaban_zone = we._sim_umaban_zone
+    left join sim_sire_stats_v2 ss2
+      on {race_key.format(a="ss2", b="we")} and ss2.sire_v2 = we._sim_sire_v2
+    left join sim_damsire_stats_v2 ds2
+      on {race_key.format(a="ds2", b="we")} and ds2.damsire_v2 = we._sim_damsire_v2
     """
 
 
@@ -1375,6 +1455,8 @@ def drop_staging_tables(con: _DuckDBConnectionLike) -> None:
         "sim_trainer_stats",
         "sim_sire_stats",
         "sim_damsire_stats",
+        "sim_sire_stats_v2",
+        "sim_damsire_stats_v2",
         "sim_owner_stats",
         "sim_umaban_zone_stats",
         "target_entities",

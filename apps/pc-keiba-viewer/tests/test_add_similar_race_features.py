@@ -828,6 +828,8 @@ def test_raw_catalog_staging_preserves_field_count_before_finish_filter() -> Non
           'D1' ketto_joho_05b
         """
     )
+    con.execute("create table pg.jvd_um as select * from pg.nvd_um where false")
+    con.execute("create table pg.nvd_nu as select * from pg.nvd_um where false")
     subject.stage_similar_history(
         con,
         "20000101",
@@ -904,6 +906,8 @@ def _seed_minimal_pg_schema_null_shusso_tosu(con: duckdb.DuckDBPyConnection) -> 
         where false
         """
     )
+    con.execute("create table pg.nvd_um as select * from pg.jvd_um where false")
+    con.execute("create table pg.nvd_nu as select * from pg.jvd_um where false")
 
 
 def test_stage_target_entities_umaban_zone_non_null_when_shusso_tosu_null() -> None:
@@ -956,6 +960,8 @@ def test_stage_target_entities_umaban_zone_still_uses_real_shusso_tosu_when_pres
         where false
         """
     )
+    con.execute("create table pg.nvd_um as select * from pg.jvd_um where false")
+    con.execute("create table pg.nvd_nu as select * from pg.jvd_um where false")
     subject.stage_target_entities(con, "20000101", "jra")
     rows = con.execute(
         "select ketto_toroku_bango, umaban_zone from target_entities order by ketto_toroku_bango"
@@ -1167,6 +1173,8 @@ def _seed_pg_schema(con: duckdb.DuckDBPyConnection) -> None:
         ) as v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)
         """
     )
+    con.execute("create table pg.nvd_um as select * from pg.jvd_um where false")
+    con.execute("create table pg.nvd_nu as select * from pg.jvd_um where false")
 
 
 def _seed_base_parquet(input_dir: Path) -> None:
@@ -1304,6 +1312,8 @@ def test_staging_pipeline_resolves_upcoming_target_absent_from_pg_history(
         )
         """
     )
+    con.execute("create table pg.nvd_um as select * from pg.jvd_um where false")
+    con.execute("create table pg.nvd_nu as select * from pg.jvd_um where false")
     subject.stage_similar_history(con, "20000101", "jra")
     subject.stage_race_summary(con)
     subject.stage_target_races(con, input_glob, "jra")
@@ -1789,6 +1799,8 @@ def test_staging_pipeline_level4_caps_pool_to_most_recent_races(
         ) as v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)
         """
     )
+    con.execute("create table pg.nvd_um as select * from pg.jvd_um where false")
+    con.execute("create table pg.nvd_nu as select * from pg.jvd_um where false")
     subject.stage_similar_history(con, "20000101", "jra")
     subject.stage_race_summary(con)
     subject.stage_target_races(con, input_glob, "jra")
@@ -1919,6 +1931,8 @@ def test_staging_pipeline_level1_collapse_fans_identical_pool_to_shared_key_targ
         ) as v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)
         """
     )
+    con.execute("create table pg.nvd_um as select * from pg.jvd_um where false")
+    con.execute("create table pg.nvd_nu as select * from pg.jvd_um where false")
     subject.stage_similar_history(con, "20000101", "jra")
     subject.stage_race_summary(con)
     subject.stage_target_races(con, input_glob, "jra")
@@ -1945,3 +1959,173 @@ def test_staging_pipeline_level1_collapse_fans_identical_pool_to_shared_key_targ
     # capped pool to both -> identical sim_race_count (all 36 history races).
     assert feature_rows[0][2] == 36
     assert feature_rows[1][2] == 36
+
+
+def test_pedigree_v2_sql_prefers_own_mirror_then_falls_back_to_other_masters() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        """
+        create table pg.nvd_um as select * from (values
+          ('both', 'UM_SIRE', 'UM_DAMSIRE')
+        ) as v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)
+        """
+    )
+    con.execute(
+        """
+        create table pg.nvd_nu as select * from (values
+          ('both', 'NU_SIRE', 'NU_DAMSIRE'),
+          ('nu_only', 'NU_SIRE', '')
+        ) as v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)
+        """
+    )
+    con.execute(
+        """
+        create table pg.jvd_um as select * from (values
+          ('both', 'JV_SIRE', 'JV_DAMSIRE'),
+          ('jv_only', 'JV_SIRE', 'JV_DAMSIRE')
+        ) as v(ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b)
+        """
+    )
+    nar = con.execute(
+        f"select * from {subject.pedigree_v2_sql('nar')} p order by 1"
+    ).fetchall()
+    jra = con.execute(
+        f"select * from {subject.pedigree_v2_sql('jra', "ketto_toroku_bango = 'both'")} p"
+    ).fetchall()
+    con.close()
+    assert nar == [
+        ("both", "UM_SIRE", "UM_DAMSIRE"),
+        ("jv_only", "JV_SIRE", "JV_DAMSIRE"),
+        ("nu_only", "NU_SIRE", None),
+    ]
+    assert jra == [("both", "JV_SIRE", "JV_DAMSIRE")]
+
+
+def test_main_end_to_end_v2_sire_stats_use_nvd_nu_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """h_b2 and horse_c are only in nvd_nu: v1 (jvd_um only) misses them, v2
+    pools h_b2's 2nd place into SIRE_X and resolves horse_c's sire."""
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    _seed_base_parquet(input_dir)
+
+    def _fake_install_and_attach(con: duckdb.DuckDBPyConnection, _pg_url: str) -> None:
+        _seed_pg_schema(con)
+        con.execute(
+            "insert into pg.nvd_nu values "
+            "('h_b2', 'SIRE_X', 'DAMSIRE_Y'), ('horse_c', 'SIRE_X', 'DAMSIRE_Z')"
+        )
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", _fake_install_and_attach)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "add_similar_race_features",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--threads",
+            "2",
+            "--memory-limit",
+            "1GB",
+        ],
+    )
+    subject.main()
+    verify_con = duckdb.connect(":memory:")
+    rows = verify_con.execute(
+        f"""
+        select ketto_toroku_bango, sim_sire_offspring_count, sim_sire_win_rate,
+          sim_sire_offspring_count_v2, sim_sire_win_rate_v2, sim_sire_place_rate_v2,
+          sim_damsire_offspring_count_v2, sim_damsire_win_rate_v2,
+          sim_damsire_place_rate_v2
+        from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet')
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    verify_con.close()
+    assert rows == [
+        ("horse_a", 1, 1.0, 2, 0.5, 1.0, 2, 0.5, 1.0),
+        ("horse_b", None, None, None, None, None, None, None, None),
+        ("horse_c", None, None, 2, 0.5, 1.0, None, None, None),
+    ]
+
+
+def test_main_r2_catalog_path_v2_sire_stats_match_local_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The raw-catalog pushdown path resolves the same v2 pedigree values."""
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    _seed_base_parquet(input_dir)
+
+    def _fake_install_and_attach(con: duckdb.DuckDBPyConnection, _pg_url: str) -> None:
+        _seed_pg_schema(con)
+        con.execute(
+            "insert into pg.nvd_nu values "
+            "('h_b2', 'SIRE_X', 'DAMSIRE_Y'), ('horse_c', 'SIRE_X', 'DAMSIRE_Z')"
+        )
+        con.execute("drop table pg.jvd_se")
+        con.execute(
+            """
+            create table pg.jvd_se as
+            select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+              ketto_toroku_bango, lpad(cast(umaban as varchar), 2, '0') as umaban,
+              lpad(cast(finish_position as varchar), 2, '0') as kakutei_chakujun,
+              tansho_ninkijun, kishumei_ryakusho, chokyoshimei_ryakusho, banushimei
+            from pg.race_entry_corner_features
+            """
+        )
+        con.execute("drop table pg.jvd_ra")
+        con.execute(
+            """
+            create table pg.jvd_ra as
+            select distinct kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+              track_code, cast(kyori as varchar) as kyori,
+              kyoso_joken_code, kyoso_joken_code as kyoso_joken_meisho,
+              lpad(cast(shusso_tosu as varchar), 2, '0') as shusso_tosu
+            from pg.race_entry_corner_features
+            """
+        )
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", _fake_install_and_attach)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "add_similar_race_features",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--pg-url",
+            "r2-catalog://pc-keiba",
+            "--threads",
+            "2",
+            "--memory-limit",
+            "1GB",
+        ],
+    )
+    subject.main()
+    verify_con = duckdb.connect(":memory:")
+    rows = verify_con.execute(
+        f"""
+        select ketto_toroku_bango, sim_sire_offspring_count, sim_sire_win_rate,
+          sim_sire_offspring_count_v2, sim_sire_win_rate_v2, sim_sire_place_rate_v2,
+          sim_damsire_offspring_count_v2, sim_damsire_win_rate_v2,
+          sim_damsire_place_rate_v2
+        from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet')
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    verify_con.close()
+    assert rows == [
+        ("horse_a", 1, 1.0, 2, 0.5, 1.0, 2, 0.5, 1.0),
+        ("horse_b", None, None, None, None, None, None, None, None),
+        ("horse_c", None, None, 2, 0.5, 1.0, None, None, None),
+    ]
