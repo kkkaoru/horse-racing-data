@@ -52,6 +52,7 @@ export const DEFAULT_BET_TARGET: number = 10_000;
 export const MIN_BET_TARGET: number = 0;
 export const MAX_BET_TARGET: number = 10_000_000;
 export const BET_TARGET_STORAGE_KEY: string = "pc-keiba:bet-target";
+export const BET_REQUIRE_ALL_STORAGE_KEY: string = "pc-keiba:bet-require-all";
 
 const CLEF_BETS_ENDPOINT: string = "/api/clef-rerank/bets";
 const TWO_DIGITS: number = 2;
@@ -174,10 +175,12 @@ export const buildClefBetsUrl = (
   budget: number,
   target: number = DEFAULT_BET_TARGET,
   types: readonly string[] = BET_TYPES,
+  requireAll: boolean = false,
 ): string => {
   const selected = orderBetTypes(types);
   const filter = selected.length === BET_TYPES.length ? "" : `&types=${selected.join(",")}`;
-  return `${CLEF_BETS_ENDPOINT}/${race.year}${pad(race.month)}${pad(race.day)}/${race.keibajoCode}/${pad(race.raceNumber)}?budget=${String(budget)}&target=${String(target)}${filter}`;
+  const required = requireAll ? "&requireAll=1" : "";
+  return `${CLEF_BETS_ENDPOINT}/${race.year}${pad(race.month)}${pad(race.day)}/${race.keibajoCode}/${pad(race.raceNumber)}?budget=${String(budget)}&target=${String(target)}${filter}${required}`;
 };
 
 export const readClefBets = (value: unknown): ClefBetCard | null =>
@@ -212,6 +215,9 @@ export const normalizeTarget = (value: number): number =>
 // The last target on this device wins for every race; absent or unreadable means the default.
 export const readStoredTarget = (stored: string | null): number =>
   stored === null || stored.trim() === "" ? DEFAULT_BET_TARGET : normalizeTarget(Number(stored));
+
+// Off unless this device stored `true`; shared by every race page.
+export const readStoredRequireAll = (stored: string | null): boolean => stored === "true";
 
 export const betTypeLabel = (betType: string): string => BET_TYPE_LABELS[betType] ?? betType;
 
@@ -294,12 +300,12 @@ export const formatPlanPayout = (plan: Pick<ClefBetSuggestion, "tickets">): stri
 const formatSignedYen = (value: number): string =>
   value < 0 ? `−${formatYen(-value)}` : `+${formatYen(value)}`;
 
-// 損益 = 払戻額 − 購入金額 for the whole set, from the smallest to the largest single hit.
+// 損益 = 払戻額 − 購入金額 for the whole set, from the smallest single hit to every ticket hitting.
 export const formatPlanSetProfit = (set: ClefBetPlanSet): string => {
   const tickets = set.plans.flatMap((plan) => plan.tickets);
   const low = Math.min(...tickets.map((ticket) => ticket.payout)) - set.totalStake;
   const high =
-    Math.max(...tickets.map((ticket) => ticket.payoutMax ?? ticket.payout)) - set.totalStake;
+    tickets.reduce((sum, ticket) => sum + (ticket.payoutMax ?? ticket.payout), 0) - set.totalStake;
   return low === high ? formatSignedYen(low) : `${formatSignedYen(low)}〜${formatSignedYen(high)}`;
 };
 

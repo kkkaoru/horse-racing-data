@@ -80,6 +80,9 @@ const blocked = (): never => {
   throw new Error("blocked");
 };
 
+const budgetValue = (): string | null | undefined =>
+  document.querySelector(".clef-bet-budget-value")?.textContent;
+
 const race = { year: "2026", month: "10", day: "18", keibajoCode: "08", raceNumber: "03" };
 
 afterEach(() => {
@@ -102,7 +105,7 @@ it("renders one row per bet plan with legs grouped inside each column", async ()
     "馬券枠番馬番馬名騎手調教師馬主オッズ購入金額払戻額",
     "ワイド軸流し軸 11 → 相手 4・9軸11相手4-軸イレブン相手フォー-軸騎手イレブン相手騎手フォー-軸調教師イレブン相手調教師フォー-軸馬主イレブン相手馬主フォー-2.4〜3.6各600円 × 2点 = 1,200円1,440円〜2,160円",
     "単勝通常11番811イレブン騎手イレブン調教師イレブン馬主イレブン4.3800円3,440円",
-    "損益（払戻額 − 購入金額）−560円〜+1,440円",
+    "損益（払戻額 − 購入金額）−560円〜+5,220円",
   ]);
   expect(
     screen.getByRole("rowheader", { name: "損益（払戻額 − 購入金額）" }).getAttribute("colSpan"),
@@ -119,18 +122,18 @@ it("changes the budget with the slider, step buttons and the typed amount", asyn
   render(<ClefBetSection {...race} />);
   await screen.findByText("馬主フォー", {}, { timeout: 2000 });
   fireEvent.change(screen.getByLabelText("予算スライダー"), { target: { value: "3049" } });
-  expect(screen.getByRole("status").textContent).toBe("3,000円");
+  expect(budgetValue()).toBe("3,000円");
   expect(screen.getByLabelText("予算スライダー").getAttribute("aria-valuetext")).toBe("3,000円");
   fireEvent.click(screen.getByRole("button", { name: "予算を100円増やす" }));
   fireEvent.click(screen.getByRole("button", { name: "予算を1,000円増やす" }));
   fireEvent.click(screen.getByRole("button", { name: "予算を100円減らす" }));
-  expect(screen.getByRole("status").textContent).toBe("4,000円");
+  expect(budgetValue()).toBe("4,000円");
   fireEvent.click(screen.getByRole("button", { name: "予算を1,000円減らす" }));
-  expect(screen.getByRole("status").textContent).toBe("3,000円");
+  expect(budgetValue()).toBe("3,000円");
   const typed = screen.getByLabelText<HTMLInputElement>("金額を入力（100円単位）");
   fireEvent.change(typed, { target: { value: "45" } });
   expect(typed.value).toBe("45");
-  expect(screen.getByRole("status").textContent).toBe("3,000円");
+  expect(budgetValue()).toBe("3,000円");
   fireEvent.keyDown(typed, { key: "a" });
   fireEvent.keyDown(typed, { key: "Enter" });
   expect(typed.value).toBe("200");
@@ -139,7 +142,7 @@ it("changes the budget with the slider, step buttons and the typed amount", asyn
   );
   fireEvent.change(typed, { target: { value: "60049" } });
   fireEvent.blur(typed);
-  expect(screen.getByRole("status").textContent).toBe("60,000円");
+  expect(budgetValue()).toBe("60,000円");
   expect(screen.getByLabelText<HTMLInputElement>("予算スライダー").value).toBe("20000");
   await waitFor(
     () =>
@@ -368,6 +371,7 @@ it("disables bet types without odds and requests only checked types with odds", 
     "馬単（オッズなし）:false:true",
     "3連複（オッズなし）:false:true",
     "3連単（オッズなし）:false:true",
+    "チェックした馬券の種類をすべて含める:false:false",
   ]);
   expect(fetcher).toHaveBeenLastCalledWith(
     "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&odds=T1",
@@ -489,4 +493,106 @@ it("asks to wait for odds when an error body is not an object", async () => {
   expect(
     await screen.findByText("オッズ発表後に推奨馬券を表示します。", {}, { timeout: 2000 }),
   ).toBeTruthy();
+});
+
+it("remembers the require-all switch and adds requireAll after the bet types", async () => {
+  realtime.latest = { tansho: [{}], wide: [{}] };
+  const store = memoryStorage({});
+  const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(payload));
+  vi.stubGlobal("fetch", fetcher);
+  render(<ClefBetSection {...race} />);
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  const toggle = screen.getByRole("checkbox", { name: "チェックした馬券の種類をすべて含める" });
+  expect(toggle).toHaveProperty("checked", false);
+  expect(toggle.closest("fieldset")?.querySelector("legend")?.textContent).toBe("馬券の種類");
+  fireEvent.click(toggle);
+  expect(store.get("pc-keiba:bet-require-all")).toBe("true");
+  await waitFor(
+    () =>
+      expect(fetcher).toHaveBeenLastCalledWith(
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&requireAll=1&odds=T1",
+        expect.objectContaining({ cache: "no-store" }),
+      ),
+    { timeout: 2000 },
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "ワイド" }));
+  await waitFor(
+    () =>
+      expect(fetcher).toHaveBeenLastCalledWith(
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&types=tansho&requireAll=1&odds=T1",
+        expect.objectContaining({ cache: "no-store" }),
+      ),
+    { timeout: 2000 },
+  );
+  cleanup();
+  render(<ClefBetSection {...race} />);
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  const restored = screen.getByRole("checkbox", { name: "チェックした馬券の種類をすべて含める" });
+  expect(restored).toHaveProperty("checked", true);
+  fireEvent.click(restored);
+  expect(store.get("pc-keiba:bet-require-all")).toBe("false");
+  await waitFor(
+    () =>
+      expect(fetcher).toHaveBeenLastCalledWith(
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&types=tansho&odds=T1",
+        expect.objectContaining({ cache: "no-store" }),
+      ),
+    { timeout: 2000 },
+  );
+});
+
+it("explains when the budget and target cannot fit every checked bet type", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        Response.json({ error: "unfit", reason: "required-types-unfit" }, { status: 404 }),
+      ),
+  );
+  render(<ClefBetSection {...race} />);
+  expect(
+    await screen.findByText(
+      "この予算と目標損益額では、チェックした馬券の種類をすべて含める提案ができません。予算を増やすか、目標損益額を下げるか、「すべて含める」をオフにしてください。",
+      {},
+      { timeout: 2000 },
+    ),
+  ).toBeTruthy();
+});
+
+it("dims the last table while a changed request is pending and clears it on the answer", async () => {
+  const resolvers: ((value: Response) => void)[] = [];
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(Response.json(payload))
+    .mockImplementation(
+      async () =>
+        new Promise<Response>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+  vi.stubGlobal("fetch", fetcher);
+  const { container } = render(<ClefBetSection {...race} />);
+  expect(screen.getByText("推奨馬券を計算しています…")).toBeTruthy();
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  const wrapper = (): Element | null => container.querySelector("[aria-busy]");
+  expect(screen.queryByText("更新中…")).toBeNull();
+  expect(wrapper()?.getAttribute("aria-busy")).toBe("false");
+  fireEvent.click(screen.getByRole("button", { name: "予算を100円増やす" }));
+  const status = screen.getByText("更新中…");
+  expect(status.tagName).toBe("OUTPUT");
+  expect(status.getAttribute("aria-live")).toBe("polite");
+  expect(wrapper()?.getAttribute("aria-busy")).toBe("true");
+  expect(wrapper()?.className).toBe("clef-bet-loading");
+  expect(screen.getByText("馬主フォー")).toBeTruthy();
+  await waitFor(() => expect(resolvers).toHaveLength(1), { timeout: 2000 });
+  expect(screen.getByText("更新中…")).toBeTruthy();
+  await act(async () => {
+    resolvers[0]?.(Response.json({ error: "missing" }, { status: 404 }));
+    await Promise.resolve();
+  });
+  expect(await screen.findByText("オッズ発表後に推奨馬券を表示します。")).toBeTruthy();
+  expect(screen.queryByText("更新中…")).toBeNull();
+  expect(wrapper()?.getAttribute("aria-busy")).toBe("false");
+  expect(wrapper()?.className).toBe("");
 });

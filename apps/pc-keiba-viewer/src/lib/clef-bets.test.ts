@@ -17,6 +17,7 @@ import {
   readClefBets,
   readHiddenBetColumns,
   readSelectedBetTypes,
+  readStoredRequireAll,
   readStoredTarget,
   requestedBetTypes,
   summarizePlanSet,
@@ -93,6 +94,26 @@ it("adds the selected bet types in display order unless every type is chosen", (
   ).toBe("/api/clef-rerank/bets/20261018/08/11?budget=2000&target=0");
 });
 
+it("appends requireAll after the bet types only when it is on", () => {
+  const race = { year: "2026", month: "10", day: "18", keibajoCode: "08", raceNumber: "11" };
+  expect(buildClefBetsUrl(race, 2000, 5000, ["wide", "tansho"], true)).toBe(
+    "/api/clef-rerank/bets/20261018/08/11?budget=2000&target=5000&types=tansho,wide&requireAll=1",
+  );
+  expect(buildClefBetsUrl(race, 2000, 5000, undefined, true)).toBe(
+    "/api/clef-rerank/bets/20261018/08/11?budget=2000&target=5000&requireAll=1",
+  );
+  expect(buildClefBetsUrl(race, 2000, 5000, ["wide", "tansho"], false)).toBe(
+    "/api/clef-rerank/bets/20261018/08/11?budget=2000&target=5000&types=tansho,wide",
+  );
+});
+
+it("restores the require-all flag only when the device stored true", () => {
+  expect(readStoredRequireAll(null)).toBe(false);
+  expect(readStoredRequireAll("1")).toBe(false);
+  expect(readStoredRequireAll("false")).toBe(false);
+  expect(readStoredRequireAll("true")).toBe(true);
+});
+
 it("restores the selected bet types or falls back to every type", () => {
   const all = ["tansho", "fukusho", "wide", "wakuren", "umaren", "umatan", "3renpuku", "3rentan"];
   expect(readSelectedBetTypes(null)).toStrictEqual(all);
@@ -141,7 +162,7 @@ it("restores the stored target profit or falls back to 10,000 yen", () => {
 });
 
 it("formats the plan set profit as a signed single value or range", () => {
-  expect(formatPlanSetProfit(payload.plans)).toBe("−560円〜+1,440円");
+  expect(formatPlanSetProfit(payload.plans)).toBe("−560円〜+5,220円");
   expect(formatPlanSetProfit({ ...payload.plans, plans: [tanshoPlan] })).toBe("+1,440円");
   expect(formatPlanSetProfit({ ...payload.plans, totalStake: 5000, plans: [tanshoPlan] })).toBe(
     "−1,560円",

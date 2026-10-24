@@ -10628,6 +10628,15 @@ fieldset.race-results-chart-view-toggle {
   padding-top: var(--space-4px-18);
 }
 
+.clef-bet-updating {
+  color: var(--muted);
+  display: block;
+}
+
+.clef-bet-loading {
+  opacity: var(--number-0-5-10);
+}
+
 .clef-bet-number {
   font-variant-numeric: tabular-nums;
   text-align: right;
