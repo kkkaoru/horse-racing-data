@@ -1,4 +1,8 @@
-import { acquireEnqueueLock, releaseEnqueueLock } from "./gates/enqueue-lock-kv";
+import {
+  acquireEnqueueLock,
+  LOCK_TTL_KV_MINIMUM_SECONDS,
+  releaseEnqueueLock,
+} from "./gates/enqueue-lock-kv";
 import {
   buildNarOddsLinksFromRaceUrl,
   extractOddsLinks,
@@ -45,8 +49,6 @@ const BROWSER_BACKOFF_ERROR_FRAGMENTS = [
   "Target page, context or browser has been closed",
 ] satisfies readonly string[];
 const BROWSER_BACKOFF_LOCK_SECONDS = 900;
-// Cloudflare KV minimum expirationTtl.
-const KV_MIN_TTL_SECONDS = 60;
 // fetch_logs job_type for a successful insert that missed some odds tabs.
 // Status `warn` so dashboards can flag partial coverage without treating it
 // as a hard error.
@@ -229,7 +231,7 @@ export const fetchAndStoreOdds = async (
       // then) instead of a planner put + consumer delete on every tick. In the
       // post-start gap with no slot, drop it so the next tick re-evaluates.
       await (secondsUntilSale > 0
-        ? acquireEnqueueLock(env, raceKey, Math.max(KV_MIN_TTL_SECONDS, secondsUntilSale))
+        ? acquireEnqueueLock(env, raceKey, Math.max(LOCK_TTL_KV_MINIMUM_SECONDS, secondsUntilSale))
         : releaseEnqueueLock(env, raceKey));
       return null;
     }

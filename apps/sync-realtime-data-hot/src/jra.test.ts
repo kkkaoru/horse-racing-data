@@ -11,6 +11,40 @@ import {
   parseJraRaceResults,
 } from "./jra";
 
+// Trimmed from live JRA HTML (2026-10-24 東京11R): deba `#race_related_link`
+// odds link, the odds page tab nav, and the first `#odds_list` rows.
+const HTTP_DEBA_HTML = `<div id="race_related_link"><ul>
+<li class="odds"><a href="#" class="btn-def btn-sm blue btn-block" onclick="return doAction('/JRADB/accessO.html', 'pw151ouS305202604081120261024Z/CE');"><i class="fa fa-chevron-circle-right" aria-hidden="true"></i>オッズ</a></li></ul></div>`;
+const HTTP_TAB_NAV = `<ul class="nav pills mt10">
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw154ouS305202604081020261024Z/11');">馬連</a></li>
+<li class="current"><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw151ouS305202604081120261024Z/CE');">単勝・複勝</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw153ouS305202604081120261024Z/D6');">枠連</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw154ouS305202604081120261024Z/5A');">馬連</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw155ouS305202604081120261024Z/DE');">ワイド</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw156ouS305202604081120261024Z/62');">馬単</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw157ouS305202604081120261024Z99/48');">3連複</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw158ouS305202604081120261024Z/6A');">3連単</a></li>
+</ul>`;
+const HTTP_WIN_HTML = `${HTTP_TAB_NAV}<div id="odds_list" class="mt25">
+<table class="basic narrow-xy tanpuku"><tbody>
+<tr><td class="waku" rowspan="1"><img src="/JRADB/img/waku/1.png" alt="枠1白" /></td><td class="num">1</td>
+<td class="horse"><a href="/JRADB/accessU.html?CNAME=pw01dud002024100935/16">タプティ</a></td>
+<td class="odds_tan">30.8</td><td class="odds_fuku"><span class="inner"><span class="min">3.7</span><span class="cap">-</span><span class="max">5.1</span></span></td></tr>
+<tr><td class="waku" rowspan="1"><img src="/JRADB/img/waku/2.png" alt="枠2黒" /></td><td class="num">2</td>
+<td class="horse"><a href="/JRADB/accessU.html?CNAME=pw01dud002024103955/03">マリアンデール</a></td>
+<td class="odds_tan">15.1</td><td class="odds_fuku"><span class="inner"><span class="min">3.2</span><span class="cap">-</span><span class="max">4.4</span></span></td></tr>
+</tbody></table></div>`;
+const HTTP_UMAREN_HTML = `<div id="odds_list" class="mt25"><ul class="umaren_list mt15"><li>
+<table class="basic narrow-xy umaren"><caption>1</caption><tbody>
+<tr><th scope="row">2</th><td>200.5</td></tr>
+</tbody></table></li></ul></div>`;
+
+interface HttpFetchCall {
+  body: string | null;
+  method: string;
+  url: string;
+}
+
 interface LocatorMockOptions {
   count?: number;
   filterCount?: number;
@@ -904,40 +938,6 @@ it("fetchJraOddsWithPlaywright makes a single Chromium attempt and surfaces its 
   );
   expect(launch).toHaveBeenCalledTimes(1);
 });
-
-// Trimmed from live JRA HTML (2026-10-24 東京11R): deba `#race_related_link`
-// odds link, the odds page tab nav, and the first `#odds_list` rows.
-const HTTP_DEBA_HTML = `<div id="race_related_link"><ul>
-<li class="odds"><a href="#" class="btn-def btn-sm blue btn-block" onclick="return doAction('/JRADB/accessO.html', 'pw151ouS305202604081120261024Z/CE');"><i class="fa fa-chevron-circle-right" aria-hidden="true"></i>オッズ</a></li></ul></div>`;
-const HTTP_TAB_NAV = `<ul class="nav pills mt10">
-<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw154ouS305202604081020261024Z/11');">馬連</a></li>
-<li class="current"><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw151ouS305202604081120261024Z/CE');">単勝・複勝</a></li>
-<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw153ouS305202604081120261024Z/D6');">枠連</a></li>
-<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw154ouS305202604081120261024Z/5A');">馬連</a></li>
-<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw155ouS305202604081120261024Z/DE');">ワイド</a></li>
-<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw156ouS305202604081120261024Z/62');">馬単</a></li>
-<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw157ouS305202604081120261024Z99/48');">3連複</a></li>
-<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw158ouS305202604081120261024Z/6A');">3連単</a></li>
-</ul>`;
-const HTTP_WIN_HTML = `${HTTP_TAB_NAV}<div id="odds_list" class="mt25">
-<table class="basic narrow-xy tanpuku"><tbody>
-<tr><td class="waku" rowspan="1"><img src="/JRADB/img/waku/1.png" alt="枠1白" /></td><td class="num">1</td>
-<td class="horse"><a href="/JRADB/accessU.html?CNAME=pw01dud002024100935/16">タプティ</a></td>
-<td class="odds_tan">30.8</td><td class="odds_fuku"><span class="inner"><span class="min">3.7</span><span class="cap">-</span><span class="max">5.1</span></span></td></tr>
-<tr><td class="waku" rowspan="1"><img src="/JRADB/img/waku/2.png" alt="枠2黒" /></td><td class="num">2</td>
-<td class="horse"><a href="/JRADB/accessU.html?CNAME=pw01dud002024103955/03">マリアンデール</a></td>
-<td class="odds_tan">15.1</td><td class="odds_fuku"><span class="inner"><span class="min">3.2</span><span class="cap">-</span><span class="max">4.4</span></span></td></tr>
-</tbody></table></div>`;
-const HTTP_UMAREN_HTML = `<div id="odds_list" class="mt25"><ul class="umaren_list mt15"><li>
-<table class="basic narrow-xy umaren"><caption>1</caption><tbody>
-<tr><th scope="row">2</th><td>200.5</td></tr>
-</tbody></table></li></ul></div>`;
-
-interface HttpFetchCall {
-  body: string | null;
-  method: string;
-  url: string;
-}
 
 const stubJraHttp = (pages: Record<string, string | Uint8Array>, calls: HttpFetchCall[] = []) => {
   const fetchMock = vi.fn(async (url: string, init: RequestInit) => {

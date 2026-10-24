@@ -12,7 +12,7 @@ const LOCK_TTL_DEFAULT_SECONDS = 3600;
 const LOCK_TTL_CATCH_UP_SECONDS = 300;
 // Cloudflare KV requires expirationTtl >= 60. Also matches the 1-min
 // cadence interval, so callers in the final window naturally land here.
-const LOCK_TTL_KV_MINIMUM_SECONDS = 60;
+export const LOCK_TTL_KV_MINIMUM_SECONDS = 60;
 const SECONDS_PER_MINUTE = 60;
 const MS_PER_MINUTE = 60_000;
 // Cadence boundaries (in minutes-until-race). When a long-cadence lock would
