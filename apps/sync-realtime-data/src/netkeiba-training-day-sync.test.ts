@@ -341,8 +341,18 @@ it("fails closed for missing Catalog inputs and empty or unmatched workouts", as
   env.R2_CATALOG_INGESTION_TOKEN = originalToken;
 
   catalog.fetch = vi.fn(async () => new Response("error", { status: 503 }));
+  await db
+    .prepare(
+      "update netkeiba_training_day_sync_state set attempted_at = '2000-01-01T00:00:00.000Z'",
+    )
+    .run();
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("HTTP 503");
   catalog.fetch = vi.fn(async () => Response.json({ entries: [] }));
+  await db
+    .prepare(
+      "update netkeiba_training_day_sync_state set attempted_at = '2000-01-01T00:00:00.000Z'",
+    )
+    .run();
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("source rows are missing");
 
   catalog.fetch = vi.fn(async () =>
@@ -359,8 +369,18 @@ it("fails closed for missing Catalog inputs and empty or unmatched workouts", as
     }),
   );
   mocks.parseWorkouts.mockReturnValue([]);
+  await db
+    .prepare(
+      "update netkeiba_training_day_sync_state set attempted_at = '2000-01-01T00:00:00.000Z'",
+    )
+    .run();
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("returned no workouts");
   mocks.parseWorkouts.mockReturnValue([workout, { ...workout, horseNumber: "2" }]);
+  await db
+    .prepare(
+      "update netkeiba_training_day_sync_state set attempted_at = '2000-01-01T00:00:00.000Z'",
+    )
+    .run();
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("did not match");
 });
 
@@ -372,6 +392,11 @@ it("fails closed when premium workout configuration cannot produce a URL", async
     workPathTemplate: undefined,
   });
   mocks.buildPremiumUrl.mockReturnValue(null);
+  await db
+    .prepare(
+      "update netkeiba_training_day_sync_state set attempted_at = '2000-01-01T00:00:00.000Z'",
+    )
+    .run();
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("URL is unavailable");
 });
 
@@ -388,8 +413,18 @@ it("fails closed when Daily Sync staging is missing or rejects the day", async (
   );
   env.DAILY_KEIBA_SYNC = daily;
   daily.fetch = vi.fn(async () => new Response("error", { status: 502 }));
+  await db
+    .prepare(
+      "update netkeiba_training_day_sync_state set attempted_at = '2000-01-01T00:00:00.000Z'",
+    )
+    .run();
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("HTTP 502");
   daily.fetch = vi.fn(async () => Response.json([]));
+  await db
+    .prepare(
+      "update netkeiba_training_day_sync_state set attempted_at = '2000-01-01T00:00:00.000Z'",
+    )
+    .run();
   await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow("staging response");
 });
 
@@ -685,6 +720,44 @@ it("does not report a succeeded run as in flight", async () => {
     .bind("20260905", new Date().toISOString())
     .run();
   expect(await isNetkeibaTrainingDayInFlight(db, "20260905")).toBe(false);
+});
+
+it("ends a duplicate retry chain while another chain's failure is still fresh", async () => {
+  await db
+    .prepare(
+      `insert into netkeiba_training_day_sync_state (race_date, status, workout_count, attempted_at)
+       values (?, 'failed', 0, ?)`,
+    )
+    .bind("20260905", new Date().toISOString())
+    .run();
+  expect(await syncNetkeibaTrainingDay(env, "20260905")).toBe(0);
+  expect(mocks.fetchPremiumHtml).toHaveBeenCalledTimes(0);
+});
+
+it("probes only the race that blocked the previous attempt while it still has no workouts", async () => {
+  await db
+    .prepare("insert into premium_race_links (race_key, source_race_id) values (?, ?)")
+    .bind("jra:2026:0905:01:02", "202601010102")
+    .run();
+  await db
+    .prepare(
+      `insert into netkeiba_training_day_sync_state (race_date, status, workout_count, error_message, attempted_at)
+       values (?, 'failed', 0, ?, ?)`,
+    )
+    .bind(
+      "20260905",
+      "netkeiba returned no workouts for jra:2026:0905:01:02",
+      "2026-09-01T00:00:00.000Z",
+    )
+    .run();
+  mocks.parseWorkouts.mockReturnValue([]);
+  await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow(
+    "netkeiba returned no workouts for jra:2026:0905:01:02",
+  );
+  expect(mocks.fetchPremiumHtml).toHaveBeenCalledTimes(2);
+  expect(mocks.buildPremiumUrl.mock.calls.map((call) => call[2])).toStrictEqual([
+    { sourceRaceId: "202601010102" },
+  ]);
 });
 
 it("does not report a day with no sync state as in flight", async () => {

@@ -21,9 +21,17 @@ const PROCESSING_STALE_SECONDS = 30 * 60;
 const FINALIZE_DELAY_SECONDS = 60;
 const CONCURRENCY = 6;
 const IN_FLIGHT_STATUSES = new Set<string>(["catalog_pending", "processing"]);
+// Every discover job starts its own 5-minute retry chain for a failed day, so
+// chains pile up (5-6 in parallel on 2026-10-23, each re-fetching every race
+// through Browser Run). A failure younger than this gap means another chain
+// just tried; let this one end. Below the 5-minute retry delay so the chain
+// that made the last attempt always survives.
+const FAILED_RETRY_GAP_SECONDS = 4 * 60;
+const NO_WORKOUTS_ERROR_PATTERN = /^netkeiba returned no workouts for (\S+)$/u;
 
 interface SyncStateRow {
   attempted_at: string;
+  error_message: string | null;
   status: string;
 }
 
@@ -343,19 +351,36 @@ const markState = async (
 const loadSyncState = (db: D1Database, date: string): Promise<SyncStateRow | null> =>
   db
     .prepare(
-      "select status, attempted_at from netkeiba_training_day_sync_state where race_date = ?",
+      "select status, attempted_at, error_message from netkeiba_training_day_sync_state where race_date = ?",
     )
     .bind(date)
     .first<SyncStateRow>();
 
-const isStale = (attemptedAt: string): boolean =>
-  Date.parse(attemptedAt) < Date.now() - PROCESSING_STALE_SECONDS * 1000;
+const isOlderThan = (attemptedAt: string, seconds: number): boolean =>
+  Date.parse(attemptedAt) < Date.now() - seconds * 1000;
 
-const shouldStart = async (db: D1Database, date: string): Promise<boolean> => {
-  const row = await loadSyncState(db, date);
-  if (row === null || row.status === "failed") return true;
+const isStale = (attemptedAt: string): boolean =>
+  isOlderThan(attemptedAt, PROCESSING_STALE_SECONDS);
+
+const shouldStart = (row: SyncStateRow | null): boolean => {
+  if (row === null) return true;
+  if (row.status === "failed") return isOlderThan(row.attempted_at, FAILED_RETRY_GAP_SECONDS);
   if (row.status === "succeeded") return false;
   return isStale(row.attempted_at);
+};
+
+// The race that blocked the previous attempt usually still has no workouts;
+// probe it alone (2 page fetches) before re-fetching every race of the day.
+const probePreviousBlocker = async (
+  env: Env,
+  date: string,
+  input: { links: readonly PremiumLinkRow[]; previousError: string | null },
+): Promise<void> => {
+  const blockedRaceKey = NO_WORKOUTS_ERROR_PATTERN.exec(input.previousError ?? "")?.[1];
+  const blocker = input.links.find((link) => link.race_key === blockedRaceKey);
+  if (blocker === undefined) return;
+  if ((await fetchRaceWorkouts(env, date, blocker.source_race_id)).length === 0)
+    throw new Error(`netkeiba returned no workouts for ${blocker.race_key}`);
 };
 
 // True while another run owns the day and may still finish. A redelivered job
@@ -373,7 +398,8 @@ export const isNetkeibaTrainingDayInFlight = async (
 export const NETKEIBA_TRAINING_RECHECK_DELAY_SECONDS = PROCESSING_STALE_SECONDS;
 
 export const syncNetkeibaTrainingDay = async (env: Env, date: string): Promise<number> => {
-  if (!(await shouldStart(env.REALTIME_DB, date))) return 0;
+  const state = await loadSyncState(env.REALTIME_DB, date);
+  if (!shouldStart(state)) return 0;
   // A day without JRA races (e.g. a NAR-only weekday) has nothing to sync.
   // Skip without touching the Catalog or recording state: on 2026-09-23 the
   // day was marked failed and retried every ~10 minutes, each retry logging
@@ -388,6 +414,7 @@ export const syncNetkeibaTrainingDay = async (env: Env, date: string): Promise<n
     ]);
     if (links.length === 0 || entries.length === 0)
       throw new Error("netkeiba day sync source rows are missing");
+    await probePreviousBlocker(env, date, { links, previousError: state?.error_message ?? null });
     const records = await buildDayRecords(env, date, links, entries, new Date());
     const catalogRunId = await stageWithDailySync(env, date, records);
     await markState(env.REALTIME_DB, date, "catalog_pending", {
