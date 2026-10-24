@@ -705,10 +705,11 @@ const runPast14EnqueueLoop = async (
     raceDateJst: toRaceDateYmd(key),
   }));
   const total = await stepPast14EnqueueLoop(env, candidates, now, 0, 0);
-  await writePast14Cursor(
+  await writePast14Cursor({
+    cursor: computeNextPast14Cursor(cursor, PAST14_RESERVED_QUOTA, sortedPast14Jobs.length),
     env,
-    computeNextPast14Cursor(cursor, PAST14_RESERVED_QUOTA, sortedPast14Jobs.length),
-  );
+    previousCursor: cursor,
+  });
   return total;
 };
 

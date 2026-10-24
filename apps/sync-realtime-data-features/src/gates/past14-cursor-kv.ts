@@ -9,6 +9,12 @@ import type { Env } from "../types";
 
 const CURSOR_KV_KEY = "features:past14-cursor:v1";
 
+interface WritePast14CursorParams {
+  cursor: number;
+  env: Env;
+  previousCursor: number;
+}
+
 const parseCursor = (raw: string | null): number => {
   if (raw === null) {
     return 0;
@@ -25,7 +31,16 @@ export const readPast14Cursor = async (env: Env): Promise<number> => {
   }
 };
 
-export const writePast14Cursor = async (env: Env, cursor: number): Promise<void> => {
+// Skips the KV put when the cursor did not move (e.g. the quota covers every
+// candidate), so steady-state ticks cost no write.
+export const writePast14Cursor = async ({
+  cursor,
+  env,
+  previousCursor,
+}: WritePast14CursorParams): Promise<void> => {
+  if (cursor === previousCursor) {
+    return;
+  }
   try {
     await env.FEATURES_KV.put(CURSOR_KV_KEY, String(cursor));
   } catch {

@@ -49,12 +49,18 @@ it("readPast14Cursor returns 0 when env.FEATURES_KV.get throws", async () => {
 
 it("writePast14Cursor calls put with String(cursor) on the correct key", async () => {
   const { env, kv } = buildEnv();
-  await writePast14Cursor(env, 11);
+  await writePast14Cursor({ cursor: 11, env, previousCursor: 4 });
   expect(kv.put).toHaveBeenCalledWith("features:past14-cursor:v1", "11");
 });
 
 it("writePast14Cursor does not throw when env.FEATURES_KV.put rejects", async () => {
   const { env, kv } = buildEnv();
   kv.put.mockRejectedValueOnce(new Error("kv put failed"));
-  await expect(writePast14Cursor(env, 3)).resolves.toBeUndefined();
+  await expect(writePast14Cursor({ cursor: 3, env, previousCursor: 0 })).resolves.toBeUndefined();
+});
+
+it("writePast14Cursor skips the put when the cursor is unchanged", async () => {
+  const { env, kv } = buildEnv();
+  await writePast14Cursor({ cursor: 5, env, previousCursor: 5 });
+  expect(kv.put).not.toHaveBeenCalled();
 });
