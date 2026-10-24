@@ -34,6 +34,18 @@ from pedigree_staging import stage_horse_pedigree
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 RACE_KEY_COLUMNS = ("kaisai_nen", "kaisai_tsukihi", "keibajo_code", "race_bango")
+# Columns this layer appends. A serve-time race-day refresh re-runs the layer
+# over an input that already carries them, so the base drops them first.
+BABA_OUTPUT_COLUMNS = (
+    "current_baba_condition",
+    "horse_baba_career_starts",
+    "horse_baba_win_rate",
+    "sire_baba_career_starts",
+    "sire_baba_win_rate",
+    "damsire_baba_career_starts",
+    "damsire_baba_win_rate",
+    "sire_horse_baba_combined_score",
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -54,6 +66,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Compatibility marker for a focused keibajo_code:race_bango input. "
             "History staging is always narrowed to the horses and pedigree "
             "cohorts present in the input parquet."
+        ),
+    )
+    parser.add_argument(
+        "--current-going",
+        type=Path,
+        default=None,
+        help=(
+            "Serve-time pre-race going side record (parquet keyed by source + "
+            "race key with RA-shaped babajotai_code_shiba / babajotai_code_dirt). "
+            "Used only for races whose RA carries no going."
         ),
     )
     add_resource_args(parser)
@@ -161,6 +183,27 @@ def stage_current_race_baba(con: duckdb.DuckDBPyConnection, from_date: str) -> N
         from pg.nvd_ra ra
         where ra.kaisai_nen >= {from_year}
           and {nar_predicate}
+        """
+    )
+    con.execute(f"create index race_baba_idx on race_baba ({RACE_PARTITION})")
+
+
+def apply_current_going(con: duckdb.DuckDBPyConnection, going_path: Path) -> None:
+    """Coalesce the race-day going side record under the live RA going.
+
+    The side record is RA-shaped, so the same ``baba_condition_sql`` maps it
+    exactly like training maps a results RA row. RA keeps priority: the side
+    record only fills races whose RA going is still '0' (pre-race RA).
+    """
+    going = sql_string_literal(going_path.as_posix())
+    con.execute(
+        f"""
+        create or replace temp table race_baba as
+        select {RACE_PARTITION},
+          coalesce(rb.baba_cond, {baba_condition_sql("g")}) as baba_cond
+        from race_baba rb
+        full outer join read_parquet({going}) g
+          using ({RACE_PARTITION})
         """
     )
     con.execute(f"create index race_baba_idx on race_baba ({RACE_PARTITION})")
@@ -405,7 +448,8 @@ def stage_damsire_baba_cumul(con: duckdb.DuckDBPyConnection) -> None:
 def append_features_sql(input_glob: str) -> str:
     return f"""
     with base as (
-      select * from read_parquet('{input_glob}', hive_partitioning=true)
+      select columns(c -> c not in {BABA_OUTPUT_COLUMNS})
+      from read_parquet('{input_glob}', hive_partitioning=true)
     ),
     base_with_baba as (
       select b.*, rb.baba_cond as current_baba_condition
@@ -486,6 +530,8 @@ def main() -> None:
     stage_horse_pedigree(con)
     stage_base_input(con, input_glob)
     stage_current_race_baba(con, args.from_date)
+    if args.current_going is not None:
+        apply_current_going(con, args.current_going)
     stage_target_pedigree_context(con)
     stage_race_history_with_baba(con, args.from_date)
     stage_horse_baba_cumul(con)

@@ -686,6 +686,7 @@ def test_main_stages_pedigree_context_for_whole_day_input(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     args = argparse.Namespace(
+        current_going=None,
         from_date="20100101",
         input_dir=tmp_path / "input",
         memory_limit="1GB",
@@ -716,3 +717,185 @@ def test_main_stages_pedigree_context_for_whole_day_input(
 
     stage_context.assert_called_once_with(connection)
     stage_history.assert_called_once_with(connection, "20100101")
+
+
+def test_main_applies_current_going_only_when_given(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    args = argparse.Namespace(
+        current_going=tmp_path / "going.parquet",
+        from_date="20100101",
+        input_dir=tmp_path / "input",
+        memory_limit="1GB",
+        output_dir=tmp_path / "output",
+        pg_url="postgresql://example",
+        target_race="08:11",
+        threads=1,
+    )
+    connection = Mock()
+    apply_going = Mock()
+    monkeypatch.setattr(subject, "parse_args", Mock(return_value=args))
+    monkeypatch.setattr(subject.duckdb, "connect", Mock(return_value=connection))
+    monkeypatch.setattr(subject, "apply_to_connection", Mock())
+    monkeypatch.setattr(subject, "install_and_attach_pg", Mock())
+    monkeypatch.setattr(subject, "stage_horse_pedigree", Mock())
+    monkeypatch.setattr(subject, "stage_base_input", Mock())
+    monkeypatch.setattr(subject, "stage_current_race_baba", Mock())
+    monkeypatch.setattr(subject, "apply_current_going", apply_going)
+    monkeypatch.setattr(subject, "stage_target_pedigree_context", Mock())
+    monkeypatch.setattr(subject, "stage_race_history_with_baba", Mock())
+    monkeypatch.setattr(subject, "stage_horse_baba_cumul", Mock())
+    monkeypatch.setattr(subject, "stage_sire_baba_cumul", Mock())
+    monkeypatch.setattr(subject, "stage_damsire_baba_cumul", Mock())
+    monkeypatch.setattr(subject, "append_features_sql", Mock(return_value="select 1"))
+    monkeypatch.setattr(subject, "write_partitioned", Mock())
+
+    subject.main()
+
+    apply_going.assert_called_once_with(connection, tmp_path / "going.parquet")
+
+
+def test_parse_args_accepts_current_going(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        [
+            "--input-dir",
+            str(tmp_path / "in"),
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--current-going",
+            str(tmp_path / "going.parquet"),
+        ]
+    )
+    assert args.current_going == tmp_path / "going.parquet"
+    default = subject.parse_args(
+        ["--input-dir", str(tmp_path / "in"), "--output-dir", str(tmp_path / "out")]
+    )
+    assert default.current_going is None
+
+
+def test_apply_current_going_fills_only_races_without_ra_going(tmp_path: Path) -> None:
+    going_path = tmp_path / "going.parquet"
+    seed = duckdb.connect(":memory:")
+    seed.execute(
+        f"""
+        copy (
+          select * from (
+            values
+              ('jra','2026','1025','08','11','2','0'),
+              ('jra','2026','1025','08','01','0','3'),
+              ('jra','2026','1025','05','04','2','3'),
+              ('jra','2026','1025','05','11','0','2'),
+              ('nar','2026','1025','46','01','0','4')
+          ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
+                 babajotai_code_shiba, babajotai_code_dirt)
+        ) to '{going_path.as_posix()}' (format parquet)
+        """
+    )
+    seed.close()
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table race_baba as
+        select * from (
+          values
+            ('jra','2026','1025','08','11',cast(null as int)),
+            ('jra','2026','1025','08','01',cast(null as int)),
+            ('jra','2026','1025','05','04',cast(null as int)),
+            ('jra','2026','1025','05','11',1),
+            ('jra','2026','1025','05','12',cast(null as int))
+        ) as v(source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, baba_cond)
+        """
+    )
+
+    subject.apply_current_going(con, going_path)
+    rows = con.execute(
+        "select source, keibajo_code, race_bango, baba_cond from race_baba order by all"
+    ).fetchall()
+    con.close()
+
+    # 08-11 turf -> shiba; 08-01 dirt -> dirt; 05-04 turf-start dirt lists both
+    # surfaces and resolves to shiba first exactly like results RA; 05-11 keeps
+    # its RA going; 05-12 has no side record and stays NULL; a side record for
+    # a race outside the RA scan still resolves.
+    assert rows == [
+        ("jra", "05", "04", 2),
+        ("jra", "05", "11", 1),
+        ("jra", "05", "12", None),
+        ("jra", "08", "01", 3),
+        ("jra", "08", "11", 2),
+        ("nar", "46", "01", 4),
+    ]
+
+
+def test_append_features_sql_replaces_existing_baba_columns(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    seed = duckdb.connect(":memory:")
+    seed.execute(
+        f"""
+        copy (
+          select 'jra' as source, '2026' as kaisai_nen, '1025' as kaisai_tsukihi,
+                 '08' as keibajo_code, '11' as race_bango, 'horse_a' as ketto_toroku_bango,
+                 '20261025' as race_date, 2026 as race_year,
+                 cast(null as int) as current_baba_condition,
+                 cast(null as bigint) as horse_baba_career_starts,
+                 cast(null as double) as horse_baba_win_rate,
+                 cast(null as bigint) as sire_baba_career_starts,
+                 cast(null as double) as sire_baba_win_rate,
+                 cast(null as bigint) as damsire_baba_career_starts,
+                 cast(null as double) as damsire_baba_win_rate,
+                 cast(null as double) as sire_horse_baba_combined_score
+        ) to '{input_dir.as_posix()}'
+        (format parquet, partition_by (race_year), overwrite_or_ignore true)
+        """
+    )
+    seed.close()
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table race_baba as
+        select 'jra' as source, '2026' as kaisai_nen, '1025' as kaisai_tsukihi,
+               '08' as keibajo_code, '11' as race_bango, 2 as baba_cond
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select 'horse_a' as ketto_toroku_bango, 'sire_a' as sire_id, 'dam_a' as damsire_id
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_baba_cumul as
+        select 'jra' as source, 'horse_a' as ketto_toroku_bango, 2 as baba_cond,
+               '20261018' as race_date, 4 as past_starts, 1 as past_wins
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_baba_cumul as
+        select 'sire_a' as sire_id, 2 as baba_cond, '20261018' as race_date,
+               10 as past_starts, 2 as past_wins
+        """
+    )
+    con.execute(
+        """
+        create temp table damsire_baba_cumul as
+        select 'dam_a' as damsire_id, 2 as baba_cond, '20261018' as race_date,
+               5 as past_starts, 0 as past_wins
+        """
+    )
+    sql = subject.append_features_sql(f"{input_dir.as_posix()}/race_year=*/*.parquet")
+    cursor = con.execute(sql)
+    columns = [description[0] for description in cursor.description]
+    row = cursor.fetchone()
+    con.close()
+
+    assert len(columns) == len(set(columns))
+    assert row is not None
+    values = dict(zip(columns, row, strict=True))
+    assert values["current_baba_condition"] == 2
+    assert values["horse_baba_career_starts"] == 4
+    assert values["horse_baba_win_rate"] == pytest.approx(0.25)
+    assert values["sire_baba_win_rate"] == pytest.approx(0.2)
+    assert values["damsire_baba_win_rate"] == pytest.approx(0.0)
+    assert values["sire_horse_baba_combined_score"] == pytest.approx(0.225)
