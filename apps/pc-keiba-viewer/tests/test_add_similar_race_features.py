@@ -1422,18 +1422,24 @@ def test_main_end_to_end_appends_similar_features(
         from_date: str,
         category: str,
         focused_target: bool = False,
+        include_v2: bool = True,
     ) -> None:
         history_scopes.append(focused_target)
-        original_stage_history(con, from_date, category, focused_target)
+        original_stage_history(
+            con, from_date, category, focused_target, include_v2=include_v2
+        )
 
     def _stage_entities(
         con: duckdb.DuckDBPyConnection,
         from_date: str,
         category: str,
         focused_target: bool = False,
+        include_v2: bool = True,
     ) -> None:
         entity_scopes.append(focused_target)
-        original_stage_entities(con, from_date, category, focused_target)
+        original_stage_entities(
+            con, from_date, category, focused_target, include_v2=include_v2
+        )
 
     monkeypatch.setattr(subject, "install_and_attach_pg", _fake_install_and_attach)
     monkeypatch.setattr(subject, "install_and_attach_pg", attach_with_spill_audit)
@@ -2129,3 +2135,71 @@ def test_main_r2_catalog_path_v2_sire_stats_match_local_path(
         ("horse_b", None, None, None, None, None, None, None, None),
         ("horse_c", None, None, 2, 0.5, 1.0, None, None, None),
     ]
+
+
+def test_pedigree_v2_sql_without_v2_is_an_empty_relation() -> None:
+    con = duckdb.connect(":memory:")
+    rows = con.execute(
+        f"select * from {subject.pedigree_v2_sql('nar', include_v2=False)} p"
+    ).fetchall()
+    con.close()
+    assert rows == []
+
+
+def test_append_features_sql_without_v2_omits_v2_columns() -> None:
+    sql = subject.append_features_sql("dummy.parquet", include_v2=False)
+    assert "sim_sire_stats_v2" not in sql
+    assert "sim_sire_win_rate_v2" not in sql
+    assert "sim_damsire_offspring_count" in sql
+
+
+def test_main_skip_v2_features_keeps_v1_and_emits_no_v2_columns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    _seed_base_parquet(input_dir)
+
+    def _fake_install_and_attach(con: duckdb.DuckDBPyConnection, _pg_url: str) -> None:
+        _seed_pg_schema(con)
+        con.execute(
+            "insert into pg.nvd_nu values "
+            "('h_b2', 'SIRE_X', 'DAMSIRE_Y'), ('horse_c', 'SIRE_X', 'DAMSIRE_Z')"
+        )
+
+    monkeypatch.setattr(subject, "install_and_attach_pg", _fake_install_and_attach)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "add_similar_race_features",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--threads",
+            "2",
+            "--memory-limit",
+            "1GB",
+            "--skip-v2-features",
+        ],
+    )
+    subject.main()
+    verify_con = duckdb.connect(":memory:")
+    names = [
+        c[0]
+        for c in verify_con.execute(
+            f"select * from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet') limit 0"
+        ).description
+    ]
+    rows = verify_con.execute(
+        f"""
+        select ketto_toroku_bango, sim_sire_offspring_count, sim_sire_win_rate
+        from read_parquet('{output_dir.as_posix()}/race_year=*/*.parquet')
+        order by ketto_toroku_bango
+        """
+    ).fetchall()
+    verify_con.close()
+    assert [name for name in names if name.endswith("_v2")] == []
+    assert rows == [("horse_a", 1, 1.0), ("horse_b", None, None), ("horse_c", None, None)]

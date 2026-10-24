@@ -370,6 +370,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--skip-v2-features",
+        action="store_true",
+        help=(
+            "Serving-only: do not compute the v2 pedigree distance stats; the "
+            "*_v2 output columns are emitted as NULL."
+        ),
+    )
+    parser.add_argument(
         "--allow-empty-targets",
         action="store_true",
         help=(
@@ -2669,7 +2677,11 @@ def target_pedigree_index_sql() -> str:
     return f"create index if not exists idx_target_pedigree on target_pedigree ({keys})"
 
 
-def pedigree_features_sql() -> str:
+def is_v2_pedigree_spec(spec: PedigreeStatSpec | PedigreeJoinSpec) -> bool:
+    return spec["table"].endswith("_v2")
+
+
+def pedigree_features_sql(include_v2: bool = True) -> str:
     """Pre-join target_pedigree with all stats tables into one temp table.
 
     Keyed at the target-row grain (PEDIGREE_NATURAL_KEY), it exposes every stats
@@ -2681,6 +2693,11 @@ def pedigree_features_sql() -> str:
     joins: list[str] = []
     for spec in PEDIGREE_JOIN_SPECS:
         alias = spec["alias"]
+        if not include_v2 and is_v2_pedigree_spec(spec):
+            # Serving skip: keep the column contract, compute nothing.
+            select_cols.extend(f"null::double as {val}" for val in spec["val_columns"])
+            select_cols.append(f"null::bigint as {alias}_race_count")
+            continue
         for val in spec["val_columns"]:
             select_cols.append(f"{alias}.{val} as {val}")
         select_cols.append(f"{alias}.race_count as {alias}_race_count")
@@ -3084,12 +3101,15 @@ PEDIGREE_STAT_TABLES = tuple(spec["table"] for spec in PEDIGREE_STAT_SPECS)
 def materialize_pedigree_stats(
     con: duckdb.DuckDBPyConnection,
     category: str,
+    include_v2: bool = True,
 ) -> None:
     run_staged_sql(con, "pedigree.target_pedigree", target_pedigree_sql())
     con.execute(target_pedigree_index_sql())
     run_staged_sql(con, "pedigree.target_months", target_months_sql())
     run_staged_sql(con, "pedigree.rec_um", pedigree_rec_um_sql(category))
     for spec in PEDIGREE_STAT_SPECS:
+        if not include_v2 and is_v2_pedigree_spec(spec):
+            continue
         run_staged_sql(
             con, f"pedigree.{spec['table']}", pedigree_monthly_stat_sql(spec)
         )
@@ -3097,7 +3117,7 @@ def materialize_pedigree_stats(
     run_staged_sql(
         con,
         f"pedigree.{PEDIGREE_FEATURES_TABLE}",
-        pedigree_features_sql(),
+        pedigree_features_sql(include_v2),
         PEDIGREE_FEATURES_TABLE,
     )
     for spec in PEDIGREE_JOIN_SPECS:
@@ -5024,6 +5044,9 @@ def make_checkpoint_controller(args: argparse.Namespace) -> CheckpointController
         args.venue_weather_dir.as_posix() if args.venue_weather_dir is not None else ""
     )
     target_race_extra = target_race_hash_extra(getattr(args, "target_race", None))
+    if getattr(args, "skip_v2_features", False):
+        # A checkpoint built without v2 stats must never be restored by a v2 run.
+        target_race_extra += "::skip-v2-features"
     return CheckpointController(
         active=active,
         incremental=bool(getattr(args, "incremental", False)),
@@ -5238,12 +5261,13 @@ def run_stage_pedigree(
     years: list[int],
     category: str,
     temp_dir: Path | None,
+    include_v2: bool = True,
 ) -> None:
     heartbeat.set_stage("pedigree")
     if controller.try_restore(con, CHECKPOINT_PEDIGREE, years):
         return
     controller.cascade_invalidate_from(CHECKPOINT_PEDIGREE)
-    materialize_pedigree_stats(con, category)
+    materialize_pedigree_stats(con, category, include_v2)
     for t in ("pedigree_rec_um", "target_months", "jra_um", "nar_um"):
         drop_view_or_table(con, t)
     if controller.active:
@@ -5347,7 +5371,13 @@ def run(args: argparse.Namespace) -> BuildResult:
         )
         run_stage_partner(con, controller, heartbeat, years, args.temp_dir)
         run_stage_pedigree(
-            con, controller, heartbeat, years, args.category, args.temp_dir
+            con,
+            controller,
+            heartbeat,
+            years,
+            args.category,
+            args.temp_dir,
+            include_v2=not getattr(args, "skip_v2_features", False),
         )
         run_stage_race_context(con, controller, heartbeat, years, args.temp_dir)
         run_stage_track_bias(con, controller, heartbeat, years, args.temp_dir)

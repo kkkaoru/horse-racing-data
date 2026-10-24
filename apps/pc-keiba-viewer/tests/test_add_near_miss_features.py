@@ -2394,3 +2394,74 @@ def test_postgres_entity_scoped_query_expands_sire_ids_to_both_spellings() -> No
     )
     assert "hp.sire_id in ('1120000715', '11200715')" in sql
     assert "hp.damsire_id in ('1110000922', '11100922')" in sql
+
+
+def test_parse_args_skip_v2_features_defaults_off() -> None:
+    args = subject.parse_args(["--input-dir", "in", "--output-dir", "out"])
+    assert args.skip_v2_features is False
+    args = subject.parse_args(
+        ["--input-dir", "in", "--output-dir", "out", "--skip-v2-features"]
+    )
+    assert args.skip_v2_features is True
+
+
+def test_append_features_sql_without_v2_omits_v2_columns_and_join() -> None:
+    sql = subject.append_features_sql("dummy.parquet", include_v2=False)
+    assert "_v2" not in sql
+    assert "horse_pedigree_context_v2" not in sql
+
+
+def test_race_history_focus_filter_without_v2_matches_raw_ids() -> None:
+    sql = subject.race_history_focus_filter_sql(True, include_v2=False)
+    assert "te.sire_id = hp.sire_id" in sql
+    assert "te.damsire_id = hp.damsire_id" in sql
+    assert "length(" not in sql
+
+
+def test_raw_catalog_history_without_v2_matches_raw_ids() -> None:
+    sql = subject.raw_catalog_race_history_sql("20100101", include_v2=False)
+    assert "te.sire_id = hp.sire_id" in sql
+    assert "length(" not in sql
+
+
+def test_postgres_entity_scoped_query_without_v2_keeps_raw_sire_ids() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table target_entities as select * from (
+          values ('nar', 'horse_n', cast(null as varchar), '11200715', '1110000922')
+        ) as v(source, ketto_toroku_bango, kishumei_ryakusho, sire_id, damsire_id)
+        """
+    )
+    sql = subject.postgres_entity_scoped_race_history_query(
+        con, "20100101", "20250131", include_v2=False
+    )
+    assert "hp.sire_id in ('11200715')" in sql
+    assert "hp.damsire_id in ('1110000922')" in sql
+
+
+def test_v1_rates_are_unchanged_when_v2_is_skipped(tmp_path: Path) -> None:
+    con = duckdb.connect(":memory:")
+    input_glob = _seed_v2_pedigree_fixture(con, tmp_path)
+    subject.stage_target_entities(con, input_glob)
+    subject.stage_race_history(con, "20000101", True, include_v2=False)
+    history = con.execute(
+        "select distinct ketto_toroku_bango from race_history order by 1"
+    ).fetchall()
+    subject.stage_horse_near_miss(con)
+    subject.stage_target_context(con, input_glob, True)
+    subject.stage_horse_context(con)
+    subject.stage_pedigree_cumulatives(con)
+    subject.stage_horse_pedigree_context(con)
+    subject.stage_horse_distance_grade(con)
+    subject.stage_jockey_near_miss(con)
+    row = con.execute(
+        f"""
+        select sire_distance_place2_rate, sire_grade_place2_rate,
+          damsire_distance_place2_rate
+        from ({subject.append_features_sql(input_glob, include_v2=False)})
+        """
+    ).fetchone()
+    con.close()
+    assert history == [("horse_a",)]
+    assert row == (0.0, 0.0, 0.0)

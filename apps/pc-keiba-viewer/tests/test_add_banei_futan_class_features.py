@@ -264,3 +264,34 @@ def test_v2_lineage_stats_pool_short_and_long_breeding_ids(tmp_path: Path) -> No
     ).fetchall()
     con.close()
     assert row == [(None, None, None, 1, 1.0, 1, 1.0)]
+
+
+def test_append_features_sql_without_v2_omits_v2_columns() -> None:
+    sql = subject.append_features_sql("dummy.parquet", include_v2=False)
+    assert "_v2" not in sql
+    assert "damsire_futan_class_win_rate" in sql
+
+
+def test_stage_horse_pedigree_without_v2_keeps_raw_lineage_ids() -> None:
+    con = duckdb.connect(":memory:")
+    con.execute("create schema pg")
+    con.execute(
+        "create table pg.nvd_um (ketto_toroku_bango varchar, ketto_joho_01a varchar, ketto_joho_05a varchar)"
+    )
+    con.execute(
+        "create table pg.nvd_nu (ketto_toroku_bango varchar, ketto_joho_01a varchar, ketto_joho_05a varchar)"
+    )
+    con.execute("create table banei_targets as select 'HORSE'::varchar as ketto_toroku_bango")
+    con.execute("insert into pg.nvd_nu values ('HORSE', '1120000715', '1110000922')")
+    con.execute("insert into pg.nvd_um values ('PROGENY', '11200715', '11100922')")
+    subject.stage_horse_pedigree(con, include_v2=False)
+    rows = con.execute("select ketto_toroku_bango from banei_pedigree order by 1").fetchall()
+    con.close()
+    assert rows == [("HORSE",)]
+
+
+def test_parse_args_accepts_skip_v2_features(tmp_path: Path) -> None:
+    args = subject.parse_args(
+        ["--input-dir", str(tmp_path), "--output-dir", str(tmp_path), "--skip-v2-features"]
+    )
+    assert args.skip_v2_features is True

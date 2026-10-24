@@ -101,6 +101,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Used only for races whose RA carries no going."
         ),
     )
+    parser.add_argument(
+        "--skip-v2-features",
+        action="store_true",
+        help="Serving-only: do not compute the *_v2 columns.",
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -258,7 +263,14 @@ def apply_current_going(con: duckdb.DuckDBPyConnection, going_path: Path) -> Non
     con.execute(f"create index race_baba_idx on race_baba ({RACE_PARTITION})")
 
 
-def stage_target_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
+def _cohort_id_sql(column: str, include_v2: bool) -> str:
+    """Normalised ids widen the cohort to the v2 lineage (a raw-id superset)."""
+    return normalized_pedigree_id_sql(column) if include_v2 else column
+
+
+def stage_target_pedigree_context(
+    con: duckdb.DuckDBPyConnection, include_v2: bool = True
+) -> None:
     """Stage input horses and their sire/damsire ids for history narrowing."""
     con.execute(
         """
@@ -275,8 +287,8 @@ def stage_target_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
         f"""
         create or replace temp table target_pedigree_ids as
         select distinct
-          {normalized_pedigree_id_sql("sire_id")} as sire_id,
-          {normalized_pedigree_id_sql("damsire_id")} as damsire_id
+          {_cohort_id_sql("sire_id", include_v2)} as sire_id,
+          {_cohort_id_sql("damsire_id", include_v2)} as damsire_id
         from base_input b
         left join horse_pedigree hp using (ketto_toroku_bango)
         where sire_id is not null or damsire_id is not null
@@ -293,6 +305,7 @@ def stage_target_pedigree_context(con: duckdb.DuckDBPyConnection) -> None:
 def stage_race_history_with_baba(
     con: duckdb.DuckDBPyConnection,
     from_date: str,
+    include_v2: bool = True,
 ) -> None:
     """Stage history for input horses and their sire/damsire cohorts."""
     history_horses = con.execute(
@@ -309,7 +322,7 @@ def stage_race_history_with_baba(
             from target_pedigree_ids
             where sire_id is not null
           ) target_sires
-            on target_sires.sire_id = {normalized_pedigree_id_sql("hp.sire_id")}
+            on target_sires.sire_id = {_cohort_id_sql("hp.sire_id", include_v2)}
           union
           select hp.ketto_toroku_bango
           from horse_pedigree hp
@@ -318,7 +331,7 @@ def stage_race_history_with_baba(
             from target_pedigree_ids
             where damsire_id is not null
           ) target_damsires
-            on target_damsires.damsire_id = {normalized_pedigree_id_sql("hp.damsire_id")}
+            on target_damsires.damsire_id = {_cohort_id_sql("hp.damsire_id", include_v2)}
         ) cohort
         where ketto_toroku_bango is not null
         order by ketto_toroku_bango
@@ -329,6 +342,11 @@ def stage_race_history_with_baba(
     )
     from_date_literal = sql_string_literal(from_date)
     from_year_literal = sql_string_literal(from_date[:4])
+    history_condition = (
+        f"coalesce({baba_condition_sql('ra')}, {baba_condition_v2_sql('ra')})"
+        if include_v2
+        else baba_condition_sql("ra")
+    )
 
     def raw_branch(source: str, se_table: str, ra_table: str) -> str:
         finish_position = (
@@ -352,8 +370,7 @@ def stage_race_history_with_baba(
         where se.kaisai_nen >= {from_year_literal}
           and se.kaisai_nen || se.kaisai_tsukihi >= {from_date_literal}
           and {finish_position} is not null
-          and coalesce({baba_condition_sql("ra")}, {baba_condition_v2_sql("ra")})
-            is not null
+          and {history_condition} is not null
           and {horse_predicate}
         """
 
@@ -558,15 +575,27 @@ def affinity_joins_sql(suffix: str) -> str:
         and bwp.race_date > {dbc}.race_date"""
 
 
-def append_features_sql(input_glob: str) -> str:
+def append_features_sql(input_glob: str, include_v2: bool = True) -> str:
+    v2_columns = f",\n        {affinity_columns_sql(V2_SUFFIX)}" if include_v2 else ""
+    v2_joins = affinity_joins_sql(V2_SUFFIX) if include_v2 else ""
+    v2_condition = (
+        ",\n        rb.baba_cond_v2 as current_baba_condition_v2" if include_v2 else ""
+    )
+    v2_ids = (
+        f""",
+        {normalized_pedigree_id_sql("hp.sire_id")} as sire_id_v2,
+        {normalized_pedigree_id_sql("hp.damsire_id")} as damsire_id_v2"""
+        if include_v2
+        else ""
+    )
+    v2_id_exclude = ", sire_id_v2, damsire_id_v2" if include_v2 else ""
     return f"""
     with base as (
       select columns(c -> c not in {BABA_OUTPUT_COLUMNS})
       from read_parquet('{input_glob}', hive_partitioning=true)
     ),
     base_with_baba as (
-      select b.*, rb.baba_cond as current_baba_condition,
-        rb.baba_cond_v2 as current_baba_condition_v2
+      select b.*, rb.baba_cond as current_baba_condition{v2_condition}
       from base b
       left join race_baba rb
         on rb.source = b.source
@@ -576,20 +605,17 @@ def append_features_sql(input_glob: str) -> str:
         and rb.race_bango = b.race_bango
     ),
     base_with_pedigree as (
-      select bwb.*, hp.sire_id, hp.damsire_id,
-        {normalized_pedigree_id_sql("hp.sire_id")} as sire_id_v2,
-        {normalized_pedigree_id_sql("hp.damsire_id")} as damsire_id_v2
+      select bwb.*, hp.sire_id, hp.damsire_id{v2_ids}
       from base_with_baba bwb
       left join horse_pedigree hp on hp.ketto_toroku_bango = bwb.ketto_toroku_bango
     ),
     joined as (
       select
-        bwp.* exclude (sire_id, damsire_id, sire_id_v2, damsire_id_v2),
-        {affinity_columns_sql("")},
-        {affinity_columns_sql(V2_SUFFIX)}
+        bwp.* exclude (sire_id, damsire_id{v2_id_exclude}),
+        {affinity_columns_sql("")}{v2_columns}
       from base_with_pedigree bwp
       {affinity_joins_sql("")}
-      {affinity_joins_sql(V2_SUFFIX)}
+      {v2_joins}
     )
     select * from joined
     """
@@ -620,15 +646,17 @@ def main() -> None:
     stage_current_race_baba(con, args.from_date)
     if args.current_going is not None:
         apply_current_going(con, args.current_going)
-    stage_target_pedigree_context(con)
-    stage_race_history_with_baba(con, args.from_date)
+    include_v2 = not args.skip_v2_features
+    stage_target_pedigree_context(con, include_v2)
+    stage_race_history_with_baba(con, args.from_date, include_v2)
     stage_horse_baba_cumul(con)
     stage_sire_baba_cumul(con)
     stage_damsire_baba_cumul(con)
-    stage_horse_baba_cumul(con, V2_SUFFIX)
-    stage_sire_baba_cumul(con, V2_SUFFIX)
-    stage_damsire_baba_cumul(con, V2_SUFFIX)
-    write_partitioned(con, append_features_sql(input_glob), args.output_dir)
+    if include_v2:
+        stage_horse_baba_cumul(con, V2_SUFFIX)
+        stage_sire_baba_cumul(con, V2_SUFFIX)
+        stage_damsire_baba_cumul(con, V2_SUFFIX)
+    write_partitioned(con, append_features_sql(input_glob, include_v2), args.output_dir)
     con.close()
 
 

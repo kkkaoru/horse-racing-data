@@ -105,6 +105,7 @@ KYORI_BAND_INTERMEDIATE_MAX: int = 2200
 
 # Ban-ei is always keibajo_code '83'; venue matching is therefore trivial.
 BAN_EI_KEIBAJO_CODE: str = "83"
+V2_SUFFIX: str = "_v2"
 
 # v2 pedigree name lookup order per category: own UM mirror, then the NAR
 # native master, then the other organisation's mirror.
@@ -158,16 +159,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "surface/distance/lookback candidates."
         ),
     )
+    parser.add_argument(
+        "--skip-v2-features",
+        action="store_true",
+        help="Serving-only: do not compute the *_v2 columns.",
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
 
-def pedigree_v2_sql(category: str, horse_filter: str = "true") -> str:
+def pedigree_v2_sql(
+    category: str, horse_filter: str = "true", include_v2: bool = True
+) -> str:
     """Horse -> (sire_v2, damsire_v2) names, first master that knows the horse.
 
     Mirrors the base build's nvd_um -> nvd_nu coalesce and extends it to the
-    other organisation's master so cross-registered horses resolve too.
+    other organisation's master so cross-registered horses resolve too. With
+    ``include_v2=False`` (serving skip) it is an empty relation, so no master
+    is scanned and the v1 columns are unchanged.
     """
+    if not include_v2:
+        return (
+            "(select cast(null as varchar) as ketto_toroku_bango, "
+            "cast(null as varchar) as sire_v2, cast(null as varchar) as damsire_v2 "
+            "where false)"
+        )
     branches = "\n          union all\n".join(
         f"""select ketto_toroku_bango,
             nullif(trim(ketto_joho_01b), '') as sire_v2,
@@ -365,7 +381,7 @@ def fetch_pooled_horse_ids(con: _DuckDBConnectionLike) -> tuple[str, ...]:
 
 
 def stage_pooled_pedigree(
-    con: _DuckDBConnectionLike, category: str
+    con: _DuckDBConnectionLike, category: str, include_v2: bool = True
 ) -> None:
     """Read pedigree only for horses in the capped similar-race pool.
 
@@ -391,7 +407,7 @@ def stage_pooled_pedigree(
           from {um_table}
           where {horse_filter}
         ) um
-        full outer join {pedigree_v2_sql(category, horse_filter)} v2
+        full outer join {pedigree_v2_sql(category, horse_filter, include_v2)} v2
           using (ketto_toroku_bango)
         """
     )
@@ -469,6 +485,7 @@ def stage_similar_history(
     category: str,
     focused_target: bool = False,
     target_scopes: Sequence[SimilarityScope] | None = None,
+    include_v2: bool = True,
 ) -> None:
     """Stage the per-entry historical race rows used to build the similar-race pool.
 
@@ -528,7 +545,7 @@ def stage_similar_history(
               and ra.race_bango = rec.race_bango
             left join {um_table} um
               on um.ketto_toroku_bango = rec.ketto_toroku_bango
-            left join {pedigree_v2_sql(category)} v2
+            left join {pedigree_v2_sql(category, include_v2=include_v2)} v2
               on v2.ketto_toroku_bango = rec.ketto_toroku_bango
             where rec.source = '{source_value}'
               and rec.race_date >= '{from_date}'
@@ -1057,7 +1074,9 @@ def stage_race_level_features(con: _DuckDBConnectionLike) -> None:
 
 
 def stage_entity_features(
-    con: _DuckDBConnectionLike, raw_catalog_category: str | None = None
+    con: _DuckDBConnectionLike,
+    raw_catalog_category: str | None = None,
+    include_v2: bool = True,
 ) -> None:
     """Phase-2 per-horse entity stats from the similar-race pool.
 
@@ -1067,7 +1086,7 @@ def stage_entity_features(
     sire/damsire/owner/umaban_zone). One row per (target race, horse).
     """
     if raw_catalog_category is not None:
-        stage_pooled_pedigree(con, raw_catalog_category)
+        stage_pooled_pedigree(con, raw_catalog_category, include_v2)
         pedigree_prefix = "ped"
         pedigree_join = (
             "left join pooled_pedigree ped "
@@ -1095,7 +1114,7 @@ def stage_entity_features(
         {pedigree_join}
         """
     )
-    for entity_col, table, win_alias, place_alias, count_alias, with_place in (
+    entity_specs = (
         ("kishumei_ryakusho", "sim_jockey_stats", "sim_jockey_win_rate", "sim_jockey_place_rate", "sim_jockey_ride_count", True),
         ("chokyoshimei_ryakusho", "sim_trainer_stats", "sim_trainer_win_rate", "sim_trainer_place_rate", "sim_trainer_ride_count", True),
         ("sire", "sim_sire_stats", "sim_sire_win_rate", "sim_sire_place_rate", "sim_sire_offspring_count", True),
@@ -1104,7 +1123,10 @@ def stage_entity_features(
         ("damsire_v2", "sim_damsire_stats_v2", "sim_damsire_win_rate_v2", "sim_damsire_place_rate_v2", "sim_damsire_offspring_count_v2", True),
         ("banushimei", "sim_owner_stats", "sim_owner_win_rate", "sim_owner_place_rate", "sim_owner_race_count", False),
         ("umaban_zone", "sim_umaban_zone_stats", "sim_umaban_zone_win_rate", "sim_umaban_zone_place_rate", "sim_umaban_zone_count", False),
-    ):
+    )
+    for entity_col, table, win_alias, place_alias, count_alias, with_place in entity_specs:
+        if not include_v2 and entity_col.endswith(V2_SUFFIX):
+            continue
         place_select = (
             f", avg(case when finish_position between 1 and 3 then 1.0 else 0.0 end) as {place_alias}"
             if with_place
@@ -1179,6 +1201,7 @@ def stage_target_entities(
     category: str,
     focused_target: bool = False,
     target_keys: Sequence[TargetRaceKey] | None = None,
+    include_v2: bool = True,
 ) -> None:
     """The target horses' own entity codes (for joining the Phase-2 stats back).
 
@@ -1225,7 +1248,7 @@ def stage_target_entities(
               from pg.race_entry_corner_features rec
               left join {um_table} um
                 on um.ketto_toroku_bango = rec.ketto_toroku_bango
-              left join {pedigree_v2_sql(category)} v2
+              left join {pedigree_v2_sql(category, include_v2=include_v2)} v2
                 on v2.ketto_toroku_bango = rec.ketto_toroku_bango
               where rec.source = '{source_value}'
                 and rec.race_date >= '{from_date}'
@@ -1300,7 +1323,7 @@ def stage_target_entities(
           from {um_table}
           where {horse_filter}
         ) um
-        full outer join {pedigree_v2_sql(category, horse_filter)} v2
+        full outer join {pedigree_v2_sql(category, horse_filter, include_v2)} v2
           using (ketto_toroku_bango)
         """
     )
@@ -1331,7 +1354,7 @@ def stage_target_entities(
     )
 
 
-def append_features_sql(input_glob: str) -> str:
+def append_features_sql(input_glob: str, include_v2: bool = True) -> str:
     """LEFT JOIN all Phase-1 + Phase-2 columns onto the base parquet.
 
     Called once per output year with a year-specific ``input_glob``; every staging
@@ -1345,6 +1368,25 @@ def append_features_sql(input_glob: str) -> str:
         "and {a}.kaisai_tsukihi = {b}.kaisai_tsukihi "
         "and {a}.keibajo_code = {b}.keibajo_code "
         "and {a}.race_bango = {b}.race_bango"
+    )
+    v2_columns = (
+        """,
+      ss2.sim_sire_win_rate_v2,
+      ss2.sim_sire_place_rate_v2,
+      ss2.sim_sire_offspring_count_v2,
+      ds2.sim_damsire_win_rate_v2,
+      ds2.sim_damsire_place_rate_v2,
+      ds2.sim_damsire_offspring_count_v2"""
+        if include_v2
+        else ""
+    )
+    v2_joins = (
+        f"""left join sim_sire_stats_v2 ss2
+      on {race_key.format(a="ss2", b="we")} and ss2.sire_v2 = we._sim_sire_v2
+    left join sim_damsire_stats_v2 ds2
+      on {race_key.format(a="ds2", b="we")} and ds2.damsire_v2 = we._sim_damsire_v2"""
+        if include_v2
+        else ""
     )
     return f"""
     with base as (
@@ -1392,13 +1434,7 @@ def append_features_sql(input_glob: str) -> str:
       ds.sim_damsire_offspring_count,
       os.sim_owner_win_rate,
       os.sim_owner_race_count,
-      uz.sim_umaban_zone_win_rate,
-      ss2.sim_sire_win_rate_v2,
-      ss2.sim_sire_place_rate_v2,
-      ss2.sim_sire_offspring_count_v2,
-      ds2.sim_damsire_win_rate_v2,
-      ds2.sim_damsire_place_rate_v2,
-      ds2.sim_damsire_offspring_count_v2
+      uz.sim_umaban_zone_win_rate{v2_columns}
     from with_entities we
     left join sim_race_features srf on {race_key.format(a="srf", b="we")}
     left join sim_jockey_stats js
@@ -1413,10 +1449,7 @@ def append_features_sql(input_glob: str) -> str:
       on {race_key.format(a="os", b="we")} and os.banushimei = we._sim_banushi
     left join sim_umaban_zone_stats uz
       on {race_key.format(a="uz", b="we")} and uz.umaban_zone = we._sim_umaban_zone
-    left join sim_sire_stats_v2 ss2
-      on {race_key.format(a="ss2", b="we")} and ss2.sire_v2 = we._sim_sire_v2
-    left join sim_damsire_stats_v2 ds2
-      on {race_key.format(a="ds2", b="we")} and ds2.damsire_v2 = we._sim_damsire_v2
+    {v2_joins}
     """
 
 
@@ -1497,6 +1530,7 @@ def main() -> None:
     with measure_stage("target-scope"):
         stage_target_similarity_scope(con, input_glob)
     use_raw_catalog_pushdown = args.pg_url.startswith("r2-catalog://")
+    include_v2 = not args.skip_v2_features
     if use_raw_catalog_pushdown:
         target_scopes = fetch_target_similarity_scopes(con)
         with measure_stage("history"):
@@ -1506,11 +1540,16 @@ def main() -> None:
                 args.category,
                 focused_target=True,
                 target_scopes=target_scopes,
+                include_v2=include_v2,
             )
     else:
         with measure_stage("history"):
             stage_similar_history(
-                con, args.from_date, args.category, focused_target=True
+                con,
+                args.from_date,
+                args.category,
+                focused_target=True,
+                include_v2=include_v2,
             )
     with measure_stage("race-summary"):
         stage_race_summary(con)
@@ -1528,7 +1567,9 @@ def main() -> None:
             stage_race_level_features(con)
         with measure_stage("entities"):
             stage_entity_features(
-                con, args.category if use_raw_catalog_pushdown else None
+                con,
+                args.category if use_raw_catalog_pushdown else None,
+                include_v2=include_v2,
             )
         if use_raw_catalog_pushdown:
             target_keys = fetch_target_race_keys(con)
@@ -1539,13 +1580,18 @@ def main() -> None:
                     args.category,
                     focused_target=True,
                     target_keys=target_keys,
+                    include_v2=include_v2,
                 )
         else:
             with measure_stage("target-entities"):
                 stage_target_entities(
-                    con, args.from_date, args.category, focused_target=True
+                    con,
+                    args.from_date,
+                    args.category,
+                    focused_target=True,
+                    include_v2=include_v2,
                 )
-        sql = append_features_sql(year_glob)
+        sql = append_features_sql(year_glob, include_v2)
         # partition_by (race_year) makes DuckDB emit the
         # race_year=<year>/data_*.parquet hive layout AND, critically, OMIT
         # the race_year column from the file body. Every sibling layer (race-

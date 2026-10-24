@@ -86,6 +86,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("LOCAL_PG_URL", DEFAULT_PG_URL),
     )
     parser.add_argument("--from-date", type=str, default="20100101")
+    parser.add_argument(
+        "--skip-v2-features",
+        action="store_true",
+        help="Serving-only: do not compute the *_v2 columns.",
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -225,7 +230,7 @@ def stage_banei_history(con: duckdb.DuckDBPyConnection, from_date: str) -> None:
     )
 
 
-def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
+def stage_horse_pedigree(con: duckdb.DuckDBPyConnection, include_v2: bool = True) -> None:
     """Stage target horses and progeny sharing their resolved sire/damsire."""
     target_horses = _target_horse_ids(con)
     target_filter = (
@@ -254,9 +259,11 @@ def stage_horse_pedigree(con: duckdb.DuckDBPyConnection) -> None:
     ).fetchall()
     # Every raw spelling of each id: the cohort then covers the v2 (normalised)
     # lineage, a superset of the raw-id lineage that v1 aggregates key on.
-    lineage_ids = {
-        variant for row in lineage_rows for variant in pedigree_id_variants(str(row[0]))
-    }
+    lineage_ids = (
+        {variant for row in lineage_rows for variant in pedigree_id_variants(str(row[0]))}
+        if include_v2
+        else {str(row[0]) for row in lineage_rows}
+    )
     if lineage_ids:
         lineage_literals = _literal_list(lineage_ids)
         lineage_filter = (
@@ -431,7 +438,37 @@ def stage_current_race_futan(con: duckdb.DuckDBPyConnection) -> None:
     )
 
 
-def append_features_sql(input_glob: str) -> str:
+V2_COLUMNS_SQL = """,
+        sfc2.past_starts as sire_futan_class_starts_v2,
+        case when sfc2.past_starts > 0
+             then sfc2.past_wins::double / sfc2.past_starts
+             else null end as sire_futan_class_win_rate_v2,
+        dfc2.past_starts as damsire_futan_class_starts_v2,
+        case when dfc2.past_starts > 0
+             then dfc2.past_wins::double / dfc2.past_starts
+             else null end as damsire_futan_class_win_rate_v2"""
+V2_JOINS_SQL = """
+      asof left join sire_futan_cumul_v2 sfc2
+        on sfc2.sire_id = bwp.sire_id_v2
+        and sfc2.futan_class = bwp.current_futan_class
+        and sfc2.race_date < bwp.race_date
+      asof left join damsire_futan_cumul_v2 dfc2
+        on dfc2.damsire_id = bwp.damsire_id_v2
+        and dfc2.futan_class = bwp.current_futan_class
+        and dfc2.race_date < bwp.race_date"""
+
+
+def append_features_sql(input_glob: str, include_v2: bool = True) -> str:
+    v2_columns = V2_COLUMNS_SQL if include_v2 else ""
+    v2_joins = V2_JOINS_SQL if include_v2 else ""
+    v2_ids = (
+        f""",
+        {normalized_pedigree_id_sql("p.sire_id")} as sire_id_v2,
+        {normalized_pedigree_id_sql("p.damsire_id")} as damsire_id_v2"""
+        if include_v2
+        else ""
+    )
+    v2_id_exclude = ", sire_id_v2, damsire_id_v2" if include_v2 else ""
     return f"""
     with base as (
       select * from read_parquet('{input_glob}', hive_partitioning=true)
@@ -451,15 +488,13 @@ def append_features_sql(input_glob: str) -> str:
         and crf.ketto_toroku_bango = b.ketto_toroku_bango
     ),
     base_with_pedigree as (
-      select bwf.*, p.sire_id, p.damsire_id,
-        {normalized_pedigree_id_sql("p.sire_id")} as sire_id_v2,
-        {normalized_pedigree_id_sql("p.damsire_id")} as damsire_id_v2
+      select bwf.*, p.sire_id, p.damsire_id{v2_ids}
       from base_with_futan bwf
       left join banei_pedigree p on p.ketto_toroku_bango = bwf.ketto_toroku_bango
     ),
     joined as (
       select
-        bwp.* exclude (sire_id, damsire_id, sire_id_v2, damsire_id_v2),
+        bwp.* exclude (sire_id, damsire_id{v2_id_exclude}),
         hfc.past_starts as horse_futan_class_career_starts,
         case when hfc.past_starts > 0
              then hfc.past_wins::double / hfc.past_starts
@@ -474,15 +509,7 @@ def append_features_sql(input_glob: str) -> str:
         dfc.past_starts as damsire_futan_class_starts,
         case when dfc.past_starts > 0
              then dfc.past_wins::double / dfc.past_starts
-             else null end as damsire_futan_class_win_rate,
-        sfc2.past_starts as sire_futan_class_starts_v2,
-        case when sfc2.past_starts > 0
-             then sfc2.past_wins::double / sfc2.past_starts
-             else null end as sire_futan_class_win_rate_v2,
-        dfc2.past_starts as damsire_futan_class_starts_v2,
-        case when dfc2.past_starts > 0
-             then dfc2.past_wins::double / dfc2.past_starts
-             else null end as damsire_futan_class_win_rate_v2
+             else null end as damsire_futan_class_win_rate{v2_columns}
       from base_with_pedigree bwp
       asof left join horse_futan_cumul hfc
         on hfc.source = bwp.source
@@ -496,15 +523,7 @@ def append_features_sql(input_glob: str) -> str:
       asof left join damsire_futan_cumul dfc
         on dfc.damsire_id = bwp.damsire_id
         and dfc.futan_class = bwp.current_futan_class
-        and dfc.race_date < bwp.race_date
-      asof left join sire_futan_cumul_v2 sfc2
-        on sfc2.sire_id = bwp.sire_id_v2
-        and sfc2.futan_class = bwp.current_futan_class
-        and sfc2.race_date < bwp.race_date
-      asof left join damsire_futan_cumul_v2 dfc2
-        on dfc2.damsire_id = bwp.damsire_id_v2
-        and dfc2.futan_class = bwp.current_futan_class
-        and dfc2.race_date < bwp.race_date
+        and dfc.race_date < bwp.race_date{v2_joins}
     )
     select * from joined
     """
@@ -528,16 +547,18 @@ def main() -> None:
     apply_to_connection(con, args.threads, args.memory_limit)
     con.execute("SET preserve_insertion_order=false")
     install_and_attach_pg(con, args.pg_url)
+    include_v2 = not args.skip_v2_features
     stage_target_scope(con, input_glob)
-    stage_horse_pedigree(con)
+    stage_horse_pedigree(con, include_v2)
     stage_banei_history(con, args.from_date)
     stage_horse_futan_cumul(con)
     stage_sire_futan_cumul(con)
     stage_damsire_futan_cumul(con)
-    stage_sire_futan_cumul(con, V2_SUFFIX)
-    stage_damsire_futan_cumul(con, V2_SUFFIX)
+    if include_v2:
+        stage_sire_futan_cumul(con, V2_SUFFIX)
+        stage_damsire_futan_cumul(con, V2_SUFFIX)
     stage_current_race_futan(con)
-    write_partitioned(con, append_features_sql(input_glob), args.output_dir)
+    write_partitioned(con, append_features_sql(input_glob, include_v2), args.output_dir)
     con.close()
 
 

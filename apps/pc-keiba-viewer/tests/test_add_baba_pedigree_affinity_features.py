@@ -697,6 +697,7 @@ def test_main_stages_pedigree_context_for_whole_day_input(
         pg_url="postgresql://example",
         target_race=None,
         threads=1,
+        skip_v2_features=False,
     )
     connection = Mock()
     stage_context = Mock()
@@ -718,8 +719,8 @@ def test_main_stages_pedigree_context_for_whole_day_input(
 
     subject.main()
 
-    stage_context.assert_called_once_with(connection)
-    stage_history.assert_called_once_with(connection, "20100101")
+    stage_context.assert_called_once_with(connection, True)
+    stage_history.assert_called_once_with(connection, "20100101", True)
 
 
 def test_main_applies_current_going_only_when_given(
@@ -734,9 +735,12 @@ def test_main_applies_current_going_only_when_given(
         pg_url="postgresql://example",
         target_race="08:11",
         threads=1,
+        skip_v2_features=True,
     )
     connection = Mock()
     apply_going = Mock()
+    stage_sire = Mock()
+    append_sql = Mock(return_value="select 1")
     monkeypatch.setattr(subject, "parse_args", Mock(return_value=args))
     monkeypatch.setattr(subject.duckdb, "connect", Mock(return_value=connection))
     monkeypatch.setattr(subject, "apply_to_connection", Mock())
@@ -748,14 +752,17 @@ def test_main_applies_current_going_only_when_given(
     monkeypatch.setattr(subject, "stage_target_pedigree_context", Mock())
     monkeypatch.setattr(subject, "stage_race_history_with_baba", Mock())
     monkeypatch.setattr(subject, "stage_horse_baba_cumul", Mock())
-    monkeypatch.setattr(subject, "stage_sire_baba_cumul", Mock())
+    monkeypatch.setattr(subject, "stage_sire_baba_cumul", stage_sire)
     monkeypatch.setattr(subject, "stage_damsire_baba_cumul", Mock())
-    monkeypatch.setattr(subject, "append_features_sql", Mock(return_value="select 1"))
+    monkeypatch.setattr(subject, "append_features_sql", append_sql)
     monkeypatch.setattr(subject, "write_partitioned", Mock())
 
     subject.main()
 
     apply_going.assert_called_once_with(connection, tmp_path / "going.parquet")
+    # --current-going combined with --skip-v2-features: only the v1 stages run.
+    stage_sire.assert_called_once_with(connection)
+    assert append_sql.call_args.args[1] is False
 
 
 def test_parse_args_accepts_current_going(tmp_path: Path) -> None:
@@ -1052,3 +1059,178 @@ def test_v2_affinity_uses_banei_moisture_and_pools_split_sire_ids(
     ).fetchone()
     con.close()
     assert row == (1, None, None, None, 12, 1, 0.0, 2, 0.5, 2, 0.5, 0.25)
+
+
+def test_append_features_sql_without_v2_omits_v2_columns() -> None:
+    sql = subject.append_features_sql("dummy.parquet", include_v2=False)
+    # The base still drops stale *_v2 inputs by name, but computes none.
+    assert "rb.baba_cond_v2" not in sql
+    assert "sire_id_v2" not in sql
+    assert "cumul_v2" not in sql
+    assert "sire_horse_baba_combined_score" in sql
+
+
+def test_history_and_cohort_without_v2_use_raw_ids_and_v1_going() -> None:
+    class FakeConn:
+        def __init__(self) -> None:
+            self.sql: list[str] = []
+
+        def execute(self, query: str) -> FakeConn:
+            self.sql.append(query)
+            return self
+
+        def fetchall(self) -> list[tuple[str]]:
+            return [("horse",)]
+
+    conn = FakeConn()
+    subject.stage_target_pedigree_context(conn, False)
+    subject.stage_race_history_with_baba(conn, "20100101", False)
+    joined = "\n".join(conn.sql)
+    assert "select distinct\n          sire_id as sire_id," in joined
+    assert "on target_sires.sire_id = hp.sire_id" in joined
+    assert "coalesce(coalesce(" not in joined
+    assert "length(" not in joined
+
+
+def test_parse_args_accepts_skip_v2_features() -> None:
+    args = subject.parse_args(
+        ["--input-dir", "in", "--output-dir", "out", "--skip-v2-features"]
+    )
+    assert args.skip_v2_features is True
+
+
+def test_current_going_feeds_v1_and_v2_and_skip_v2_keeps_v1(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    going_path = tmp_path / "going.parquet"
+    seed = duckdb.connect(":memory:")
+    seed.execute(
+        f"""
+        copy (
+          select 'jra' as source, '2026' as kaisai_nen, '1025' as kaisai_tsukihi,
+                 '08' as keibajo_code, '11' as race_bango, 'horse_a' as ketto_toroku_bango,
+                 '20261025' as race_date, 2026 as race_year
+        ) to '{input_dir.as_posix()}'
+        (format parquet, partition_by (race_year), overwrite_or_ignore true)
+        """
+    )
+    seed.execute(
+        f"""
+        copy (
+          select 'jra' as source, '2026' as kaisai_nen, '1025' as kaisai_tsukihi,
+                 '08' as keibajo_code, '11' as race_bango,
+                 '2' as babajotai_code_shiba, '0' as babajotai_code_dirt
+        ) to '{going_path.as_posix()}' (format parquet)
+        """
+    )
+    seed.close()
+    con = duckdb.connect(":memory:")
+    con.execute(
+        """
+        create temp table race_baba as
+        select 'jra' as source, '2026' as kaisai_nen, '1025' as kaisai_tsukihi,
+               '08' as keibajo_code, '11' as race_bango,
+               cast(null as int) as baba_cond, cast(null as int) as baba_cond_v2
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_pedigree as
+        select 'horse_a' as ketto_toroku_bango, 'sire_a' as sire_id, 'dam_a' as damsire_id
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_baba_cumul as
+        select 'jra' as source, 'horse_a' as ketto_toroku_bango, 2 as baba_cond,
+               '20261018' as race_date, 4 as past_starts, 1 as past_wins
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_baba_cumul as
+        select 'sire_a' as sire_id, 2 as baba_cond, '20261018' as race_date,
+               10 as past_starts, 2 as past_wins
+        """
+    )
+    con.execute(
+        """
+        create temp table damsire_baba_cumul as
+        select 'dam_a' as damsire_id, 2 as baba_cond, '20261018' as race_date,
+               5 as past_starts, 0 as past_wins
+        """
+    )
+    con.execute(
+        """
+        create temp table horse_baba_cumul_v2 as
+        select 'jra' as source, 'horse_a' as ketto_toroku_bango, 2 as baba_cond,
+               '20261018' as race_date, 5 as past_starts, 2 as past_wins
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_baba_cumul_v2 as
+        select 'sire_a' as sire_id, 2 as baba_cond, '20261018' as race_date,
+               20 as past_starts, 5 as past_wins
+        """
+    )
+    con.execute(
+        """
+        create temp table damsire_baba_cumul_v2 as
+        select 'dam_a' as damsire_id, 2 as baba_cond, '20261018' as race_date,
+               8 as past_starts, 2 as past_wins
+        """
+    )
+    subject.apply_current_going(con, going_path)
+    glob = f"{input_dir.as_posix()}/race_year=*/*.parquet"
+    v1_columns = (
+        "current_baba_condition, horse_baba_career_starts, horse_baba_win_rate,"
+        " sire_baba_career_starts, sire_baba_win_rate, damsire_baba_career_starts,"
+        " damsire_baba_win_rate, sire_horse_baba_combined_score"
+    )
+    with_v2 = con.execute(
+        f"select {v1_columns}, current_baba_condition_v2, horse_baba_win_rate_v2,"
+        f" sire_baba_win_rate_v2, damsire_baba_win_rate_v2"
+        f" from ({subject.append_features_sql(glob)})"
+    ).fetchone()
+    skip_v2 = con.execute(f"select * from ({subject.append_features_sql(glob, False)})")
+    skip_columns = [description[0] for description in skip_v2.description]
+    skip_row = skip_v2.fetchone()
+    con.close()
+
+    assert with_v2 == (2, 4, 0.25, 10, 0.2, 5, 0.0, 0.225, 2, 0.4, 0.25, 0.25)
+    assert skip_columns == [
+        "source",
+        "kaisai_nen",
+        "kaisai_tsukihi",
+        "keibajo_code",
+        "race_bango",
+        "ketto_toroku_bango",
+        "race_date",
+        "race_year",
+        "current_baba_condition",
+        "horse_baba_career_starts",
+        "horse_baba_win_rate",
+        "sire_baba_career_starts",
+        "sire_baba_win_rate",
+        "damsire_baba_career_starts",
+        "damsire_baba_win_rate",
+        "sire_horse_baba_combined_score",
+    ]
+    assert skip_row == (
+        "jra",
+        "2026",
+        "1025",
+        "08",
+        "11",
+        "horse_a",
+        "20261025",
+        2026,
+        2,
+        4,
+        0.25,
+        10,
+        0.2,
+        5,
+        0.0,
+        0.225,
+    )

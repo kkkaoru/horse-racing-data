@@ -49,19 +49,28 @@ from pedigree_staging import (
 )
 
 RACE_PARTITION = "source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango"
-# Cohort match on normalised ids: a superset of the raw-id cohort, so v1
-# (raw-id keyed) aggregates are unchanged and v2 aggregates are complete.
-SIRE_COHORT_MATCH = (
-    f"{normalized_pedigree_id_sql('te.sire_id')} = {normalized_pedigree_id_sql('hp.sire_id')}"
-)
-DAMSIRE_COHORT_MATCH = (
-    f"{normalized_pedigree_id_sql('te.damsire_id')} = "
-    f"{normalized_pedigree_id_sql('hp.damsire_id')}"
-)
 RACE_PARTITION_BY = "b.source, b.kaisai_nen, b.kaisai_tsukihi, b.keibajo_code, b.race_bango"
 DEFAULT_PG_URL = "postgresql://horse_racing:horse_racing@127.0.0.1:5432/horse_racing"
 DISTANCE_TOLERANCE_M = 200
 UNKNOWN_HORSE_REGISTRATION = "0000000000"
+V2_COLUMNS_SQL = """,
+        case when hp2.sire_distance_starts > 0
+             then hp2.sire_distance_p2::double / hp2.sire_distance_starts
+             else null end as sire_distance_place2_rate_v2,
+        case when hp2.sire_grade_starts > 0
+             then hp2.sire_grade_p2::double / hp2.sire_grade_starts
+             else null end as sire_grade_place2_rate_v2,
+        case when hp2.damsire_distance_starts > 0
+             then hp2.damsire_distance_p2::double / hp2.damsire_distance_starts
+             else null end as damsire_distance_place2_rate_v2"""
+V2_JOIN_SQL = f"""left join horse_pedigree_context_v2 hp2
+        on hp2.source = b.source
+        and hp2.kaisai_nen = b.kaisai_nen
+        and hp2.kaisai_tsukihi = b.kaisai_tsukihi
+        and hp2.keibajo_code = b.keibajo_code
+        and hp2.race_bango = b.race_bango
+        and hp2.ketto_toroku_bango = b.ketto_toroku_bango
+        and nullif(trim(b.ketto_toroku_bango), '{UNKNOWN_HORSE_REGISTRATION}') is not null"""
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -96,8 +105,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "is already race-scoped; this restricts history staging to target entities."
         ),
     )
+    parser.add_argument(
+        "--skip-v2-features",
+        action="store_true",
+        help="Serving-only: do not compute the *_v2 pedigree columns.",
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
+
+
+def cohort_match_sql(column: str, include_v2: bool) -> str:
+    """Target-entity vs pedigree id match for the history cohort.
+
+    With v2 the match is on normalised ids: a superset of the raw-id cohort, so
+    v1 (raw-id keyed) aggregates keep their values and v2 aggregates are
+    complete. Without v2 it is the original raw-id equality.
+    """
+    if include_v2:
+        return (
+            f"{normalized_pedigree_id_sql(f'te.{column}')} = "
+            f"{normalized_pedigree_id_sql(f'hp.{column}')}"
+        )
+    return f"te.{column} = hp.{column}"
 
 
 def validate_yyyymmdd(value: str, option_name: str) -> str:
@@ -283,7 +312,7 @@ def stage_target_entities(
     )
 
 
-def race_history_focus_filter_sql(focused_target: bool) -> str:
+def race_history_focus_filter_sql(focused_target: bool, include_v2: bool = True) -> str:
     if not focused_target:
         return ""
     return f"""
@@ -306,8 +335,8 @@ def race_history_focus_filter_sql(focused_target: bool) -> str:
               join target_entities te
                 on te.source = rec.source
                 and (
-                  (te.sire_id is not null and {SIRE_COHORT_MATCH})
-                  or (te.damsire_id is not null and {DAMSIRE_COHORT_MATCH})
+                  (te.sire_id is not null and {cohort_match_sql("sire_id", include_v2)})
+                  or (te.damsire_id is not null and {cohort_match_sql("damsire_id", include_v2)})
                 )
               where hp.ketto_toroku_bango = rec.ketto_toroku_bango
             )
@@ -320,7 +349,7 @@ def postgres_literal(value: str) -> str:
 
 
 def postgres_entity_scoped_race_history_query(
-    con: duckdb.DuckDBPyConnection, from_date: str, to_date: str
+    con: duckdb.DuckDBPyConnection, from_date: str, to_date: str, include_v2: bool = True
 ) -> str:
     """Build a PostgreSQL-native query so entity filtering precedes transfer."""
     rows = con.execute(
@@ -349,7 +378,7 @@ def postgres_entity_scoped_race_history_query(
         ):
             if value is None:
                 continue
-            if key in {"sire", "damsire"}:
+            if include_v2 and key in {"sire", "damsire"}:
                 # Every raw spelling (8/10-digit) so history covers the v2 cohort.
                 source_values[key].update(pedigree_id_variants(str(value)))
             else:
@@ -432,6 +461,7 @@ def stage_race_history(
     offline_sources: frozenset[str] | None = None,
     to_date: str = "20991231",
     remote_entity_pushdown: bool = False,
+    include_v2: bool = True,
 ) -> None:
     """過去レースの finish_position / time_sa / tansho_odds / ninkijun / kishumei を staging。"""
     if focused_target and raw_catalog:
@@ -439,15 +469,15 @@ def stage_race_history(
             "select distinct source from target_entities order by source"
         ).fetchall()
         target_sources = frozenset(str(row[0]) for row in source_rows)
-        con.execute(raw_catalog_race_history_sql(from_date, target_sources))
+        con.execute(raw_catalog_race_history_sql(from_date, target_sources, include_v2))
         return
     if focused_target and remote_entity_pushdown:
         remote_query = postgres_entity_scoped_race_history_query(
-            con, from_date, to_date
+            con, from_date, to_date, include_v2
         )
         con.execute(postgres_query_table_sql(remote_query))
         return
-    target_filter = race_history_focus_filter_sql(focused_target)
+    target_filter = race_history_focus_filter_sql(focused_target, include_v2)
     source_filter = ""
     if not focused_target and offline_sources is not None:
         invalid = sorted(offline_sources.difference({"jra", "nar"}))
@@ -507,6 +537,7 @@ def project_scoped_race_history(con: duckdb.DuckDBPyConnection) -> None:
 def raw_catalog_race_history_sql(
     from_date: str,
     target_sources: frozenset[str] = frozenset({"jra", "nar"}),
+    include_v2: bool = True,
 ) -> str:
     """Build focused history directly from raw R2 Catalog SE/RA tables.
 
@@ -571,8 +602,8 @@ def raw_catalog_race_history_sql(
                 join target_entities te
                   on te.source = '{source}'
                   and (
-                    (te.sire_id is not null and {SIRE_COHORT_MATCH})
-                    or (te.damsire_id is not null and {DAMSIRE_COHORT_MATCH})
+                    (te.sire_id is not null and {cohort_match_sql("sire_id", include_v2)})
+                    or (te.damsire_id is not null and {cohort_match_sql("damsire_id", include_v2)})
                   )
                 where hp.ketto_toroku_bango = se.ketto_toroku_bango
               )
@@ -1669,6 +1700,7 @@ def append_features_sql(
     target_from_date: str | None = None,
     target_to_date: str | None = None,
     use_target_current: bool = False,
+    include_v2: bool = True,
 ) -> str:
     horse_history_join = (
         """asof left join horse_near_miss h
@@ -1698,6 +1730,8 @@ def append_features_sql(
         "b", target_from_date, target_to_date
     )
     current_meta_table = "target_current" if use_target_current else "race_history"
+    v2_columns = V2_COLUMNS_SQL if include_v2 else ""
+    v2_join = V2_JOIN_SQL if include_v2 else ""
     return f"""
     with base as (
       select * from read_parquet('{input_glob}', hive_partitioning=true) b
@@ -1809,16 +1843,7 @@ def append_features_sql(
              else null end as damsire_distance_place2_rate,
         case when hdg.dg_starts > 0
              then hdg.dg_p2::double / hdg.dg_starts
-             else null end as horse_distance_grade_place2_rate,
-        case when hp2.sire_distance_starts > 0
-             then hp2.sire_distance_p2::double / hp2.sire_distance_starts
-             else null end as sire_distance_place2_rate_v2,
-        case when hp2.sire_grade_starts > 0
-             then hp2.sire_grade_p2::double / hp2.sire_grade_starts
-             else null end as sire_grade_place2_rate_v2,
-        case when hp2.damsire_distance_starts > 0
-             then hp2.damsire_distance_p2::double / hp2.damsire_distance_starts
-             else null end as damsire_distance_place2_rate_v2
+             else null end as horse_distance_grade_place2_rate{v2_columns}
       from base_with_meta b
       {horse_history_join}
       left join horse_context hc
@@ -1837,14 +1862,7 @@ def append_features_sql(
         and hp.race_bango = b.race_bango
         and hp.ketto_toroku_bango = b.ketto_toroku_bango
         and nullif(trim(b.ketto_toroku_bango), '{UNKNOWN_HORSE_REGISTRATION}') is not null
-      left join horse_pedigree_context_v2 hp2
-        on hp2.source = b.source
-        and hp2.kaisai_nen = b.kaisai_nen
-        and hp2.kaisai_tsukihi = b.kaisai_tsukihi
-        and hp2.keibajo_code = b.keibajo_code
-        and hp2.race_bango = b.race_bango
-        and hp2.ketto_toroku_bango = b.ketto_toroku_bango
-        and nullif(trim(b.ketto_toroku_bango), '{UNKNOWN_HORSE_REGISTRATION}') is not null
+      {v2_join}
       left join horse_distance_grade hdg
         on hdg.source = b.source
         and hdg.kaisai_nen = b.kaisai_nen
@@ -1906,6 +1924,7 @@ def main() -> None:
     if history_to_date > to_date:
         raise ValueError("--target-to-date must be on or before --to-date")
     focused_target = args.target_race is not None
+    include_v2 = not args.skip_v2_features
     require_bounded_bulk(focused_target, target_from_date, target_to_date)
     bounded_bulk = not focused_target and target_from_date is not None
     use_target_current = focused_target or bounded_bulk
@@ -1956,6 +1975,7 @@ def main() -> None:
         input_sources if not entity_scoped_history else None,
         to_date=history_to_date,
         remote_entity_pushdown=remote_entity_pushdown,
+        include_v2=include_v2,
     )
     if bounded_bulk:
         project_scoped_race_history(con)
@@ -1964,7 +1984,8 @@ def main() -> None:
     stage_horse_near_miss(con)
     stage_target_context(con, input_glob, use_target_current)
     stage_horse_context(con, focused_target)
-    stage_horse_pedigree_context_v2(con, focused_target)
+    if include_v2:
+        stage_horse_pedigree_context_v2(con, focused_target)
     stage_pedigree_cumulatives(con)
     if use_target_current:
         drop_temp_tables(
@@ -2020,6 +2041,7 @@ def main() -> None:
             target_from_date,
             target_to_date,
             use_target_current,
+            include_v2,
         ),
         args.output_dir,
     )

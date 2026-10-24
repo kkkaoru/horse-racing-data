@@ -5460,3 +5460,39 @@ def test_v2_pedigree_stat_spec_without_window_rows_reports_zero_races() -> None:
     ).fetchall()
     con.close()
     assert rows == [("D", None, 0)]
+
+
+def test_pedigree_features_sql_without_v2_nulls_v2_columns_and_skips_joins() -> None:
+    sql = subject.pedigree_features_sql(include_v2=False)
+    assert "_stats_v2" not in sql
+    assert "null::double as sire_distance_win_rate_v2_val" in sql
+    assert "null::double as dam_sire_distance_win_rate_v2_val" in sql
+    assert "null::bigint as sds2_race_count" in sql
+    assert "left join sire_distance_stats sds" in sql
+
+
+def test_materialize_pedigree_stats_without_v2_skips_v2_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    staged: list[str] = []
+    monkeypatch.setattr(
+        subject,
+        "run_staged_sql",
+        lambda _con, stage, *_args: staged.append(stage),
+    )
+
+    from unittest.mock import Mock
+
+    monkeypatch.setattr(subject, "drop_view_or_table", lambda *_args: None)
+    subject.materialize_pedigree_stats(Mock(), "jra", include_v2=False)
+    assert "pedigree.sire_distance_stats_v2" not in staged
+    assert "pedigree.damsire_distance_stats_v2" not in staged
+    assert "pedigree.sire_distance_stats" in staged
+    assert staged[-1] == "pedigree.pedigree_features"
+
+
+def test_parse_args_accepts_skip_v2_features() -> None:
+    args = subject.parse_args(
+        ["--category", "jra", "--target-date", "20260101", "--skip-v2-features"]
+    )
+    assert args.skip_v2_features is True

@@ -79,6 +79,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "is already race-scoped; this restricts sire history to target sires."
         ),
     )
+    parser.add_argument(
+        "--skip-v2-features",
+        action="store_true",
+        help="Serving-only: do not compute the *_v2 columns.",
+    )
     add_resource_args(parser)
     return parser.parse_args(argv)
 
@@ -170,17 +175,28 @@ def stage_target_sire_cells(con: duckdb.DuckDBPyConnection, input_glob: str) -> 
     )
 
 
-def sire_history_focus_filter_sql(focused_target: bool) -> str:
-    # Normalised-id cohort: a superset of the raw-id cohort, so v1 stays exact.
+def _cohort_match_sql(target_alias: str, pedigree_alias: str, include_v2: bool) -> str:
+    """Normalised-id cohort (a raw-id superset, so v1 stays exact) or raw ids."""
+    if include_v2:
+        return (
+            f"{target_alias}.sire_id_v2 = "
+            f"{normalized_pedigree_id_sql(f'{pedigree_alias}.sire_id')}"
+        )
+    return f"{target_alias}.sire_id = {pedigree_alias}.sire_id"
+
+
+def sire_history_focus_filter_sql(focused_target: bool, include_v2: bool = True) -> str:
     if focused_target:
         return (
-            "and exists (select 1 from target_sires ts where ts.sire_id_v2 = "
-            f"{normalized_pedigree_id_sql('p.sire_id')})"
+            "and exists (select 1 from target_sires ts where "
+            f"{_cohort_match_sql('ts', 'p', include_v2)})"
         )
     return ""
 
 
-def target_sire_horse_filter_sql(con: duckdb.DuckDBPyConnection) -> str:
+def target_sire_horse_filter_sql(
+    con: duckdb.DuckDBPyConnection, include_v2: bool = True
+) -> str:
     """Build a constant horse-ID predicate for the raw remote history scan.
 
     ``horse_pedigree`` has already applied the cross-source master priority
@@ -194,7 +210,7 @@ def target_sire_horse_filter_sql(con: duckdb.DuckDBPyConnection) -> str:
         select distinct hp.ketto_toroku_bango
         from horse_pedigree hp
         inner join target_sires ts
-          on ts.sire_id_v2 = {normalized_pedigree_id_sql("hp.sire_id")}
+          on {_cohort_match_sql("ts", "hp", include_v2)}
         where hp.ketto_toroku_bango is not null
         order by hp.ketto_toroku_bango
         """
@@ -220,6 +236,7 @@ def stage_sire_race_history(
     category: str,
     focused_target: bool = False,
     to_date: str | None = None,
+    include_v2: bool = True,
 ) -> None:
     """Stage finished race rows joined to their sire, with venue / surface / dist.
 
@@ -227,8 +244,10 @@ def stage_sire_race_history(
     kyori + race_date + finish_position, filtered to the requested category.
     """
     source_value, keibajo_predicate = _category_predicates(category, alias="se")
-    target_filter = sire_history_focus_filter_sql(focused_target)
-    horse_filter = target_sire_horse_filter_sql(con) if focused_target else "true"
+    target_filter = sire_history_focus_filter_sql(focused_target, include_v2)
+    horse_filter = (
+        target_sire_horse_filter_sql(con, include_v2) if focused_target else "true"
+    )
     se_table = "jvd_se" if source_value == "jra" else "nvd_se"
     ra_table = "jvd_ra" if source_value == "jra" else "nvd_ra"
     from_date_literal = sql_literal(from_date)
@@ -374,14 +393,21 @@ def sire_bias_joins_sql(suffix: str, sire_col: str) -> str:
         and svs{suffix}.race_date = bwsf.race_date"""
 
 
-def append_features_sql(input_glob: str) -> str:
+def append_features_sql(input_glob: str, include_v2: bool = True) -> str:
+    v2_columns = f",\n        {sire_bias_columns_sql(V2_SUFFIX)}" if include_v2 else ""
+    v2_joins = sire_bias_joins_sql(V2_SUFFIX, "_sire_id_v2") if include_v2 else ""
+    v2_id = (
+        f",\n        {normalized_pedigree_id_sql('hp.sire_id')} as _sire_id_v2"
+        if include_v2
+        else ""
+    )
+    v2_id_exclude = ", _sire_id_v2" if include_v2 else ""
     return f"""
     with base as (
       select * from read_parquet('{input_glob}', hive_partitioning=true, union_by_name=true)
     ),
     base_with_sire as (
-      select b.*, hp.sire_id as _sire_id,
-        {normalized_pedigree_id_sql("hp.sire_id")} as _sire_id_v2
+      select b.*, hp.sire_id as _sire_id{v2_id}
       from base b
       left join horse_pedigree hp on hp.ketto_toroku_bango = b.ketto_toroku_bango
     ),
@@ -392,12 +418,11 @@ def append_features_sql(input_glob: str) -> str:
     ),
     joined as (
       select
-        bwsf.* exclude (_sire_id, _sire_id_v2, _surface_type),
-        {sire_bias_columns_sql("")},
-        {sire_bias_columns_sql(V2_SUFFIX)}
+        bwsf.* exclude (_sire_id{v2_id_exclude}, _surface_type),
+        {sire_bias_columns_sql("")}{v2_columns}
       from base_with_surface bwsf
       {sire_bias_joins_sql("", "_sire_id")}
-      {sire_bias_joins_sql(V2_SUFFIX, "_sire_id_v2")}
+      {v2_joins}
     )
     select * from joined
     """
@@ -432,6 +457,7 @@ def main() -> None:
     # of materializing every sire's NAR/JRA history since --from-date. This is
     # output-equivalent and keeps the final day-base layer within its bounded
     # Container deadline.
+    include_v2 = not args.skip_v2_features
     stage_target_sires(con, input_glob)
     stage_target_sire_cells(con, input_glob)
     stage_sire_race_history(
@@ -440,12 +466,14 @@ def main() -> None:
         args.category,
         focused_target=True,
         to_date=target_history_upper_bound(con),
+        include_v2=include_v2,
     )
     stage_svsd_cumul(con)
     stage_svs_cumul(con)
-    stage_svsd_cumul(con, V2_SUFFIX)
-    stage_svs_cumul(con, V2_SUFFIX)
-    write_partitioned(con, append_features_sql(input_glob), args.output_dir)
+    if include_v2:
+        stage_svsd_cumul(con, V2_SUFFIX)
+        stage_svs_cumul(con, V2_SUFFIX)
+    write_partitioned(con, append_features_sql(input_glob, include_v2), args.output_dir)
     con.close()
 
 

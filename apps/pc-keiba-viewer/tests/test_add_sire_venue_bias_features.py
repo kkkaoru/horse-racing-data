@@ -404,6 +404,7 @@ def test_main_scopes_whole_day_history_to_input_sires(tmp_path: Path) -> None:
                 pg_url="r2-catalog://pc-keiba",
                 target_race=None,
                 threads=1,
+                skip_v2_features=False,
             ),
         ),
         patch.object(subject.duckdb, "connect", return_value=conn),
@@ -429,7 +430,12 @@ def test_main_scopes_whole_day_history_to_input_sires(tmp_path: Path) -> None:
         conn, f"{(tmp_path / 'in').as_posix()}/race_year=*/*.parquet"
     )
     stage_sire_race_history.assert_called_once_with(
-        conn, "20100101", "nar", focused_target=True, to_date="20260826"
+        conn,
+        "20100101",
+        "nar",
+        focused_target=True,
+        to_date="20260826",
+        include_v2=True,
     )
 
 
@@ -515,3 +521,28 @@ def test_v2_sire_bias_pools_short_and_long_sire_ids(tmp_path: Path) -> None:
     conn.close()
     assert history == [("11200715", "1120000715")]
     assert row == [(0, None, None, 1, 1.0, 1.0, 1.0, 1.0)]
+
+
+def test_sire_history_focus_filter_without_v2_matches_raw_ids() -> None:
+    assert subject.sire_history_focus_filter_sql(True, include_v2=False) == (
+        "and exists (select 1 from target_sires ts where ts.sire_id = p.sire_id)"
+    )
+
+
+def test_target_sire_horse_filter_without_v2_joins_raw_ids() -> None:
+    conn = FakeConn([("horse01",)])
+    subject.target_sire_horse_filter_sql(conn, include_v2=False)
+    assert "on ts.sire_id = hp.sire_id" in conn.statements[0]
+
+
+def test_append_features_sql_without_v2_omits_v2_columns() -> None:
+    sql = subject.append_features_sql("dummy.parquet", include_v2=False)
+    assert "_v2" not in sql
+    assert "sire_venue_surface_place_rate" in sql
+
+
+def test_parse_args_accepts_skip_v2_features() -> None:
+    args = subject.parse_args(
+        ["--input-dir", "in", "--output-dir", "out", "--category", "nar", "--skip-v2-features"]
+    )
+    assert args.skip_v2_features is True
