@@ -83,6 +83,17 @@ const quote = (value: string | null): string | null => {
 
 const compactDate = (date: string): string => date.slice(0, 4);
 
+const windowStartYear = (input: MatchedProfileInput): string | null =>
+  input.years === null ? null : String(Number(compactDate(input.raceDate)) - input.years);
+
+// Bare kaisai_nen bounds implied by the concat() window: R2 SQL prunes year
+// partitions only on the plain column, so without them every year is scanned.
+const yearBoundsSql = (alias: string, input: MatchedProfileInput): string => {
+  const start: string | null = windowStartYear(input);
+  const upper: string = `${alias}.kaisai_nen <= '${compactDate(input.raceDate)}'`;
+  return start === null ? upper : `${alias}.kaisai_nen >= '${start}' AND ${upper}`;
+};
+
 const conditionKeySql = (codeColumn: string, meishoColumn: string): string => {
   const whens: string = CELL_CONDITION_LABEL_PAIRS.map(
     ([code, label]) => `WHEN ${codeColumn} = '${code}' THEN '${label}'`,
@@ -145,7 +156,8 @@ export const buildMatchedRacePredicates = (input: MatchedProfileInput): string[]
   if (settings.includeRunnerCount && settings.runnerCount !== null) {
     predicates.push(`(SELECT count(*) FROM ${input.namespace}.${runnerTable(input)} rc
     WHERE rc.kaisai_nen = ra.kaisai_nen AND rc.kaisai_tsukihi = ra.kaisai_tsukihi
-      AND rc.keibajo_code = ra.keibajo_code AND rc.race_bango = ra.race_bango) = ${String(settings.runnerCount)}`);
+      AND rc.keibajo_code = ra.keibajo_code AND rc.race_bango = ra.race_bango
+      AND ${yearBoundsSql("rc", input)}) = ${String(settings.runnerCount)}`);
   }
   return predicates;
 };
@@ -170,13 +182,13 @@ const requireInput = (input: MatchedProfileInput): void => {
 
 export const buildMatchedRacesSql = (input: MatchedProfileInput): string => {
   requireInput(input);
+  const start: string | null = windowStartYear(input);
   const predicates: string[] = [
     `concat(ra.kaisai_nen, ra.kaisai_tsukihi) < '${input.raceDate}'`,
-    ...(input.years === null
+    ...(start === null
       ? []
-      : [
-          `concat(ra.kaisai_nen, ra.kaisai_tsukihi) >= '${String(Number(compactDate(input.raceDate)) - input.years)}${input.raceDate.slice(4)}'`,
-        ]),
+      : [`concat(ra.kaisai_nen, ra.kaisai_tsukihi) >= '${start}${input.raceDate.slice(4)}'`]),
+    yearBoundsSql("ra", input),
     ...buildMatchedRacePredicates(input),
   ];
   return `SELECT ra.kaisai_nen, ra.kaisai_tsukihi, ra.keibajo_code, ra.race_bango
@@ -199,6 +211,7 @@ export const buildTargetProfileSql = (input: MatchedProfileInput): string => {
     ON m.kaisai_nen = se.kaisai_nen AND m.kaisai_tsukihi = se.kaisai_tsukihi
     AND m.keibajo_code = se.keibajo_code AND m.race_bango = se.race_bango
   WHERE se.kakutei_chakujun IN (${TOP3_POSITIONS})
+    AND ${yearBoundsSql("se", input)}
 )
 SELECT avg(race_time) AS target_race_time, avg(last3f) AS target_last3f,
   avg(body_weight) AS target_body_weight, avg(carried_weight) AS target_carried_weight,

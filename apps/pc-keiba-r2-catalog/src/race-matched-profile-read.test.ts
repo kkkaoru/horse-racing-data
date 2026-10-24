@@ -257,3 +257,83 @@ it("averages decoded fixture rows using each historical venue and excludes senti
     instance.closeSync();
   }
 });
+
+it("adds bare kaisai_nen bounds on every scanned table so R2 SQL prunes year partitions", () => {
+  const sql: string = buildTargetProfileSql({
+    ...input,
+    settings: { ...input.settings, includeRunnerCount: true, runnerCount: 16 },
+  });
+  expect(sql).toMatch("ra.kaisai_nen >= '2016' AND ra.kaisai_nen <= '2026'");
+  expect(sql).toMatch("AND se.kaisai_nen >= '2016' AND se.kaisai_nen <= '2026'");
+  expect(sql).toMatch("AND rc.kaisai_nen >= '2016' AND rc.kaisai_nen <= '2026') = 16");
+  const unbounded: string = buildMatchedRacesSql({ ...input, years: null });
+  expect(unbounded).toMatch("< '20260920' AND ra.kaisai_nen <= '2026' AND ra.keibajo_code");
+  expect(unbounded).not.toMatch("kaisai_nen >=");
+});
+
+const PROFILE_FIXTURE: string = `WITH
+  race_dates AS (
+    SELECT * FROM (VALUES
+      ('2015', '1231'), ('2016', '0919'), ('2016', '0920'), ('2021', '0601'),
+      ('2026', '0919'), ('2026', '0920'), ('2027', '0101')
+    ) AS v(kaisai_nen, kaisai_tsukihi)
+  ),
+  race_rows AS (
+    SELECT kaisai_nen, kaisai_tsukihi, '06' AS keibajo_code, '01' AS race_bango FROM race_dates
+  ),
+  runner_rows AS (
+    SELECT r.kaisai_nen, r.kaisai_tsukihi, '01' AS race_bango, '06' AS keibajo_code,
+      p.kakutei_chakujun, p.soha_time, '480' AS bataiju, '550' AS futan_juryo,
+      '345' AS kohan_3f, '001' AS time_sa
+    FROM race_dates r
+    CROSS JOIN (VALUES ('01', '1345'), ('02', '1350'), ('03', '1352'), ('04', '1400'))
+      AS p(kakutei_chakujun, soha_time)
+  ), `;
+const YEAR_BOUND: RegExp =
+  /(?: AND |\n {4}AND |\n {6}AND )?\b(?:ra|se|rc)\.kaisai_nen [<>]= '\d+'/gu;
+
+it.each([
+  { years: 10, matched: 9n },
+  { years: 5, matched: 3n },
+  { years: null, matched: 15n },
+])("returns the same profile with and without the year bounds (years=$years)", async (window) => {
+  const instance = await DuckDBInstance.create(":memory:");
+  const connection = await instance.connect();
+  const run = async (sql: string): Promise<Record<string, unknown>[]> =>
+    (
+      await connection.runAndReadAll(
+        `${PROFILE_FIXTURE}${sql
+          .replace(/^WITH /u, "")
+          .replaceAll("pc_keiba.jvd_ra", "race_rows")
+          .replaceAll("pc_keiba.jvd_se", "runner_rows")}`,
+      )
+    ).getRowObjects();
+  try {
+    await connection.run("CREATE MACRO btrim(value) AS trim(value)");
+    const sql: string = buildTargetProfileSql({
+      ...input,
+      years: window.years,
+      settings: {
+        ...input.settings,
+        includeVenue: false,
+        includeDistance: false,
+        includeAge: false,
+        includeClass: false,
+        includeConditionKey: false,
+        includeTrackCode: false,
+        includeGrade: false,
+        includeRaceTitle: false,
+        includeRunnerCount: true,
+        runnerCount: 4,
+      },
+    });
+    const stripped: string = sql.replaceAll(YEAR_BOUND, "");
+    expect(stripped).not.toMatch(/\b(?:ra|se|rc)\.kaisai_nen [<>]=/u);
+    const bounded: Record<string, unknown>[] = await run(sql);
+    expect(bounded).toStrictEqual(await run(stripped));
+    expect(bounded[0]?.matched_runners).toBe(window.matched);
+  } finally {
+    connection.closeSync();
+    instance.closeSync();
+  }
+});
