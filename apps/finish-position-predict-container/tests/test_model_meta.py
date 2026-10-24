@@ -975,3 +975,39 @@ def test_assert_no_banned_market_features_keeps_deviation_columns_for_nar() -> N
         context="variant=x",
         category="nar",
     )
+
+
+def test_named_race_cell_boosters_record_metadata_feature_order() -> None:
+    # A CatBoost model saved without feature names fails the serving feature-order
+    # check, so the whole named cell silently falls back to the category default.
+    root = Path(__file__).resolve().parent.parent
+    cells = json.loads(
+        (root / "src/predict_lib/named_race_cells.json").read_text(encoding="utf-8")
+    )["jra"]
+    versions = sorted(
+        {
+            str(cell[field])
+            for cell in cells
+            for field in ("model_version", "rerank_model_version", "lock_blend_model_version")
+            if field in cell
+        }
+    )
+    mismatched = [
+        version
+        for version in versions
+        if [
+            feature["feature_id"]
+            for feature in json.loads(
+                (root / f"models/finish-position/jra/{version}/model.json").read_text(
+                    encoding="utf-8"
+                )
+            )["features_info"]["float_features"]
+        ]
+        != json.loads(
+            (root / f"models/finish-position/jra/{version}/metadata.json").read_text(
+                encoding="utf-8"
+            )
+        )["feature_names"]
+    ]
+
+    assert mismatched == []
