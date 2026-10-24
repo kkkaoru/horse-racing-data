@@ -84,7 +84,8 @@ def test_attach_source_catalog_attaches_r2_catalog_read_only(
         "(type iceberg, token 'catalog-token')",
         "attach 'warehouse' as catalog_raw (type iceberg, "
         "endpoint 'https://catalog.example.test', "
-        "secret finish_position_r2_catalog, default_schema 'pc_keiba', read_only)",
+        "secret finish_position_r2_catalog, default_schema 'pc_keiba', read_only, "
+        "max_table_staleness '5 minutes')",
         "create schema pg",
     ]
     assert "create view pg.jvd_se as select * from catalog_raw.jvd_se" in con.statements
@@ -114,6 +115,23 @@ def test_attach_source_catalog_attaches_r2_catalog_read_only(
         "create view pg.race_running_style_model_predictions as" in con.statements[-1]
     )
     assert "from catalog_raw.race_running_style_model_predictions" in con.statements[-1]
+
+
+def test_attach_source_catalog_live_connection_opts_out_of_table_reuse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R2_CATALOG_WAREHOUSE", "warehouse")
+    monkeypatch.setenv("R2_CATALOG_URI", "https://catalog.example.test")
+    monkeypatch.setenv("R2_CATALOG_TOKEN", "catalog-token")
+    con = FakeConn()
+
+    attach_source_catalog(con, "r2-catalog://", max_table_staleness=None)
+
+    assert con.statements[5] == (
+        "attach 'warehouse' as catalog_raw (type iceberg, "
+        "endpoint 'https://catalog.example.test', "
+        "secret finish_position_r2_catalog, default_schema 'pc_keiba', read_only)"
+    )
 
 
 def test_raw_race_entry_view_counts_only_valid_runners() -> None:
@@ -232,5 +250,6 @@ def test_attach_source_catalog_escapes_catalog_sql_literals(
     assert con.statements[5] == (
         "attach 'ware''house' as catalog_raw (type iceberg, "
         "endpoint 'https://catalog.example.test/a''b', "
-        "secret finish_position_r2_catalog, default_schema 'pc_keiba', read_only)"
+        "secret finish_position_r2_catalog, default_schema 'pc_keiba', read_only, "
+        "max_table_staleness '5 minutes')"
     )

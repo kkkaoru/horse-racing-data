@@ -4899,11 +4899,13 @@ def test_shared_catalog_connection_reuses_attachment(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(duckdb, "connect", fake_connect)
     monkeypatch.setattr(pipeline_runner, "_CATALOG_CONNECTION_CACHE", {})
 
-    attached: list[str] = []
+    attached: list[tuple[str, str | None]] = []
     fake_module = types.ModuleType("_catalog_attach")
 
-    def _record_attach(_connection: object, database_url: str) -> None:
-        attached.append(database_url)
+    def _record_attach(
+        _connection: object, database_url: str, *, max_table_staleness: str | None
+    ) -> None:
+        attached.append((database_url, max_table_staleness))
 
     fake_module.__dict__["attach_source_catalog"] = _record_attach
     monkeypatch.setitem(sys.modules, "_catalog_attach", fake_module)
@@ -4912,7 +4914,7 @@ def test_shared_catalog_connection_reuses_attachment(monkeypatch: pytest.MonkeyP
     second = pipeline_runner.query_race_names("r2-catalog://pc-keiba", race_ids)
     assert first == second != {}
     assert connects == 1
-    assert attached == ["r2-catalog://pc-keiba"]
+    assert attached == [("r2-catalog://pc-keiba", None)]
 
 
 def test_query_race_names_skips_empty_catalog_row(monkeypatch: pytest.MonkeyPatch) -> None:

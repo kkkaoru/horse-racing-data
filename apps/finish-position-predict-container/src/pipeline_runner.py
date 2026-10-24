@@ -738,7 +738,8 @@ def _shared_catalog_connection(database_url: str) -> duckdb.DuckDBPyConnection:
                 cached[1].close()
         connection = connect(":memory:")
         try:
-            attach_source_catalog(connection, database_url)
+            # Live freshness checks must see every new snapshot, so no reuse window.
+            attach_source_catalog(connection, database_url, max_table_staleness=None)
         except Exception:
             with suppress(Exception):
                 connection.close()
