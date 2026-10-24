@@ -259,6 +259,7 @@ const safeBets = async (env: Env, url: URL, match: RegExpExecArray): Promise<Out
       budget,
       types,
       target,
+      requireAll: url.searchParams.get("requireAll") === "1",
     });
   } catch (error) {
     console.error("clef bets failed", url.pathname, String(error));

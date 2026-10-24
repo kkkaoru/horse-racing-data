@@ -11,6 +11,7 @@ import {
   type BetSuggestion,
   type BetType,
   type RunnerProfile,
+  type SuggestInput,
 } from "./bets";
 import { latestBase, parseBasePredictions, toBaseRanks } from "./fuse";
 
@@ -36,6 +37,8 @@ export interface BetRaceAddress {
   types: ReadonlySet<BetType> | null;
   // Profit in yen every winning ticket must clear over the budget; null means no target.
   target: number | null;
+  // Every selected bet type with odds must appear in the suggestion.
+  requireAll: boolean;
 }
 
 export interface BetOutcome {
@@ -169,7 +172,7 @@ const answerKey = (race: BetRaceAddress, baseGeneratedAt: string, signature: str
 
 // The all-types key carries no type list, so the cron warm serves the default view.
 const resultKey = (race: BetRaceAddress): string =>
-  `clefbet:v3:result:${raceSuffix(race)}:${String(race.budget)}:t${String(race.target ?? "-")}${race.types === null ? "" : `:${[...race.types].toSorted().join(",")}`}`;
+  `clefbet:v3:result:${raceSuffix(race)}:${String(race.budget)}:t${String(race.target ?? "-")}${race.types === null ? "" : `:${[...race.types].toSorted().join(",")}`}${race.requireAll ? ":all" : ""}`;
 
 // Results are written only by suggestRaceBets, so matching cache keys are trusted as BetResponse.
 const isBetResponse = (value: unknown): value is BetResponse =>
@@ -180,17 +183,27 @@ const isBetResponse = (value: unknown): value is BetResponse =>
   "suggestion" in value &&
   "runners" in value;
 
-const TARGET_UNREACHABLE: string = "target-unreachable";
-const UNREACHABLE_BODY = {
-  error: "no ticket reaches the target profit within the budget",
-  reason: TARGET_UNREACHABLE,
+type UnfitReason = "target-unreachable" | "required-types-unfit";
+
+const UNFIT_BODIES: Record<UnfitReason, { error: string; reason: UnfitReason }> = {
+  "target-unreachable": {
+    error: "no ticket reaches the target profit within the budget",
+    reason: "target-unreachable",
+  },
+  "required-types-unfit": {
+    error: "the selected bet types cannot all fit the budget and target",
+    reason: "required-types-unfit",
+  },
 };
 
-export const isTargetUnreachable = (value: unknown): boolean =>
-  typeof value === "object" &&
-  value !== null &&
-  "reason" in value &&
-  value.reason === TARGET_UNREACHABLE;
+const isUnfitReason = (value: unknown): value is UnfitReason =>
+  value === "target-unreachable" || value === "required-types-unfit";
+
+// Odds exist, but the budget, target or required bet types leave no suggestion.
+export const unfitReasonOf = (value: unknown): UnfitReason | null =>
+  typeof value === "object" && value !== null && "reason" in value && isUnfitReason(value.reason)
+    ? value.reason
+    : null;
 
 const matchesSnapshot = (
   value: object,
@@ -201,7 +214,7 @@ const matchesSnapshot = (
   "baseGeneratedAt" in value &&
   value.baseGeneratedAt === fresh.baseGeneratedAt;
 
-// An unreachable target is cached like a suggestion, so repeat views of the same odds snapshot
+// An unfit budget or target is cached like a suggestion, so repeat views of the same odds snapshot
 // skip the viewer's sections too.
 const readCachedResult = async (
   env: BetEnv,
@@ -210,7 +223,8 @@ const readCachedResult = async (
 ): Promise<BetOutcome | null> => {
   const cached = parseJson(await env.DETAIL_SECTION_CACHE_KV.get(resultKey(race)));
   if (typeof cached !== "object" || cached === null || !matchesSnapshot(cached, fresh)) return null;
-  if (isTargetUnreachable(cached)) return { status: 404, body: UNREACHABLE_BODY };
+  const reason = unfitReasonOf(cached);
+  if (reason !== null) return { status: 404, body: UNFIT_BODIES[reason] };
   return isBetResponse(cached) ? { status: 200, body: cached } : null;
 };
 
@@ -229,6 +243,17 @@ const loadAnswers = async (
       expirationTtl: ANSWER_TTL_SECONDS,
     });
   return answers;
+};
+
+// Explains a missing suggestion: dropping the required-all rule or the target would have left one.
+const diagnoseUnfit = (input: SuggestInput): UnfitReason | null => {
+  const { target, ...untargeted } = input;
+  if (input.requireAll === true && suggestPlans({ ...input, requireAll: false }) !== null)
+    return "required-types-unfit";
+  if (target !== undefined && suggestPlans(untargeted) !== null) return "target-unreachable";
+  return input.requireAll === true && suggestPlans({ ...untargeted, requireAll: false }) !== null
+    ? "required-types-unfit"
+    : null;
 };
 
 // Every generated suggestion is cached per odds snapshot and budget, so repeat views and the
@@ -259,19 +284,23 @@ export const suggestRaceBets = async (env: BetEnv, race: BetRaceAddress): Promis
     race: built,
     answers,
     budget: race.budget,
+    requireAll: race.requireAll,
     ...(race.types === null ? {} : { types: race.types }),
   };
-  const plans = suggestPlans({
-    ...selection,
-    ...(race.target === null ? {} : { target: race.target }),
-  });
-  if (plans === null && suggestPlans(selection) !== null) {
+  const targeted = { ...selection, ...(race.target === null ? {} : { target: race.target }) };
+  const plans = suggestPlans(targeted);
+  const reason = plans === null ? diagnoseUnfit(targeted) : null;
+  if (reason !== null) {
     await env.DETAIL_SECTION_CACHE_KV.put(
       resultKey(race),
-      JSON.stringify({ ...UNREACHABLE_BODY, oddsFetchedAt: built.oddsFetchedAt, baseGeneratedAt }),
+      JSON.stringify({
+        ...UNFIT_BODIES[reason],
+        oddsFetchedAt: built.oddsFetchedAt,
+        baseGeneratedAt,
+      }),
       { expirationTtl: ANSWER_TTL_SECONDS },
     );
-    return { status: 404, body: UNREACHABLE_BODY };
+    return { status: 404, body: UNFIT_BODIES[reason] };
   }
   if (plans === null) return { status: 404, body: { error: "no ticket has published odds" } };
   const body: BetResponse = {
@@ -294,23 +323,30 @@ export const suggestRaceBets = async (env: BetEnv, race: BetRaceAddress): Promis
   return { status: 200, body };
 };
 
-const warmedKey = (race: Omit<BetRaceAddress, "budget" | "types" | "target">): string =>
-  `clefbet:v3:warmed:${race.ymd}:${race.keibajoCode}:${race.raceBango}`;
+const warmedKey = (
+  race: Omit<BetRaceAddress, "budget" | "types" | "target" | "requireAll">,
+): string => `clefbet:v3:warmed:${race.ymd}:${race.keibajoCode}:${race.raceBango}`;
 
 // Cron path: regenerate the default-budget suggestion only for races whose served prediction
 // was (re)generated since the last warm, including the post-horse-weight rescore.
 export const warmRaceBets = async (
   env: BetEnv,
-  race: Omit<BetRaceAddress, "budget" | "types" | "target">,
+  race: Omit<BetRaceAddress, "budget" | "types" | "target" | "requireAll">,
 ): Promise<number> => {
-  const target = { ...race, budget: DEFAULT_BUDGET, types: null, target: DEFAULT_TARGET };
+  const target = {
+    ...race,
+    budget: DEFAULT_BUDGET,
+    types: null,
+    target: DEFAULT_TARGET,
+    requireAll: false,
+  };
   const [{ baseGeneratedAt }, warmed] = await Promise.all([
     loadRanks(env, target),
     env.DETAIL_SECTION_CACHE_KV.get(warmedKey(race)),
   ]);
   if (baseGeneratedAt === "" || warmed === baseGeneratedAt) return 304;
   const outcome = await suggestRaceBets(env, target);
-  if (outcome.status === 200 || isTargetUnreachable(outcome.body))
+  if (outcome.status === 200 || unfitReasonOf(outcome.body) !== null)
     await env.DETAIL_SECTION_CACHE_KV.put(warmedKey(race), baseGeneratedAt, {
       expirationTtl: ANSWER_TTL_SECONDS,
     });

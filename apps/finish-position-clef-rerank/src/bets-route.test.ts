@@ -18,6 +18,7 @@ const race = {
   budget: 500,
   types: null,
   target: null,
+  requireAll: false,
 };
 
 const heatmapPath = "/api/races/2026/10/18/08/11/sections/win-rate-heatmap?source=jra";
@@ -508,4 +509,85 @@ it("serves a cached unreachable target for the same odds snapshot", async () => 
     },
   });
   expect(env.AI.run).toHaveBeenCalledTimes(0);
+});
+
+it("caches a required-all suggestion under its own key", async () => {
+  const env = makeEnv({}, { [heatmapPath]: heatmap, [realtimePath]: realtime });
+  const outcome = await suggestRaceBets(env, { ...race, requireAll: true });
+  expect(outcome.status).toBe(200);
+  expect(vi.mocked(env.DETAIL_SECTION_CACHE_KV.put).mock.calls.at(-1)?.[0]).toBe(
+    "clefbet:v3:result:20261018:08:11:500:t-:all",
+  );
+});
+
+it("reports and caches required bet types that cannot all reach the target", async () => {
+  const env = makeEnv({}, { [heatmapPath]: heatmap, [realtimePath]: realtime });
+  expect(await suggestRaceBets(env, { ...race, target: 400, requireAll: true })).toStrictEqual({
+    status: 404,
+    body: {
+      error: "the selected bet types cannot all fit the budget and target",
+      reason: "required-types-unfit",
+    },
+  });
+  expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenLastCalledWith(
+    "clefbet:v3:result:20261018:08:11:500:t400:all",
+    JSON.stringify({
+      error: "the selected bet types cannot all fit the budget and target",
+      reason: "required-types-unfit",
+      oddsFetchedAt: "2026-10-18T09:00:00+09:00",
+      baseGeneratedAt: "",
+    }),
+    { expirationTtl: 259200 },
+  );
+});
+
+it("serves cached required bet types that cannot all fit", async () => {
+  const env = makeEnv(
+    {
+      "clefbet:v3:result:20261018:08:11:500:t400:all": JSON.stringify({
+        reason: "required-types-unfit",
+        oddsFetchedAt: "2026-10-18T09:00:00+09:00",
+        baseGeneratedAt: "",
+      }),
+    },
+    { [realtimePath]: realtime },
+  );
+  expect(await suggestRaceBets(env, { ...race, target: 400, requireAll: true })).toStrictEqual({
+    status: 404,
+    body: {
+      error: "the selected bet types cannot all fit the budget and target",
+      reason: "required-types-unfit",
+    },
+  });
+});
+
+it("reports required bet types without a fitting plan even with no target", async () => {
+  const env = makeEnv(
+    {},
+    {
+      [heatmapPath]: heatmap,
+      [realtimePath]: {
+        odds: {
+          fetchedAt: "t",
+          latest: {
+            ...realtime.odds.latest,
+            "3rentan": [{ combination: "1-2-3", odds: 30 }],
+          },
+        },
+      },
+    },
+  );
+  expect(
+    await suggestRaceBets(env, {
+      ...race,
+      types: new Set(["tansho", "fukusho", "3rentan"]),
+      requireAll: true,
+    }),
+  ).toStrictEqual({
+    status: 404,
+    body: {
+      error: "the selected bet types cannot all fit the budget and target",
+      reason: "required-types-unfit",
+    },
+  });
 });

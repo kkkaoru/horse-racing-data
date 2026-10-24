@@ -1144,7 +1144,7 @@ it("gives each ticket at least the units that reach the target profit", () => {
   ]);
 });
 
-it("sizes every ticket so a hit clears the whole budget by the target profit", () => {
+it("stakes the whole suggestion so every finishing order that hits clears the target", () => {
   const result = suggestPlans({
     race: { runners: runners(), odds: planOdds(), ranks: ranks() },
     answers: {
@@ -1155,9 +1155,9 @@ it("sizes every ticket so a hit clears the whole budget by the target profit", (
       betType: { umaren: 0.6, tansho: 0.4 },
     },
     budget: 1000,
-    target: 500,
+    target: 1000,
   });
-  expect(result?.totalStake).toBe(500);
+  expect(result?.totalStake).toBe(1000);
   expect(
     result?.plans.map((plan) => ({
       betType: plan.betType,
@@ -1167,14 +1167,16 @@ it("sizes every ticket so a hit clears the whole budget by the target profit", (
     {
       betType: "umaren",
       tickets: [
-        [[1, 2], 300, 1500],
-        [[1, 3], 200, 1800],
+        [[1, 2], 400, 2000],
+        [[1, 3], 300, 2700],
+        [[1, 4], 100, 2000],
       ],
     },
+    { betType: "tansho", tickets: [[[1], 200, 400]] },
   ]);
 });
 
-it("returns null when no ticket can reach the target profit within the budget", () => {
+it("returns null when no finishing order can reach the target profit within the budget", () => {
   expect(
     suggestPlans({
       race: { runners: runners(), odds: planOdds(), ranks: ranks() },
@@ -1186,7 +1188,115 @@ it("returns null when no ticket can reach the target profit within the budget", 
         betType: { umaren: 0.6, tansho: 0.4 },
       },
       budget: 1000,
-      target: 1000,
+      target: 3000,
     }),
   ).toBeNull();
+});
+
+it("includes every selected bet type when all are required", () => {
+  expect(
+    suggestPlans({
+      race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+      answers: {
+        winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+        top3: {},
+        axis: { "1": 1 },
+        style: { nagashi: 0.7, box: 0.3 },
+        betType: { umaren: 0.6, tansho: 0.4 },
+      },
+      budget: 1000,
+      types: new Set(["tansho", "umaren", "fukusho"]),
+      requireAll: true,
+    })?.plans.map((plan) => [plan.betType, plan.totalStake]),
+  ).toStrictEqual([
+    ["umaren", 500],
+    ["tansho", 300],
+    ["fukusho", 200],
+  ]);
+});
+
+it("returns null when a required bet type does not fit the budget", () => {
+  expect(
+    suggestPlans({
+      race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+      answers: {
+        winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+        top3: {},
+        axis: { "1": 1 },
+        style: { nagashi: 0.7, box: 0.3 },
+        betType: { umaren: 0.6, tansho: 0.4 },
+      },
+      budget: 1000,
+      requireAll: true,
+    }),
+  ).toBeNull();
+});
+
+const allPairs = ["1-2", "1-3", "1-4", "2-3", "2-4", "3-4"];
+const orderedPairs = [
+  "1-2",
+  "2-1",
+  "1-3",
+  "3-1",
+  "1-4",
+  "4-1",
+  "2-3",
+  "3-2",
+  "2-4",
+  "4-2",
+  "3-4",
+  "4-3",
+];
+const trios = ["1-2-3", "1-2-4", "1-3-4", "2-3-4"];
+const orderedTrios = trios.flatMap((trio) => {
+  const [a, b, c] = trio.split("-");
+  return [
+    `${a}-${b}-${c}`,
+    `${a}-${c}-${b}`,
+    `${b}-${a}-${c}`,
+    `${b}-${c}-${a}`,
+    `${c}-${a}-${b}`,
+    `${c}-${b}-${a}`,
+  ];
+});
+const entries = (combinations: readonly string[], odds: number) =>
+  combinations.map((combination) => ({ combination, odds, minOdds: null, maxOdds: null }));
+
+it("checks every bet type's hits when the target covers all eight types", () => {
+  const result = suggestPlans({
+    race: {
+      runners: frameRunners(),
+      odds: {
+        tansho: entries(["1", "2", "3", "4"], 30),
+        fukusho: entries(["1", "2", "3", "4"], 15),
+        wide: entries(allPairs, 40),
+        wakuren: entries(["1-1", "1-2", "2-2"], 60),
+        umaren: entries(allPairs, 80),
+        umatan: entries(orderedPairs, 160),
+        "3renpuku": entries(trios, 200),
+        "3rentan": entries(orderedTrios, 800),
+      },
+      ranks: ranks(),
+    },
+    answers: {
+      winner: { "1": 0.4, "2": 0.3, "3": 0.2, "4": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { nagashi: 1 },
+      betType: { tansho: 0.3, umaren: 0.2 },
+    },
+    budget: 100000,
+    target: 0,
+    requireAll: true,
+  });
+  expect(result?.plans.map((plan) => plan.betType)).toStrictEqual([
+    "tansho",
+    "umaren",
+    "fukusho",
+    "wide",
+    "umatan",
+    "3renpuku",
+    "3rentan",
+    "wakuren",
+  ]);
 });

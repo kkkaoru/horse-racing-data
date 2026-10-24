@@ -83,8 +83,11 @@ export interface SuggestInput {
   budget: number;
   // Bet types the viewer selected; absent means every type with odds.
   types?: ReadonlySet<BetType>;
-  // Profit in yen every winning ticket must clear over the whole budget; absent means none.
+  // Profit in yen that every finishing order hitting a ticket must clear over the whole budget,
+  // counting all tickets it hits; absent means none.
   target?: number;
+  // Every selected bet type with odds must be part of the suggestion.
+  requireAll?: boolean;
 }
 
 interface Candidate {
@@ -886,24 +889,199 @@ const splitUnits = (weights: readonly number[], units: number): number[] => {
   return base.map((value, index) => (index === 0 ? value + units - used : value));
 };
 
-// Units a ticket needs so that, if it wins, its payout clears the whole budget by the target.
-const targetMinimumUnits =
-  (budget: number, target: number | undefined) =>
-  (candidate: Candidate): number =>
-    target === undefined
-      ? 1
-      : Math.max(1, Math.ceil((budget + target) / (UNIT_YEN * candidate.odds)));
+interface PricedTicket {
+  betType: BetType;
+  candidate: Candidate;
+}
+
+interface TargetContext {
+  tickets: readonly PricedTicket[];
+  sets: readonly number[][];
+  units: number;
+  need: number;
+}
+
+interface TargetInput {
+  plans: readonly BetSuggestion[];
+  race: Pick<BetRace, "runners">;
+  budget: number;
+  target: number;
+}
+
+const TOP_PLACES: number = 3;
+
+const ticketHits = (
+  betType: BetType,
+  horses: readonly number[],
+  order: readonly number[],
+  frames: ReadonlyMap<number, number>,
+): boolean => {
+  const top2 = new Set(order.slice(0, 2));
+  const top3 = new Set(order);
+  const table: Record<BetType, () => boolean> = {
+    tansho: () => horses[0] === order[0],
+    fukusho: () => top3.has(horses[0] ?? 0),
+    wide: () => horses.every((horse) => top3.has(horse)),
+    umaren: () => horses.every((horse) => top2.has(horse)),
+    umatan: () => horses[0] === order[0] && horses[1] === order[1],
+    wakuren: () => frameKey(frames, order.slice(0, 2)) === horses.join("-"),
+    "3renpuku": () => horses.every((horse) => top3.has(horse)),
+    "3rentan": () => horses.every((horse, index) => order[index] === horse),
+  };
+  return table[betType]();
+};
+
+// The distinct groups of tickets a single finishing order pays out together.
+const hitSets = (tickets: readonly PricedTicket[], race: Pick<BetRace, "runners">): number[][] => {
+  const frames = frameMap(race);
+  const horses = race.runners.map((runner) => runner.horseNumber);
+  const orders = subsets(horses, Math.min(TOP_PLACES, horses.length)).flatMap(permutations);
+  return [
+    ...new Map(
+      orders
+        .map((order) =>
+          tickets.flatMap((ticket, index) =>
+            ticketHits(ticket.betType, ticket.candidate.horses, order, frames) ? [index] : [],
+          ),
+        )
+        .filter((set) => set.length > 0)
+        .map((set) => [set.join(","), set]),
+    ).values(),
+  ];
+};
+
+const setPayout = (
+  context: TargetContext,
+  units: readonly number[],
+  set: readonly number[],
+): number =>
+  set.reduce(
+    (sum, index) =>
+      sum +
+      Math.floor((units[index] ?? 0) * UNIT_YEN * (context.tickets[index]?.candidate.odds ?? 0)),
+    0,
+  );
+
+const compareOddsIndex =
+  (context: TargetContext) =>
+  (best: number, index: number): number =>
+    (context.tickets[index]?.candidate.odds ?? 0) > (context.tickets[best]?.candidate.odds ?? 0)
+      ? index
+      : best;
+
+// Raises the worst-paying finishing order until every order that hits a ticket returns the
+// budget plus the target, adding units to its highest-odds ticket; null when the budget runs out.
+const raiseToTarget = (context: TargetContext, units: readonly number[]): number[] | null => {
+  const worst = context.sets.reduce<number[] | null>(
+    (lowest, set) =>
+      lowest === null || setPayout(context, units, set) < setPayout(context, units, lowest)
+        ? set
+        : lowest,
+    null,
+  );
+  const used = units.reduce((sum, count) => sum + count, 0);
+  if (worst === null || setPayout(context, units, worst) >= context.need) return [...units];
+  const best = worst.reduce(compareOddsIndex(context), worst[0] ?? 0);
+  const odds = context.tickets[best]?.candidate.odds ?? 0;
+  const add = Math.ceil((context.need - setPayout(context, units, worst)) / (UNIT_YEN * odds));
+  return used + add > context.units
+    ? null
+    : raiseToTarget(
+        context,
+        units.map((count, index) => (index === best ? count + add : count)),
+      );
+};
+
+const toTicket = (candidate: Candidate, count: number): BetTicket => ({
+  horses: candidate.horses,
+  odds: candidate.odds,
+  maxOdds: candidate.maxOdds,
+  probability: candidate.probability,
+  stake: count * UNIT_YEN,
+  payout: Math.floor(count * UNIT_YEN * candidate.odds),
+  payoutMax: candidate.maxOdds === null ? null : Math.floor(count * UNIT_YEN * candidate.maxOdds),
+});
+
+// Re-stakes every ticket of every plan together so that the whole suggestion, not each ticket,
+// reaches the target; spare units still follow 1/odds.
+const applyTarget = ({ plans, race, budget, target }: TargetInput): BetSuggestion[] | null => {
+  const grouped = plans.map((plan) =>
+    plan.tickets.map((ticket) => ({
+      betType: plan.betType,
+      candidate: {
+        horses: ticket.horses,
+        odds: ticket.odds,
+        maxOdds: ticket.maxOdds,
+        probability: ticket.probability,
+      },
+    })),
+  );
+  const tickets = grouped.flat();
+  const units = Math.floor(budget / UNIT_YEN);
+  const context = { tickets, sets: hitSets(tickets, race), units, need: budget + target };
+  const minimums =
+    tickets.length > units
+      ? null
+      : raiseToTarget(
+          context,
+          tickets.map(() => 1),
+        );
+  if (minimums === null) return null;
+  const minimumOf = new Map(
+    tickets.map((ticket, index) => [ticket.candidate, minimums[index] ?? 1]),
+  );
+  const counts = new Map(
+    allocateUnits(
+      tickets.map((ticket) => ticket.candidate),
+      units,
+      (candidate) => minimumOf.get(candidate) ?? 1,
+    ).map((allocation) => [allocation.candidate, allocation.units]),
+  );
+  return plans.map((plan, index) => {
+    const restaked = (grouped[index] ?? []).map((ticket) =>
+      toTicket(ticket.candidate, counts.get(ticket.candidate) ?? 0),
+    );
+    const totalStake = restaked.reduce((sum, ticket) => sum + ticket.stake, 0);
+    return {
+      ...plan,
+      budget: totalStake,
+      totalStake,
+      expectedReturn: Math.round(
+        restaked.reduce((sum, ticket) => sum + ticket.probability * ticket.payout, 0),
+      ),
+      tickets: restaked,
+    };
+  });
+};
 
 interface RequiredPlanInput {
+  requireAll: boolean;
   profitTarget: number | undefined;
   selected: ReadonlySet<BetType> | undefined;
   typeCount: number;
 }
 
-// A profit target may leave room for only one bet type, which is still a valid suggestion.
-const requiredPlanCount = ({ profitTarget, selected, typeCount }: RequiredPlanInput): number => {
+// A profit target may leave room for only one bet type, which is still a valid suggestion,
+// unless every selected type is required.
+const requiredPlanCount = ({
+  requireAll,
+  profitTarget,
+  selected,
+  typeCount,
+}: RequiredPlanInput): number => {
+  if (requireAll) return typeCount;
   if (profitTarget !== undefined) return 1;
   return selected === undefined ? MIN_PLAN_TYPES : Math.min(typeCount, MIN_PLAN_TYPES);
+};
+
+interface FitInput extends Omit<TargetInput, "plans"> {
+  required: number;
+}
+
+// Drops the lowest-ranked bet type until the rest can reach the target together.
+const fitTarget = (plans: readonly BetSuggestion[], input: FitInput): BetSuggestion[] | null => {
+  if (plans.length < Math.max(input.required, 1)) return null;
+  return applyTarget({ ...input, plans }) ?? fitTarget(plans.slice(0, -1), input);
 };
 
 export const suggestPlans = ({
@@ -912,6 +1090,7 @@ export const suggestPlans = ({
   budget,
   types: selected,
   target: profitTarget,
+  requireAll = false,
 }: SuggestInput): BetPlanSet | null => {
   const p = winProbabilities(race, answers.winner);
   const order = [...p].toSorted(compareWinDesc).map(([horse]) => horse);
@@ -920,23 +1099,21 @@ export const suggestPlans = ({
   const units = Math.floor(budget / UNIT_YEN);
   const types = rankedTypes(race, answers, selected ?? new Set(BET_TYPES));
   const styles = rankedStyles(answers);
-  const target = Math.min(
-    types.length,
-    units,
-    PLAN_COUNT_STEPS.find(([threshold]) => units >= threshold)?.[1] ?? 2,
-  );
+  const target = requireAll
+    ? types.length
+    : Math.min(
+        types.length,
+        units,
+        PLAN_COUNT_STEPS.find(([threshold]) => units >= threshold)?.[1] ?? 2,
+      );
+  // A required type the answers rank low still needs room for its tickets, so the split is
+  // nearly even when every selected type must appear.
   const shares = splitUnits(
-    types.slice(0, target).map((type) => answers.betType[type] ?? 0),
+    types.slice(0, target).map((type) => (requireAll ? 1 : 0) + (answers.betType[type] ?? 0)),
     units,
   );
-  const context: PlanContext = {
-    race,
-    p,
-    order,
-    axis,
-    minimumUnits: targetMinimumUnits(budget, profitTarget),
-  };
-  const { plans } = types.reduce<PlanAccumulator>(
+  const context: PlanContext = { race, p, order, axis, minimumUnits: () => 1 };
+  const { plans: built } = types.reduce<PlanAccumulator>(
     (acc, betType, index) => {
       const slotUnits = (shares[index] ?? 0) + acc.carry;
       if (acc.plans.length >= target || slotUnits < 1) return acc;
@@ -952,12 +1129,17 @@ export const suggestPlans = ({
     },
     { plans: [], carry: 0 },
   );
-  const [first, ...rest] = plans;
   const required = requiredPlanCount({
+    requireAll,
     profitTarget,
     selected,
     typeCount: types.length,
   });
+  const plans =
+    profitTarget === undefined || built.length < required
+      ? built
+      : (fitTarget(built, { race, budget, target: profitTarget, required }) ?? []);
+  const [first, ...rest] = plans;
   return first === undefined || plans.length < required
     ? null
     : {

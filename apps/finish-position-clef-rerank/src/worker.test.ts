@@ -388,17 +388,17 @@ it("serves bet suggestions with the requested budget", async () => {
     style: "single",
     axis: 1,
     legs: [[1]],
-    budget: 200,
-    totalStake: 200,
-    expectedReturn: 241,
+    budget: 300,
+    totalStake: 300,
+    expectedReturn: 361,
     tickets: [
       {
         horses: [1],
         odds: 2,
         maxOdds: null,
         probability: 0.6021800615402064,
-        stake: 200,
-        payout: 400,
+        stake: 300,
+        payout: 600,
         payoutMax: null,
       },
     ],
@@ -424,6 +424,50 @@ it("rejects a target profit that is not whole yen", async () => {
   expect(response.status).toBe(400);
   expect(await response.json()).toStrictEqual({
     error: "target must be whole yen from 0 to 10000000",
+  });
+});
+
+it("passes the required-all switch to the bet suggestion", async () => {
+  const env = makeEnv({});
+  vi.mocked(env.VIEWER.fetch).mockImplementation(async (request: Request) =>
+    request.url.includes("win-rate-heatmap")
+      ? Response.json({
+          runners: [
+            { umaban: "01", wakuban: "1", bamei: "A" },
+            { umaban: "02", wakuban: "2", bamei: "B" },
+          ],
+        })
+      : Response.json({
+          odds: {
+            fetchedAt: "t",
+            latest: {
+              tansho: [
+                { combination: "1", odds: 2 },
+                { combination: "2", odds: 3 },
+              ],
+              fukusho: [{ combination: "1", minOdds: 1.1, maxOdds: 1.4 }],
+            },
+          },
+        }),
+  );
+  vi.mocked(env.AI.run).mockResolvedValue({
+    answers: {
+      winner: { probabilities: { "1": 0.7, "2": 0.3 } },
+      bet_type: { probabilities: { tansho: 1 } },
+      bet_style: { probabilities: { box: 1 } },
+      axis: { probabilities: { "1": 1 } },
+      top3_1: { noul: 0.9 },
+      top3_2: { noul: 0.8 },
+    },
+  });
+  const response = await worker.fetch(
+    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=300&target=100&requireAll=1"),
+    env,
+  );
+  expect(response.status).toBe(404);
+  expect(await response.json()).toStrictEqual({
+    error: "the selected bet types cannot all fit the budget and target",
+    reason: "required-types-unfit",
   });
 });
 
