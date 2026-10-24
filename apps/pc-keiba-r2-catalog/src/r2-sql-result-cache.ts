@@ -9,6 +9,11 @@ import type { Fetcher, KvStore } from "./types";
 // scratches, runner lists) are never reused for longer than this.
 export const R2_SQL_RESULT_TTL_SECONDS: number = 20 * 60;
 const KEY_PREFIX = "r2sql-result:v1:";
+// A race day two or more JST days old no longer changes in practice, so its
+// answers may be reused for hours; yesterday, today and future days may not.
+export const SETTLED_RACE_DAY_TTL_SECONDS: number = 6 * 60 * 60;
+const SETTLED_AFTER_MS: number = 2 * 24 * 60 * 60 * 1000;
+const JST_OFFSET_MS: number = 9 * 60 * 60 * 1000;
 // Marks a replayed answer so scan metrics are not counted twice.
 export const R2_SQL_RESULT_CACHE_HEADER: string = "x-r2-sql-result-cache";
 
@@ -32,6 +37,10 @@ const isCacheableAnswer = (text: string): boolean => {
     return false;
   }
 };
+
+export const isSettledRaceDay = (date: string, nowMs: number): boolean =>
+  date <=
+  new Date(nowMs + JST_OFFSET_MS - SETTLED_AFTER_MS).toISOString().slice(0, 10).replaceAll("-", "");
 
 const resultKey = (body: string): string =>
   `${KEY_PREFIX}${createHash("sha256").update(body).digest("hex")}`;

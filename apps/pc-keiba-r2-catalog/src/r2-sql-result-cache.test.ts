@@ -1,6 +1,10 @@
 // Runs with bun via Vitest. Tests for the short-lived R2 SQL result cache.
 import { expect, it, vi } from "vitest";
-import { R2_SQL_RESULT_TTL_SECONDS, cachedR2SqlFetcher } from "./r2-sql-result-cache";
+import {
+  R2_SQL_RESULT_TTL_SECONDS,
+  cachedR2SqlFetcher,
+  isSettledRaceDay,
+} from "./r2-sql-result-cache";
 import type { Fetcher, KvStore } from "./types";
 
 const makeKv = () => {
@@ -124,4 +128,14 @@ it("passes requests through without KV or without a string body", async () => {
   await cachedR2SqlFetcher(fetchImpl, undefined)("https://r2sql.test/", init("SELECT 3"));
   await cachedR2SqlFetcher(fetchImpl, makeKv().kv)("https://r2sql.test/");
   expect(fetchImpl).toHaveBeenCalledTimes(2);
+});
+
+it("treats only race days two or more JST days old as settled", () => {
+  const justAfterJstMidnight = Date.parse("2026-10-23T15:30:00Z");
+  const justBeforeJstMidnight = Date.parse("2026-10-23T14:30:00Z");
+  expect(isSettledRaceDay("20261022", justAfterJstMidnight)).toBe(true);
+  expect(isSettledRaceDay("20261023", justAfterJstMidnight)).toBe(false);
+  expect(isSettledRaceDay("20261024", justAfterJstMidnight)).toBe(false);
+  expect(isSettledRaceDay("20261022", justBeforeJstMidnight)).toBe(false);
+  expect(isSettledRaceDay("20261021", justBeforeJstMidnight)).toBe(true);
 });

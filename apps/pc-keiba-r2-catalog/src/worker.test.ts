@@ -379,6 +379,32 @@ it("serves every per-race feature request of a day from one day-wide scan", asyn
   expect(harness.fetchCalls).toHaveLength(1);
 });
 
+it("keeps settled day-wide features for hours and recent days for the configured TTLs", async () => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-23T15:30:00Z"));
+  const harness = createHarness([featureRow()]);
+  const put = vi.spyOn(harness.env.CATALOG_KV, "put");
+  await handleRequest(
+    new Request(
+      "https://catalog.test/v1/race-features?date=20261022&source=jra&keibajoCode=5&raceBango=1",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  await handleRequest(
+    new Request(
+      "https://catalog.test/v1/race-features?date=20261023&source=jra&keibajoCode=5&raceBango=1",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(put.mock.calls.map((call) => call[2])).toStrictEqual([
+    { expirationTtl: 21600 },
+    { expirationTtl: 120 },
+  ]);
+  vi.useRealTimers();
+});
+
 it("coalesces concurrent per-race feature requests into one day-wide scan", async () => {
   const harness = createHarness([featureRow()]);
   const responses = await Promise.all([

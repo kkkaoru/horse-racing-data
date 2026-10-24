@@ -1,5 +1,10 @@
 import { gatedR2SqlFetcher } from "./r2-sql-gate";
-import { R2_SQL_RESULT_TTL_SECONDS, cachedR2SqlFetcher } from "./r2-sql-result-cache";
+import {
+  R2_SQL_RESULT_TTL_SECONDS,
+  SETTLED_RACE_DAY_TTL_SECONDS,
+  cachedR2SqlFetcher,
+  isSettledRaceDay,
+} from "./r2-sql-result-cache";
 import {
   aggregateArcBloodlines,
   arcBloodlineProfilesQuery,
@@ -1020,13 +1025,15 @@ const dayFeatureBody = async (
     );
     if (rows === null) return "";
     const dayBody = JSON.stringify({ rows });
+    // Past-day backfill lanes re-request settled days every tick.
+    const settled = isSettledRaceDay(filters.date, Date.now());
     await populateCaches(
       dependencies.cache,
       env.CATALOG_KV,
       descriptor,
       dayBody,
-      parsePositiveSeconds(env.CACHE_TTL_SECONDS, 60),
-      parsePositiveSeconds(env.KV_TTL_SECONDS, 600),
+      settled ? SETTLED_RACE_DAY_TTL_SECONDS : parsePositiveSeconds(env.CACHE_TTL_SECONDS, 60),
+      settled ? SETTLED_RACE_DAY_TTL_SECONDS : parsePositiveSeconds(env.KV_TTL_SECONDS, 600),
     );
     return dayBody;
   });
