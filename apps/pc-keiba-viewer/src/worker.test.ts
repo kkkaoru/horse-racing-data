@@ -242,6 +242,55 @@ it("fetch-delegates-to-open-next-worker", async () => {
   expect(response.status).toBe(200);
 });
 
+it("fetch rejects an expired shared race page before OpenNext", async () => {
+  vi.setSystemTime(new Date("2026-10-26T00:00:00+09:00"));
+  const env: CloudflareEnv = {
+    MCP_OAUTH_KV: {
+      delete: vi.fn<() => Promise<void>>(async () => undefined),
+      get: vi.fn<() => Promise<string>>(async () =>
+        JSON.stringify({ expiresAt: "2026-10-25T23:59:59+09:00" }),
+      ),
+      list: vi.fn<() => Promise<PcKeibaKvListResult>>().mockResolvedValue({
+        keys: [],
+        list_complete: true,
+      }),
+      put: vi.fn<() => Promise<void>>(async () => undefined),
+    },
+  };
+  const request = new Request("https://pc-keiba-viewer.kkk4oru.com/races/2026/10/25/08/11", {
+    headers: { "cf-connecting-ip": "203.0.113.1" },
+  });
+  const response = await worker.fetch(request, env, buildCtx());
+  expect(response.status).toBe(403);
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("fetch forwards an active shared race page to OpenNext with its expiry header", async () => {
+  vi.setSystemTime(new Date("2026-10-25T12:00:00+09:00"));
+  fetchMock.mockResolvedValue(new Response("ok", { status: 200 }));
+  const env: CloudflareEnv = {
+    MCP_OAUTH_KV: {
+      delete: vi.fn<() => Promise<void>>(async () => undefined),
+      get: vi.fn<() => Promise<string>>(async () =>
+        JSON.stringify({ expiresAt: "2026-10-25T23:59:59+09:00" }),
+      ),
+      list: vi.fn<() => Promise<PcKeibaKvListResult>>().mockResolvedValue({
+        keys: [],
+        list_complete: true,
+      }),
+      put: vi.fn<() => Promise<void>>(async () => undefined),
+    },
+  };
+  const request = new Request("https://pc-keiba-viewer.kkk4oru.com/races/2026/10/25/08/11", {
+    headers: { "cf-connecting-ip": "203.0.113.1" },
+  });
+  const response = await worker.fetch(request, env, buildCtx());
+  expect(response.status).toBe(200);
+  expect(fetchMock.mock.calls[0]?.[0].headers.get("x-pc-keiba-shared-until")).toBe(
+    "2026-10-25T23:59:59+09:00",
+  );
+});
+
 it("mcp finish prediction summary propagates its bounded signal to OpenNext", async () => {
   const abortedSignal = AbortSignal.abort();
   const timeoutMock = vi.spyOn(AbortSignal, "timeout").mockReturnValue(abortedSignal);

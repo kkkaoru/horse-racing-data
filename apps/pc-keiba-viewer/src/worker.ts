@@ -17,6 +17,7 @@ import type {
   RaceDetailSsrCacheWarmMessage,
 } from "./lib/race-detail-section-cache";
 import type { RaceTrendCacheWarmMessage } from "./lib/race-trend-cache";
+import { resolveSharedPageRequest } from "./lib/shared-page-access";
 import { routeWebSocketUpgradeToDurableObject } from "./lib/websocket-do-router";
 import { HEATMAP_BUILD_QUEUE_NAME, handleHeatmapBuildQueue } from "./worker/heatmap-build-queue";
 import { createSelfFetch } from "./worker/heatmap-warm-workflow";
@@ -76,8 +77,17 @@ export default {
     if (mcpResponse !== null) {
       return mcpResponse;
     }
+    const sharedRequest = await resolveSharedPageRequest({
+      kv: env.MCP_OAUTH_KV,
+      nowMs: Date.now(),
+      request,
+    });
+    if (sharedRequest instanceof Response) {
+      return sharedRequest;
+    }
     return (
-      routeWebSocketUpgradeToDurableObject(request, env) ?? openNextWorker.fetch(request, env, ctx)
+      routeWebSocketUpgradeToDurableObject(sharedRequest, env) ??
+      openNextWorker.fetch(sharedRequest, env, ctx)
     );
   },
   queue(

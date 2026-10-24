@@ -78,6 +78,7 @@ interface PaddockSectionProps {
   decodeHexHorseWeight?: boolean;
   editFooterDetailPath?: string;
   editable?: boolean;
+  hideEditLink?: boolean;
   keibajoCode: string;
   month: string;
   raceNumber: string;
@@ -1546,6 +1547,7 @@ export function PaddockSection({
   detailUrl,
   editFooterDetailPath,
   editable = false,
+  hideEditLink = false,
   keibajoCode,
   month,
   raceNumberLabel = "",
@@ -2161,7 +2163,7 @@ export function PaddockSection({
     <section className={editable ? "paddock-section paddock-section-edit" : "paddock-section"}>
       <header className="section-heading compact">
         <h2>パドック</h2>
-        {editable ? null : (
+        {editable || hideEditLink ? null : (
           <Link className="paddock-edit-link" href={editPath}>
             編集
           </Link>

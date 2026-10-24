@@ -90,6 +90,9 @@ interface RaceDetailViewProps {
   month: string;
   raceNumber: string;
   searchParams: Record<string, string | string[] | undefined>;
+  // Publicly shared through an Access bypass: other pages stay behind Access,
+  // so links to them are not rendered.
+  shared?: boolean;
   source: RaceSource;
   year: string;
 }
@@ -265,6 +268,8 @@ const tryGetWaitUntilContext = (): Promise<PcKeibaExecutionContext | null> =>
   safeGetCloudflareExecutionContext();
 
 const SLOW_SSR_READ_MS: number = 1000;
+// The root layout header holds the top-page link and the hamburger menu.
+const SHARED_PAGE_STYLE: string = ".app-header { display: none; }";
 
 // Records how long one SSR read took so slow pages name the read that held the skeleton.
 const timed = <T,>(timings: Record<string, number>, name: string, read: Promise<T>): Promise<T> => {
@@ -308,6 +313,7 @@ export async function RaceDetailView({
   month,
   raceNumber,
   searchParams,
+  shared = false,
   source: raceSource,
   year,
 }: RaceDetailViewProps) {
@@ -413,7 +419,10 @@ export async function RaceDetailView({
   const runners = enrichOfficialRunners(storedRunners, officialCard);
   const raceName = cleanText(race.kyosomeiHondai, "一般競走");
   const raceTags = getRaceTags(race);
-  const currentRaceIndex = sameVenueRaces.findIndex((item) => item.raceBango === raceNumber);
+  // A shared page has no previous/next race links.
+  const currentRaceIndex = shared
+    ? -1
+    : sameVenueRaces.findIndex((item) => item.raceBango === raceNumber);
   const previousRace = currentRaceIndex > 0 ? sameVenueRaces[currentRaceIndex - 1] : null;
   const nextRace =
     currentRaceIndex >= 0 && currentRaceIndex < sameVenueRaces.length - 1
@@ -522,18 +531,22 @@ export async function RaceDetailView({
             <span className="race-nav-icon" aria-hidden="true" />
           </Link>
         ) : null}
-        <div className="breadcrumbs">
-          <Link href="/races">開催日一覧</Link>
-          <Link href={`/races/${year}`}>{year}年</Link>
-          <Link href={`/races/${year}/${month}`}>{Number(month)}月</Link>
-          <Link href={`/races/${year}/${month}/${day}`}>
-            {formatDisplayDate(year, `${month}${day}`)}
-          </Link>
-          <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
-            {formatKeibajo(keibajoCode)}
-          </Link>
-          <span>{formatRaceNumber(raceNumber)}</span>
-        </div>
+        {shared ? (
+          <style>{SHARED_PAGE_STYLE}</style>
+        ) : (
+          <div className="breadcrumbs">
+            <Link href="/races">開催日一覧</Link>
+            <Link href={`/races/${year}`}>{year}年</Link>
+            <Link href={`/races/${year}/${month}`}>{Number(month)}月</Link>
+            <Link href={`/races/${year}/${month}/${day}`}>
+              {formatDisplayDate(year, `${month}${day}`)}
+            </Link>
+            <Link href={`/races/${year}/${month}/${day}/${keibajoCode}`}>
+              {formatKeibajo(keibajoCode)}
+            </Link>
+            <span>{formatRaceNumber(raceNumber)}</span>
+          </div>
+        )}
         {previousRace || nextRace ? (
           <nav className="race-mobile-nav" aria-label="same venue race navigation">
             {previousRace ? (
@@ -628,6 +641,7 @@ export async function RaceDetailView({
         <PaddockSection
           day={day}
           decodeHexHorseWeight={decodeHexHorseWeight}
+          hideEditLink={shared}
           keibajoCode={keibajoCode}
           month={month}
           raceNumber={raceNumber}

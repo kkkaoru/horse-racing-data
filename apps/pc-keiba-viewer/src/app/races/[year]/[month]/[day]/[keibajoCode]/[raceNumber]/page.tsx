@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 
 import { getRaceDetail, getRaceSourceByRoute } from "../../../../../../../db/queries";
 import { cleanText, formatKeibajo, formatRaceNumber } from "../../../../../../../lib/format";
+import { SHARED_PAGE_HEADER } from "../../../../../../../lib/shared-page-access";
 import { RaceDetailView } from "../../../../../../races/detail/race-detail-page";
 
 export const dynamic = "force-dynamic";
@@ -87,6 +89,7 @@ export default async function RaceDetailRoutePage({
       month={month}
       raceNumber={raceNumber}
       searchParams={await searchParams}
+      shared={(await headers()).has(SHARED_PAGE_HEADER)}
       source={source}
       year={year}
     />

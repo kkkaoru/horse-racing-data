@@ -1593,3 +1593,38 @@ test("PaddockSection shows no surface switch badge when horse ran on both surfac
   });
   expect(container.querySelector(".paddock-surface-switch-badge") === null).toBe(true);
 });
+
+test("PaddockSection links the read-only section to the paddock edit page", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid-1234567890");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      editable={false}
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  const link = await screen.findByRole("link", { name: "編集" });
+  expect(link.getAttribute("href")).toBe("/races/2026/06/02/05/01/paddock");
+});
+
+test("PaddockSection omits the paddock edit link on a shared page", async () => {
+  getOrCreateUserIdMock.mockResolvedValue("user-test-uuid-1234567890");
+  fetchWithRetryMock.mockResolvedValue(makeJsonResponse(buildPaddockState([])));
+
+  render(
+    <PaddockSection
+      {...baseProps}
+      editable={false}
+      hideEditLink
+      runners={[buildRunner({ bamei: "テストホース", umaban: "01" })]}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(fetchWithRetryMock).toHaveBeenCalled();
+  });
+  expect(screen.queryByRole("link", { name: "編集" })).toBeNull();
+});
