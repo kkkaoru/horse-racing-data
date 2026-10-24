@@ -665,8 +665,8 @@ it("getPremiumPaddockRetryDelaySeconds returns the default delay far outside the
   expect(delay).toBe(120);
 });
 
-it("getPremiumPaddockRetryDelaySeconds returns 15 seconds at exactly 20 minutes before race (hot-zone upper bound)", () => {
-  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T03:40:00Z"));
+it("getPremiumPaddockRetryDelaySeconds returns 15 seconds at exactly 25 minutes before race (hot-zone upper bound)", () => {
+  const delay = getPremiumPaddockRetryDelaySeconds(RACE, new Date("2026-05-12T03:35:00Z"));
   expect(delay).toBe(15);
 });
 

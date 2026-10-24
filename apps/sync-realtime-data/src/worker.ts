@@ -472,7 +472,9 @@ const PREMIUM_RACE_DATA_AUTH_RETRY_MAX_ATTEMPTS = 5;
 const PREMIUM_PADDOCK_RETRY_DELAY_SECONDS = 120;
 const PREMIUM_PADDOCK_RETRY_DELAY_HOT_SECONDS = 15;
 const PREMIUM_PADDOCK_RETRY_DELAY_WARM_SECONDS = 30;
-const PREMIUM_PADDOCK_HOT_WINDOW_MINUTES = 20;
+// First paddock content came at most 17.7 min before post (348 races since
+// 2026-09); poll every 15 s from 25 min so the first notification is not late.
+const PREMIUM_PADDOCK_HOT_WINDOW_MINUTES = 25;
 const PREMIUM_PADDOCK_WARM_WINDOW_MINUTES = 40;
 const PREMIUM_PADDOCK_RECHECK_MINUTES = 1;
 // Earliest stored bulletin (687 races, 2026-07..10) appeared 18 min before post; 45 keeps margin.
