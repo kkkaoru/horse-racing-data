@@ -816,11 +816,15 @@ const fetchJraOddsTab = async (
   }
 };
 
+// The entry page loaded but has no win-odds link: odds are not on sale yet
+// (e.g. next-day races). Chromium sees the same page, so it must not fall back.
+export class JraOddsNotOnSaleError extends Error {}
+
 export const fetchJraOddsWithHttp = async (entryUrl: string): Promise<FetchJraOddsResult> => {
   const entryHtml = await fetchJraHtml(entryUrl);
   const winCname = WIN_ODDS_CNAME_PATTERN.exec(entryHtml)?.[1];
   if (!winCname) {
-    throw new Error("JRA odds cname was not found on race entry page.");
+    throw new JraOddsNotOnSaleError("JRA odds cname was not found on race entry page.");
   }
   const winHtml = await fetchJraOddsPage(winCname);
   const raceBody = winCname.slice(WIN_ODDS_CNAME_PREFIX.length).split("/")[0]!;
@@ -851,6 +855,9 @@ export const fetchJraOdds = async (
     );
     return result;
   } catch (error) {
+    // 2026-10-24: 320 of 560 HTTP attempts were next-day races before sale, and
+    // every Playwright fallback for them launched a browser to find no odds.
+    if (error instanceof JraOddsNotOnSaleError) throw error;
     console.warn(
       `JRA odds engine=fetch failed, falling back to engine=playwright url=${entryUrl}`,
       error,

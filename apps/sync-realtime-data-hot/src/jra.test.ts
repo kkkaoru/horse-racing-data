@@ -1084,6 +1084,19 @@ it("fetchJraOdds serves from HTTP without launching a browser", async () => {
   vi.unstubAllGlobals();
 });
 
+it("fetchJraOdds does not launch a browser when the entry page has no win odds link yet", async () => {
+  stubJraHttp({ "https://x.test/deba": "<html></html>" });
+  const mod = await import("@cloudflare/playwright");
+  const launch = mod.launch as unknown as ReturnType<typeof vi.fn>;
+  launch.mockReset();
+  const { fetchJraOdds } = await import("./jra");
+  await expect(fetchJraOdds({} as never, "https://x.test/deba")).rejects.toThrow(
+    "JRA odds cname was not found on race entry page.",
+  );
+  expect(launch).not.toHaveBeenCalled();
+  vi.unstubAllGlobals();
+});
+
 it("fetchJraOdds falls back to one Playwright attempt when HTTP fails", async () => {
   urlCounter = 0;
   innerHtmlCounter = 0;
