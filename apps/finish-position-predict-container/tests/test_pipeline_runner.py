@@ -110,6 +110,16 @@ _race_chain_for_day_base = cast(
     "Callable[[str, Path], Sequence[str]]",
     getattr(pipeline_runner, _RACE_CHAIN_FOR_DAY_BASE_ATTR),
 )
+_SKIP_V2_FEATURES_ATTR = "_skip_v2_features"
+_BABA_V2_DAY_BASE_COLUMNS_ATTR = "_BABA_V2_DAY_BASE_COLUMNS"
+_skip_v2_features = cast(
+    "Callable[[str], bool]",
+    getattr(pipeline_runner, _SKIP_V2_FEATURES_ATTR),
+)
+_BABA_V2_DAY_BASE_COLUMNS = cast(
+    "frozenset[str]",
+    getattr(pipeline_runner, _BABA_V2_DAY_BASE_COLUMNS_ATTR),
+)
 _log_pipeline_progress = cast(
     "Callable[[str], None]", getattr(pipeline_runner, _LOG_PIPELINE_PROGRESS_ATTR)
 )
@@ -3685,6 +3695,7 @@ def test_build_pipeline_from_day_base_runs_race_chain_only_from_day_base_dir(
         pipeline_runner, "race_chain_for", lambda _category: ("script-a.py", "script-b.py")
     )
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: True)
     monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
 
@@ -3701,6 +3712,7 @@ def test_build_pipeline_from_day_base_runs_race_chain_only_from_day_base_dir(
         target_date: str | None = None,
         target_race: str | None = None,
         current_going_path: Path | None = None,
+        skip_v2_features: bool = False,
     ) -> list[str]:
         captured_inputs.append(input_dir)
         captured_target_races.append(target_race)
@@ -3739,6 +3751,7 @@ def test_build_pipeline_from_day_base_fuses_multiple_layers_in_one_runner(
         pipeline_runner, "race_chain_for", lambda _category: ("script-a.py", "script-b.py")
     )
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: True)
     monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
 
     def fake_layer_argv(
@@ -3810,6 +3823,7 @@ def test_build_pipeline_from_day_base_records_racechain_layer_step(
     monkeypatch.setattr(pipeline_runner, "LAYER_DIR", tmp_path / "layers")
     monkeypatch.setattr(pipeline_runner, "race_chain_for", lambda _category: ("script-a.py",))
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: True)
     monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(pipeline_runner, "record_layer_timing_row", lambda *args: None)
 
@@ -3823,6 +3837,7 @@ def test_build_pipeline_from_day_base_records_racechain_layer_step(
         target_date: str | None = None,
         target_race: str | None = None,
         current_going_path: Path | None = None,
+        skip_v2_features: bool = False,
     ) -> list[str]:
         return ["layer", str(output_dir)]
 
@@ -3978,6 +3993,7 @@ def test_current_jra_day_base_uses_reduced_race_chain(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: True)
     monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(
         pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: False
@@ -3995,6 +4011,7 @@ def test_current_jra_day_base_skips_unused_relationship_layer(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: True)
     monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(
         pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: True
@@ -4012,6 +4029,7 @@ def test_current_nar_day_base_needs_no_per_race_layers_when_static_contract_is_w
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: True)
     monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
     monkeypatch.setattr(
         pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: False
@@ -4020,6 +4038,56 @@ def test_current_nar_day_base_needs_no_per_race_layers_when_static_contract_is_w
     result = _race_chain_for_day_base("nar", tmp_path)
 
     assert result == ()
+
+
+def test_v2_model_day_base_without_v2_baba_columns_reruns_baba(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import pandas as pd
+
+    parquet_dir = tmp_path / "race_year=2026"
+    parquet_dir.mkdir(parents=True)
+    pd.DataFrame({"horse_baba_win_rate": [0.5]}).to_parquet(parquet_dir / "features.parquet")
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: False)
+
+    result = _race_chain_for_day_base("nar", tmp_path)
+
+    assert result == ("add-baba-pedigree-affinity-features.py",)
+
+
+def test_v2_model_day_base_with_v2_baba_columns_keeps_reduced_chain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import pandas as pd
+
+    parquet_dir = tmp_path / "race_year=2026"
+    parquet_dir.mkdir(parents=True)
+    pd.DataFrame({name: [0.5] for name in _BABA_V2_DAY_BASE_COLUMNS}).to_parquet(
+        parquet_dir / "features.parquet"
+    )
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: False)
+
+    result = _race_chain_for_day_base("nar", tmp_path)
+
+    assert result == ()
+
+
+def test_skip_v2_features_reads_models_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    seen: list[tuple[str, Path]] = []
+
+    def fake_unused(category: str, *, artifact_root: Path) -> bool:
+        seen.append((category, artifact_root))
+        return True
+
+    monkeypatch.setenv("MODELS_DIR", str(tmp_path))
+    monkeypatch.setattr(pipeline_runner, "v2_pedigree_features_provably_unused", fake_unused)
+
+    assert _skip_v2_features("nar") is True
+    assert seen == [("nar", tmp_path)]
 
 
 def test_banei_race_chain_does_not_inspect_baba_day_base(
@@ -4996,6 +5064,7 @@ def test_race_chain_adds_baba_layer_when_race_day_going_changed(
     monkeypatch.setattr(
         pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: False
     )
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: True)
     going = _write_going_parquet(tmp_path / "going.parquet", "2", "0")
     _write_feature_parquet(tmp_path / "daybase" / "race_year=2026" / "data_0.parquet", "null")
 
@@ -5018,6 +5087,7 @@ def test_race_chain_keeps_day_base_baba_when_going_matches(
     monkeypatch.setattr(
         pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: False
     )
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: True)
     going = _write_going_parquet(tmp_path / "going.parquet", "2", "0")
     _write_feature_parquet(tmp_path / "daybase" / "race_year=2026" / "data_0.parquet", "2")
 
@@ -5102,6 +5172,7 @@ def test_refresh_baba_reruns_layer_and_rewrites_flat_cache(
     final_dir = tmp_path / "final"
     _write_feature_parquet(final_dir / "features.parquet", "null")
     monkeypatch.setattr(pipeline_runner, "fetch_current_going", lambda *_args: going)
+    monkeypatch.setattr(pipeline_runner, "_skip_v2_features", lambda _category: True)
     captured: list[Sequence[str]] = []
 
     def fake_run(args: Sequence[str]) -> None:
@@ -5134,7 +5205,7 @@ def test_refresh_baba_reruns_layer_and_rewrites_flat_cache(
     assert refreshed is True
     assert [path.name for path in final_dir.iterdir()] == ["features.parquet"]
     assert rows == [("jra:2026:1025:08:11", "08", "11", "20261025", 1, 2)]
-    assert captured[0][-2:] == ["--current-going", str(going)]
+    assert captured[0][-3:] == ["--current-going", str(going), "--skip-v2-features"]
     assert not (work_dir / "baba-refresh-jra-input").exists()
 
 

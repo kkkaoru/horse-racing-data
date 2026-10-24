@@ -1490,3 +1490,50 @@ def test_is_day_base_split_enabled_unknown_token_ignored(
 ) -> None:
     monkeypatch.setenv(DAY_BASE_SPLIT_ENABLED_ENV, "jraa,typo")
     assert is_day_base_split_enabled("jra") is False
+
+
+def test_build_base_argv_appends_skip_v2_flag_only_when_requested() -> None:
+    skipped = build_base_argv(
+        BUILDER, "nar", "20260603", 1, URL, Path("/tmp/base"), skip_v2_features=True
+    )
+    default = build_base_argv(BUILDER, "nar", "20260603", 1, URL, Path("/tmp/base"))
+    assert skipped[-1] == "--skip-v2-features"
+    assert "--skip-v2-features" not in default
+
+
+def test_build_layer_argv_passes_skip_v2_flag_to_v2_layers() -> None:
+    argv = build_layer_argv(
+        "add-baba-pedigree-affinity-features.py",
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        skip_v2_features=True,
+    )
+    assert argv[-1] == "--skip-v2-features"
+
+
+def test_build_layer_argv_never_passes_skip_v2_flag_to_other_layers() -> None:
+    argv = build_layer_argv(
+        "add-race-internal-features.py",
+        "nar",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        skip_v2_features=True,
+    )
+    assert "--skip-v2-features" not in argv
+
+
+def test_build_layer_argv_omits_skip_v2_flag_by_default() -> None:
+    argv = build_layer_argv(
+        "add-similar-race-features.py",
+        "ban-ei",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+    )
+    assert "--skip-v2-features" not in argv

@@ -102,7 +102,10 @@ from predict_lib.pipeline_args import (
     layer_chain_for,
     race_chain_for,
 )
-from predict_lib.production_feature_usage import relationship_layer_is_provably_unused
+from predict_lib.production_feature_usage import (
+    relationship_layer_is_provably_unused,
+    v2_pedigree_features_provably_unused,
+)
 from predict_lib.r2_client import (
     R2ObjectIdentity,
     r2_get_bytes,
@@ -170,6 +173,11 @@ _BABA_DAY_BASE_COLUMNS: Final[frozenset[str]] = frozenset(
         "damsire_baba_win_rate",
         "sire_horse_baba_combined_score",
     }
+)
+# v2 baba columns: required in a cached day-base only when a selected model
+# reads a v2 pedigree column; otherwise their absence must not trigger a rerun.
+_BABA_V2_DAY_BASE_COLUMNS: Final[frozenset[str]] = frozenset(
+    f"{name}_v2" for name in (*_BABA_DAY_BASE_COLUMNS, "current_baba_condition")
 )
 _STATIC_RACE_CHAIN_DAY_BASE_COLUMNS: Final[frozenset[str]] = frozenset(
     {"career_place2_rate", "horse_popularity_vs_field", "bataiju_futan_ratio"}
@@ -681,6 +689,7 @@ def refresh_baba_for_current_going(
                 target_date=target_date,
                 target_race=target_race,
                 current_going_path=going_path,
+                skip_v2_features=_skip_v2_features(category),
             )
         )
         connection.execute(
@@ -1706,6 +1715,7 @@ def build_pipeline(
                 venue_weather_dir,
                 target_race,
                 temp_dir=duckdb_temp_dir,
+                skip_v2_features=_skip_v2_features(category),
             )
         )
     except Exception:
@@ -1773,6 +1783,7 @@ def build_pipeline(
                     target_date=target_date,
                     target_race=target_race,
                     current_going_path=current_going_path,
+                    skip_v2_features=_skip_v2_features(category),
                 )
             )
         except Exception:
@@ -1956,6 +1967,7 @@ def build_day_base(
                 source_watermark_file=(
                     source_watermark_file if is_catalog_source_url(database_url) else None
                 ),
+                skip_v2_features=_skip_v2_features(category),
             )
         )
     except Exception:
@@ -2072,6 +2084,7 @@ def build_day_base(
                     database_url,
                     target_date=target_date,
                     target_race=None,
+                    skip_v2_features=_skip_v2_features(category),
                 )
             )
         except Exception:
@@ -2559,6 +2572,7 @@ def _run_fused_race_chain(
                 target_date=target_date,
                 target_race=target_race,
                 current_going_path=current_going_path,
+                skip_v2_features=_skip_v2_features(category),
             )
         )
         source = destination
@@ -2718,6 +2732,7 @@ def build_pipeline_from_day_base(
                     target_date=target_date,
                     target_race=target_race,
                     current_going_path=current_going_path,
+                    skip_v2_features=_skip_v2_features(category),
                 )
             )
         except Exception:
@@ -2807,6 +2822,13 @@ def _day_base_has_static_race_features(day_base_dir: Path) -> bool:
     )
 
 
+def _skip_v2_features(category: Category) -> bool:
+    """Serving-only: skip v2 pedigree columns no selected model reads (fail-closed)."""
+    return v2_pedigree_features_provably_unused(
+        category, artifact_root=Path(os.environ.get("MODELS_DIR", "/models"))
+    )
+
+
 def _race_chain_for_day_base(
     category: Category,
     day_base_dir: Path,
@@ -2845,7 +2867,13 @@ def _race_chain_for_day_base(
             f"step=racechain-layer status=skipped category={category} "
             f"script={RELATIONSHIP_SCRIPT} reason=unused-by-selected-models"
         )
-    if category in _BABA_DAY_BASE_CATEGORIES and not _day_base_has_baba_features(day_base_dir):
+    if category in _BABA_DAY_BASE_CATEGORIES and (
+        not _day_base_has_baba_features(day_base_dir)
+        or (
+            not _skip_v2_features(category)
+            and not _day_base_has_columns(day_base_dir, _BABA_V2_DAY_BASE_COLUMNS, "baba-v2")
+        )
+    ):
         selected.add(BABA_PEDIGREE_SCRIPT)
         _log_pipeline_progress(
             f"step=daybase-compat category={category} reason=baba-columns-missing "

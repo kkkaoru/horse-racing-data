@@ -8,7 +8,9 @@ import pytest
 from predict_lib import production_feature_usage
 from predict_lib.production_feature_usage import (
     RELATIONSHIP_FEATURE_NAMES,
+    V2_PEDIGREE_FEATURE_NAMES,
     relationship_layer_is_provably_unused,
+    v2_pedigree_features_provably_unused,
 )
 
 
@@ -139,3 +141,41 @@ def test_tracked_selected_artifacts_exclude_relationship_features() -> None:
 
     assert relationship_layer_is_provably_unused("jra", artifact_root=models)
     assert relationship_layer_is_provably_unused("nar", artifact_root=models)
+
+
+def test_v2_pedigree_features_skipped_when_no_selected_contract_lists_them(
+    tmp_path: Path,
+) -> None:
+    key = "finish-position/nar/base/metadata.json"
+    _write_json(tmp_path, key, {"feature_names": ["sire_baba_win_rate", "speed"]})
+
+    assert v2_pedigree_features_provably_unused("nar", artifact_root=tmp_path, selected_keys={key})
+
+
+def test_v2_pedigree_features_computed_when_a_selected_model_needs_one(
+    tmp_path: Path,
+) -> None:
+    base = "finish-position/nar/base/metadata.json"
+    retrained = "finish-position/nar/retrained/metadata.json"
+    _write_json(tmp_path, base, {"feature_names": ["speed"]})
+    _write_json(tmp_path, retrained, {"feature_names": ["sire_baba_win_rate_v2"]})
+
+    assert not v2_pedigree_features_provably_unused(
+        "nar", artifact_root=tmp_path, selected_keys={base, retrained}
+    )
+
+
+def test_v2_pedigree_features_fail_closed_on_unreadable_metadata(tmp_path: Path) -> None:
+    key = "finish-position/ban-ei/base/metadata.json"
+    path = tmp_path / key
+    path.parent.mkdir(parents=True)
+    path.write_text("{not json", encoding="utf-8")
+
+    assert not v2_pedigree_features_provably_unused(
+        "ban-ei", artifact_root=tmp_path, selected_keys={key}
+    )
+
+
+def test_v2_pedigree_feature_names_are_all_v2_columns() -> None:
+    assert len(V2_PEDIGREE_FEATURE_NAMES) == 30
+    assert {name for name in V2_PEDIGREE_FEATURE_NAMES if not name.endswith("_v2")} == set()

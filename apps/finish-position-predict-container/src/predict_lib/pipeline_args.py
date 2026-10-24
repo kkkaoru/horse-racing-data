@@ -310,6 +310,20 @@ SCRIPTS_WITH_PG_URL: Final[frozenset[str]] = frozenset(
     }
 )
 
+# Layers that emit ``*_v2`` pedigree columns and accept ``--skip-v2-features``
+# (serving passes it when no selected model reads a v2 column; see
+# production_feature_usage.v2_pedigree_features_provably_unused).
+SCRIPTS_WITH_V2_FEATURES: Final[frozenset[str]] = frozenset(
+    {
+        NEAR_MISS_SCRIPT,
+        BABA_PEDIGREE_SCRIPT,
+        BANEI_FUTAN_CLASS_SCRIPT,
+        SIMILAR_RACE_SCRIPT,
+        SIRE_VENUE_BIAS_SCRIPT,
+    }
+)
+V2_SKIP_FLAG: Final[str] = "--skip-v2-features"
+
 # Scripts that accept ``--from-date`` to bound their Postgres history scan. The
 # race-internal layer has no Postgres scan and so takes no ``--from-date``.
 # NOTE: KOHAN3F_GOING_SCRIPT uses --history-from-year instead of --from-date,
@@ -432,6 +446,7 @@ def build_base_argv(
     target_race: str | None = None,
     temp_dir: Path | None = None,
     source_watermark_file: Path | None = None,
+    skip_v2_features: bool = False,
 ) -> list[str]:
     """Argv for the DuckDB base build in ``--target-date`` (upcoming) mode.
 
@@ -488,6 +503,8 @@ def build_base_argv(
         argv += ["--temp-dir", str(temp_dir)]
     if source_watermark_file is not None:
         argv += ["--source-watermark-file", str(source_watermark_file)]
+    if skip_v2_features:
+        argv.append(V2_SKIP_FLAG)
     return argv
 
 
@@ -628,6 +645,13 @@ def _current_going_args(script: str, current_going_path: Path | None) -> list[st
     return []
 
 
+def _v2_feature_args(script: str, skip_v2_features: bool) -> list[str]:
+    """``--skip-v2-features`` for v2-emitting layers when serving proves them unused."""
+    if skip_v2_features and script in SCRIPTS_WITH_V2_FEATURES:
+        return [V2_SKIP_FLAG]
+    return []
+
+
 def build_layer_argv(
     script: str,
     category: Category,
@@ -639,6 +663,7 @@ def build_layer_argv(
     target_race: str | None = None,
     target_to_date: str | None = None,
     current_going_path: Path | None = None,
+    skip_v2_features: bool = False,
 ) -> list[str]:
     """Argv for one layer script (input/output dirs + only its declared flags).
 
@@ -685,6 +710,7 @@ def build_layer_argv(
         + _target_race_scope_args(script, target_race)
         + _near_miss_target_date_args(script, target_date, target_to_date)
         + _current_going_args(script, current_going_path)
+        + _v2_feature_args(script, skip_v2_features)
     )
 
 
