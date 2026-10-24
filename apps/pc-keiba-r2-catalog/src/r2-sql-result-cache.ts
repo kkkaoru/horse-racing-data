@@ -12,7 +12,8 @@ const KEY_PREFIX = "r2sql-result:v1:";
 // A race day two or more JST days old no longer changes in practice, so its
 // answers may be reused for hours; yesterday, today and future days may not.
 export const SETTLED_RACE_DAY_TTL_SECONDS: number = 6 * 60 * 60;
-const SETTLED_AFTER_MS: number = 2 * 24 * 60 * 60 * 1000;
+// Yesterday (JST) is the oldest day that is not settled yet.
+const UNSETTLED_SPAN_MS: number = 24 * 60 * 60 * 1000;
 const JST_OFFSET_MS: number = 9 * 60 * 60 * 1000;
 // Marks a replayed answer so scan metrics are not counted twice.
 export const R2_SQL_RESULT_CACHE_HEADER: string = "x-r2-sql-result-cache";
@@ -38,9 +39,15 @@ const isCacheableAnswer = (text: string): boolean => {
   }
 };
 
+// The first race day (YYYYMMDD) that is not settled yet: every earlier day is.
+export const firstUnsettledRaceDay = (nowMs: number): string =>
+  new Date(nowMs + JST_OFFSET_MS - UNSETTLED_SPAN_MS)
+    .toISOString()
+    .slice(0, 10)
+    .replaceAll("-", "");
+
 export const isSettledRaceDay = (date: string, nowMs: number): boolean =>
-  date <=
-  new Date(nowMs + JST_OFFSET_MS - SETTLED_AFTER_MS).toISOString().slice(0, 10).replaceAll("-", "");
+  date < firstUnsettledRaceDay(nowMs);
 
 const resultKey = (body: string): string =>
   `${KEY_PREFIX}${createHash("sha256").update(body).digest("hex")}`;

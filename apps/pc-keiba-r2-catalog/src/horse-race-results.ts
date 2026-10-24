@@ -9,10 +9,25 @@ import type {
   HorseRaceResultsSourceScope,
   R2SqlCatalogConfig,
 } from "./types";
+import { earliestRaceYear } from "./race-history-read";
 
 interface HistoryTableSet {
   raceTable: "jvd_ra" | "nvd_ra";
   runnerTable: "jvd_se" | "nvd_se";
+}
+
+// Race days in [from, to); from = null means no lower date bound.
+export interface HorseHistoryRange {
+  from: string | null;
+  settled: boolean;
+  to: string;
+}
+
+export interface HorseHistoryQueryInput {
+  env: R2SqlCatalogConfig;
+  filters: HorseRaceResultsFilters;
+  horseIds: readonly string[];
+  range: HorseHistoryRange;
 }
 
 const IDENTIFIER_PATTERN: RegExp = /^[A-Za-z_][A-Za-z0-9_]*$/u;
@@ -70,155 +85,188 @@ const registeredHorseSql = (column: string): string =>
   `${trimmedSql(column)} IS NOT NULL
     AND replace(btrim(coalesce(${column}, '')), '0', '') <> ''`;
 
-const currentRaceIdentitySql = (filters: HorseRaceResultsFilters): string =>
-  `kaisai_nen = '${filters.date.slice(0, 4)}'
-    AND kaisai_tsukihi = '${filters.date.slice(4)}'
-    AND keibajo_code = '${filters.keibajoCode}'
-    AND race_bango = '${filters.raceBango}'`;
+const HISTORY_RACE_COLUMNS: readonly string[] = [
+  "kaisai_nen",
+  "kaisai_tsukihi",
+  "keibajo_code",
+  "race_bango",
+  "kyosomei_hondai",
+  "kyosomei_fukudai",
+  "kyosomei_kakkonai",
+  "grade_code",
+  "kyoso_shubetsu_code",
+  "kyoso_kigo_code",
+  "juryo_shubetsu_code",
+  "kyoso_joken_code",
+  "kyoso_joken_meisho",
+  "kyori",
+  "track_code",
+  "hasso_jikoku",
+  "shusso_tosu",
+  "tenko_code",
+  "babajotai_code_shiba",
+  "babajotai_code_dirt",
+];
+const HISTORY_RUNNER_COLUMNS: readonly string[] = [
+  "wakuban",
+  "umaban",
+  "ketto_toroku_bango",
+  "bamei",
+  "seibetsu_code",
+  "barei",
+  "futan_juryo",
+  "kishumei_ryakusho",
+  "chokyoshimei_ryakusho",
+  "banushimei",
+  "bataiju",
+  "zogen_fugo",
+  "zogen_sa",
+  "kakutei_chakujun",
+  "tansho_odds",
+  "tansho_ninkijun",
+  "soha_time",
+  "time_sa",
+  "corner_1",
+  "corner_2",
+  "corner_3",
+  "corner_4",
+  "kohan_3f",
+  "blinker_shiyo_kubun",
+];
+const HISTORY_SELECT_LIST: string = [
+  ...HISTORY_RACE_COLUMNS.map((column) => `ra.${column}`),
+  ...HISTORY_RUNNER_COLUMNS.map((column) => `se.${column}`),
+].join(",\n    ");
+const HISTORY_OUTPUT_LIST: string = [...HISTORY_RACE_COLUMNS, ...HISTORY_RUNNER_COLUMNS].join(
+  ",\n  ",
+);
+const NUMERIC_PATTERN: RegExp = /^\d+$/u;
 
-const historySelectSql = (env: R2SqlCatalogConfig, tables: HistoryTableSet): string => `SELECT
-    ch.current_jockey,
-    ch.current_barei,
-    ch.current_seibetsu_code,
-    ch.current_umaban,
-    ra.kaisai_nen,
-    ra.kaisai_tsukihi,
-    ra.keibajo_code,
-    ra.race_bango,
-    ra.kyosomei_hondai,
-    ra.kyosomei_fukudai,
-    ra.kyosomei_kakkonai,
-    ra.grade_code,
-    ra.kyoso_shubetsu_code,
-    ra.kyoso_kigo_code,
-    ra.juryo_shubetsu_code,
-    ra.kyoso_joken_code,
-    ra.kyoso_joken_meisho,
-    ra.kyori,
-    ra.track_code,
-    ra.hasso_jikoku,
-    ra.shusso_tosu,
-    ra.tenko_code,
-    ra.babajotai_code_shiba,
-    ra.babajotai_code_dirt,
-    se.wakuban,
-    se.umaban,
-    se.ketto_toroku_bango,
-    se.bamei,
-    se.seibetsu_code,
-    se.barei,
-    se.futan_juryo,
-    se.kishumei_ryakusho,
-    se.chokyoshimei_ryakusho,
-    se.banushimei,
-    se.bataiju,
-    se.zogen_fugo,
-    se.zogen_sa,
-    se.kakutei_chakujun,
-    se.tansho_odds,
-    se.tansho_ninkijun,
-    se.soha_time,
-    se.time_sa,
-    se.corner_1,
-    se.corner_2,
-    se.corner_3,
-    se.corner_4,
-    se.kohan_3f,
-    se.blinker_shiyo_kubun
-  FROM ${tableName(env, tables.runnerTable)} se
-  INNER JOIN ${tableName(env, tables.raceTable)} ra
+const checkedFilters = (filters: HorseRaceResultsFilters): HorseRaceResultsFilters => ({
+  date: requireDate(filters.date),
+  keibajoCode: requireCode(filters.keibajoCode, "keibajoCode"),
+  raceBango: requireCode(filters.raceBango, "raceBango"),
+  source: filters.source,
+  sourceScope: filters.sourceScope,
+});
+
+// The volatile part (jockey, umaban, age) of the requested race. Only the
+// race's own year partition is read, so it stays at the per-query minimum.
+export const buildCurrentRunnersQuery = (
+  env: R2SqlCatalogConfig,
+  filters: HorseRaceResultsFilters,
+): string => {
+  const checked = checkedFilters(filters);
+  return `
+SELECT
+  lpad(btrim(coalesce(umaban, '')), 2, '0') AS current_umaban,
+  ketto_toroku_bango,
+  seibetsu_code AS current_seibetsu_code,
+  barei AS current_barei,
+  ${namedOrUnknownSql("kishumei_ryakusho")} AS current_jockey
+FROM ${tableName(env, currentRunnerTable(checked.source))}
+WHERE kaisai_nen = '${checked.date.slice(0, 4)}'
+  AND kaisai_tsukihi = '${checked.date.slice(4)}'
+  AND keibajo_code = '${checked.keibajoCode}'
+  AND race_bango = '${checked.raceBango}'
+  AND ${registeredHorseSql("ketto_toroku_bango")}`;
+};
+
+// Sorted and de-duplicated so the same runners always produce the same SQL
+// text, which is the key of the R2 SQL result cache.
+export const currentHorseIds = (rows: ReadonlyArray<Record<string, unknown>>): string[] =>
+  [
+    ...new Set(rows.map((row) => stringOrNull(row.ketto_toroku_bango)).filter((id) => id !== null)),
+  ].toSorted();
+
+// Settled history (every race day before firstUnsettled) never changes and
+// may be cached for hours; the remaining days up to the race are read fresh.
+export const horseHistoryRanges = (date: string, firstUnsettled: string): HorseHistoryRange[] =>
+  date <= firstUnsettled
+    ? [{ from: null, settled: true, to: date }]
+    : [
+        { from: null, settled: true, to: firstUnsettled },
+        { from: firstUnsettled, settled: false, to: date },
+      ];
+
+const yearBoundsSql = (alias: string, lower: number | null, upper: string): string =>
+  [
+    ...(lower === null ? [] : [`${alias}.kaisai_nen >= '${String(lower)}'`]),
+    `${alias}.kaisai_nen <= '${upper}'`,
+  ].join(" AND ");
+
+const historySelectSql = (input: HorseHistoryQueryInput, tables: HistoryTableSet): string => {
+  const earliest: number | null = earliestRaceYear(input.horseIds, input.filters.date);
+  const lower: number | null =
+    input.range.from === null
+      ? earliest
+      : Math.max(earliest ?? 0, Number(input.range.from.slice(0, 4)));
+  const upper: string = input.range.to.slice(0, 4);
+  return `SELECT
+    ${HISTORY_SELECT_LIST}
+  FROM ${tableName(input.env, tables.runnerTable)} se
+  INNER JOIN ${tableName(input.env, tables.raceTable)} ra
     ON ra.kaisai_nen = se.kaisai_nen
     AND ra.kaisai_tsukihi = se.kaisai_tsukihi
     AND ra.keibajo_code = se.keibajo_code
     AND ra.race_bango = se.race_bango
-  INNER JOIN current_horses ch
-    ON ch.ketto_toroku_bango = se.ketto_toroku_bango`;
+  WHERE se.ketto_toroku_bango IN (${input.horseIds.map((id) => `'${id.replaceAll("'", "''")}'`).join(", ")})
+    AND ${yearBoundsSql("se", lower, upper)}
+    AND ${yearBoundsSql("ra", lower, upper)}`;
+};
 
-export const buildHorseRaceResultsQuery = (
-  env: R2SqlCatalogConfig,
-  filters: HorseRaceResultsFilters,
-): string => {
-  const date = requireDate(filters.date);
-  const keibajoCode = requireCode(filters.keibajoCode, "keibajoCode");
-  const raceBango = requireCode(filters.raceBango, "raceBango");
-  const checked: HorseRaceResultsFilters = {
-    date,
-    keibajoCode,
-    raceBango,
-    source: filters.source,
-    sourceScope: filters.sourceScope,
-  };
+// Past starts of the given horses in [range.from, range.to). The bare
+// kaisai_nen bounds (foal year and range) let R2 SQL prune year partitions.
+export const buildHorseHistoryQuery = (input: HorseHistoryQueryInput): string => {
+  const checked = checkedFilters(input.filters);
   const historySql = historyTables(checked.sourceScope)
-    .map((tables) => historySelectSql(env, tables))
+    .map((tables) => historySelectSql({ ...input, filters: checked }, tables))
     .join("\n  UNION ALL\n  ");
+  const lowerSql =
+    input.range.from === null
+      ? ""
+      : `\n  AND concat(kaisai_nen, kaisai_tsukihi) >= '${requireDate(input.range.from)}'`;
   return `
-WITH current_horses AS (
-  SELECT
-    lpad(btrim(coalesce(umaban, '')), 2, '0') AS current_umaban,
-    ketto_toroku_bango,
-    seibetsu_code AS current_seibetsu_code,
-    barei AS current_barei,
-    ${namedOrUnknownSql("kishumei_ryakusho")} AS current_jockey
-  FROM ${tableName(env, currentRunnerTable(checked.source))}
-  WHERE ${currentRaceIdentitySql(checked)}
-    AND ${registeredHorseSql("ketto_toroku_bango")}
-),
-history AS (
+WITH history AS (
   ${historySql}
 )
 SELECT
-  current_jockey,
-  current_barei,
-  current_seibetsu_code,
-  current_umaban,
-  kaisai_nen,
-  kaisai_tsukihi,
-  keibajo_code,
-  race_bango,
-  kyosomei_hondai,
-  kyosomei_fukudai,
-  kyosomei_kakkonai,
-  grade_code,
-  kyoso_shubetsu_code,
-  kyoso_kigo_code,
-  juryo_shubetsu_code,
-  kyoso_joken_code,
-  kyoso_joken_meisho,
-  kyori,
-  track_code,
-  hasso_jikoku,
-  shusso_tosu,
-  tenko_code,
-  babajotai_code_shiba,
-  babajotai_code_dirt,
-  wakuban,
-  umaban,
-  ketto_toroku_bango,
-  bamei,
-  seibetsu_code,
-  barei,
-  futan_juryo,
-  kishumei_ryakusho,
-  chokyoshimei_ryakusho,
-  banushimei,
-  bataiju,
-  zogen_fugo,
-  zogen_sa,
-  kakutei_chakujun,
-  tansho_odds,
-  tansho_ninkijun,
-  soha_time,
-  time_sa,
-  corner_1,
-  corner_2,
-  corner_3,
-  corner_4,
-  kohan_3f,
-  blinker_shiyo_kubun
+  ${HISTORY_OUTPUT_LIST}
 FROM history
-WHERE concat(kaisai_nen, kaisai_tsukihi) < '${date}'
-ORDER BY try_cast(current_umaban AS INT), kaisai_nen DESC, kaisai_tsukihi DESC, race_bango DESC`;
+WHERE concat(kaisai_nen, kaisai_tsukihi) < '${requireDate(input.range.to)}'${lowerSql}`;
 };
+
+const umabanOrder = (row: Record<string, unknown>): number => {
+  const umaban = stringOrNull(row.current_umaban);
+  return umaban !== null && NUMERIC_PATTERN.test(umaban)
+    ? Number(umaban)
+    : Number.POSITIVE_INFINITY;
+};
+
+const descending = (left: unknown, right: unknown): number =>
+  Number(String(left) < String(right)) - Number(String(left) > String(right));
+
+// Same order as the former single query: try_cast(current_umaban AS INT)
+// (non-numeric last), then the most recent start first.
+const compareMergedRows = (left: Record<string, unknown>, right: Record<string, unknown>): number =>
+  Number(umabanOrder(left) > umabanOrder(right)) - Number(umabanOrder(left) < umabanOrder(right)) ||
+  descending(left.kaisai_nen, right.kaisai_nen) ||
+  descending(left.kaisai_tsukihi, right.kaisai_tsukihi) ||
+  descending(left.race_bango, right.race_bango);
+
+// Joins each past start to the horse's current entry, as the former
+// current_horses join did, and orders the rows like its ORDER BY.
+export const mergeHorseRaceResults = (
+  current: ReadonlyArray<Record<string, unknown>>,
+  history: ReadonlyArray<Record<string, unknown>>,
+): Record<string, unknown>[] =>
+  history
+    .flatMap((past) =>
+      current
+        .filter((entry) => entry.ketto_toroku_bango === past.ketto_toroku_bango)
+        .map((entry) => ({ ...entry, ...past })),
+    )
+    .toSorted(compareMergedRows);
 
 const stringOrNull = (value: unknown): string | null => {
   if (value === null || value === undefined) return null;

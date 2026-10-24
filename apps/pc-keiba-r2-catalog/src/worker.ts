@@ -3,6 +3,7 @@ import {
   R2_SQL_RESULT_TTL_SECONDS,
   SETTLED_RACE_DAY_TTL_SECONDS,
   cachedR2SqlFetcher,
+  firstUnsettledRaceDay,
   isSettledRaceDay,
 } from "./r2-sql-result-cache";
 import {
@@ -86,7 +87,11 @@ import {
   parseRaceEntityCursor,
 } from "./race-entity-recent-results";
 import {
-  buildHorseRaceResultsQuery,
+  buildCurrentRunnersQuery,
+  buildHorseHistoryQuery,
+  currentHorseIds,
+  horseHistoryRanges,
+  mergeHorseRaceResults,
   normaliseHorseRaceResultRow,
   uniqueHorseRaceResults,
 } from "./horse-race-results";
@@ -935,12 +940,12 @@ const queryAndCacheRows = async (
   descriptor: CacheDescriptor,
   env: Env,
   dependencies: WorkerDependencies,
-  query: string,
+  loadRows: () => Promise<Record<string, unknown>[]>,
   toRows: (rows: ReadonlyArray<Record<string, unknown>>) => unknown[],
 ): Promise<Response> => {
   const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvRows);
   if (cached) return cached;
-  const rows = await executeR2Sql(env, query, dependencies.fetchImpl);
+  const rows = await loadRows();
   const body = JSON.stringify({ rows: toRows(rows) });
   await populateCaches(
     dependencies.cache,
@@ -960,7 +965,13 @@ const queryAndCache = async (
   query: string,
   normalise: (row: Record<string, unknown>) => unknown,
 ): Promise<Response> =>
-  queryAndCacheRows(descriptor, env, dependencies, query, (rows) => rows.map(normalise));
+  queryAndCacheRows(
+    descriptor,
+    env,
+    dependencies,
+    () => executeR2Sql(env, query, dependencies.fetchImpl),
+    (rows) => rows.map(normalise),
+  );
 
 const handleRaceKeys = async (
   url: URL,
@@ -1062,7 +1073,7 @@ const handleRaceFeatures = async (
       featureDescriptor(filters),
       env,
       dependencies,
-      buildRaceFeaturesQuery(env, filters),
+      () => executeR2Sql(env, buildRaceFeaturesQuery(env, filters), dependencies.fetchImpl),
       normaliseDailyRaceEntryRows,
     );
   if (filters.keibajoCode === undefined && filters.raceBango === undefined) return narrowQuery();
@@ -1133,6 +1144,41 @@ const handleRaceTrainings = (
   );
 };
 
+// Each race request used to scan every year of the JRA and NAR runner
+// history. The current entry is now read from the race's own partition, and
+// the history only from the partitions the horses can have run in. Settled
+// days are reused for hours (keyed by the horse list in the SQL text), while
+// the current entry and the unsettled days keep the response cache's TTLs.
+const loadHorseRaceResultRows = async (
+  env: Env,
+  dependencies: WorkerDependencies,
+  filters: HorseRaceResultsFilters,
+): Promise<Record<string, unknown>[]> => {
+  const current = await executeR2Sql(
+    env,
+    buildCurrentRunnersQuery(env, filters),
+    dependencies.fetchImpl,
+  );
+  const horseIds = currentHorseIds(current);
+  if (horseIds.length === 0) return [];
+  const settledFetch = cachedR2SqlFetcher(
+    dependencies.fetchImpl,
+    env.CATALOG_KV,
+    dependencies.waitUntil,
+    SETTLED_RACE_DAY_TTL_SECONDS,
+  );
+  const history = await Promise.all(
+    horseHistoryRanges(filters.date, firstUnsettledRaceDay(Date.now())).map((range) =>
+      executeR2Sql(
+        env,
+        buildHorseHistoryQuery({ env, filters, horseIds, range }),
+        range.settled ? settledFetch : dependencies.fetchImpl,
+      ),
+    ),
+  );
+  return mergeHorseRaceResults(current, history.flat());
+};
+
 const handleHorseRaceResults = (
   url: URL,
   env: Env,
@@ -1143,7 +1189,7 @@ const handleHorseRaceResults = (
     horseRaceResultsDescriptor(filters),
     env,
     dependencies,
-    buildHorseRaceResultsQuery(env, filters),
+    () => loadHorseRaceResultRows(env, dependencies, filters),
     (rows) => uniqueHorseRaceResults(rows.map(normaliseHorseRaceResultRow)),
   );
 };

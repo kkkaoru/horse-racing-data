@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 import {
   R2_SQL_RESULT_TTL_SECONDS,
   cachedR2SqlFetcher,
+  firstUnsettledRaceDay,
   isSettledRaceDay,
 } from "./r2-sql-result-cache";
 import type { Fetcher, KvStore } from "./types";
@@ -138,4 +139,10 @@ it("treats only race days two or more JST days old as settled", () => {
   expect(isSettledRaceDay("20261024", justAfterJstMidnight)).toBe(false);
   expect(isSettledRaceDay("20261022", justBeforeJstMidnight)).toBe(false);
   expect(isSettledRaceDay("20261021", justBeforeJstMidnight)).toBe(true);
+});
+
+it("names yesterday (JST) as the first race day that is not settled", () => {
+  expect(firstUnsettledRaceDay(Date.parse("2026-10-23T15:30:00Z"))).toBe("20261023");
+  expect(firstUnsettledRaceDay(Date.parse("2026-10-23T14:30:00Z"))).toBe("20261022");
+  expect(firstUnsettledRaceDay(Date.parse("2027-01-01T03:00:00Z"))).toBe("20261231");
 });
