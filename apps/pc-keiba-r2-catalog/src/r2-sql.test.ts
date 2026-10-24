@@ -1,3 +1,4 @@
+import { DuckDBInstance } from "@duckdb/node-api";
 import { expect, it, vi } from "vitest";
 
 import {
@@ -70,8 +71,10 @@ it("builds JRA features by joining partition-pruned jvd_se and jvd_ra", () => {
   expect(sql.match(/keibajo_code = '05'/gu)).toHaveLength(2);
   expect(sql.match(/race_bango = '01'/gu)).toHaveLength(2);
   expect(sql).toMatch("INNER JOIN jra_ra ra");
-  expect(sql).toMatch("INNER JOIN jra_counts counts");
-  expect(sql).toMatch("counts.entry_count");
+  expect(sql).not.toMatch("jra_counts");
+  expect(sql).toMatch("se.entry_count");
+  expect(sql.match(/FROM pc_keiba.jvd_se/gu)).toHaveLength(1);
+  expect(sql.match(/FROM jra_se/gu)).toHaveLength(1);
   expect(sql).toMatch("nullif(ra.shusso_tosu, '00')");
   expect(sql).toMatch("try_cast(nullif(se.umaban, '') AS INT) AS umaban");
   expect(sql.match(/umaban, ''\)\), ''\) AS INT\) BETWEEN 1 AND 18/gu)).toHaveLength(2);
@@ -594,4 +597,52 @@ it("rejects R2 SQL HTTP and payload failures", async () => {
   await expect(executeR2Sql(env(), "SELECT 1", invalidRow)).rejects.toThrow(
     "R2 SQL response has invalid rows",
   );
+});
+
+it("counts active runners per race inside the single runner scan", async () => {
+  const instance = await DuckDBInstance.create(":memory:");
+  const connection = await instance.connect();
+  try {
+    await connection.run("CREATE MACRO btrim(value) AS trim(value)");
+    await connection.run("CREATE SCHEMA pc_keiba");
+    await connection.run(`CREATE TABLE pc_keiba.nvd_se (kaisai_nen VARCHAR, kaisai_tsukihi VARCHAR,
+      keibajo_code VARCHAR, race_bango VARCHAR, ketto_toroku_bango VARCHAR, wakuban VARCHAR,
+      umaban VARCHAR, bamei VARCHAR, seibetsu_code VARCHAR, barei VARCHAR, futan_juryo VARCHAR,
+      kishumei_ryakusho VARCHAR, chokyoshimei_ryakusho VARCHAR, banushimei VARCHAR,
+      kakutei_chakujun VARCHAR, tansho_ninkijun VARCHAR, tansho_odds VARCHAR, soha_time VARCHAR,
+      time_sa VARCHAR, kohan_3f VARCHAR, corner_1 VARCHAR, corner_2 VARCHAR, corner_3 VARCHAR,
+      corner_4 VARCHAR, bataiju VARCHAR, zogen_fugo VARCHAR, zogen_sa VARCHAR)`);
+    await connection.run(`CREATE TABLE pc_keiba.nvd_ra (kaisai_nen VARCHAR, kaisai_tsukihi VARCHAR,
+      keibajo_code VARCHAR, race_bango VARCHAR, kyosomei_hondai VARCHAR, kyosomei_fukudai VARCHAR,
+      hasso_jikoku VARCHAR, track_code VARCHAR, grade_code VARCHAR, kyoso_shubetsu_code VARCHAR,
+      juryo_shubetsu_code VARCHAR, kyoso_joken_code VARCHAR, babajotai_code_shiba VARCHAR,
+      babajotai_code_dirt VARCHAR, kyori VARCHAR, shusso_tosu VARCHAR)`);
+    await connection.run(`INSERT INTO pc_keiba.nvd_se (kaisai_nen, kaisai_tsukihi, keibajo_code,
+      race_bango, ketto_toroku_bango, umaban, kakutei_chakujun) VALUES
+      ('2026', '0715', '44', '01', '2020100001', '01', '01'),
+      ('2026', '0715', '44', '01', '2020100002', '02', '02'),
+      ('2026', '0715', '44', '01', '2020100003', '', '00'),
+      ('2026', '0715', '44', '02', '2020100004', '01', '01'),
+      ('2026', '0715', '44', '02', '2020100005', '02', '02')`);
+    await connection.run(`INSERT INTO pc_keiba.nvd_ra (kaisai_nen, kaisai_tsukihi, keibajo_code,
+      race_bango, kyori, shusso_tosu) VALUES
+      ('2026', '0715', '44', '01', '1200', '00'),
+      ('2026', '0715', '44', '02', '1400', '12')`);
+    const result = await connection.runAndReadAll(
+      buildRaceFeaturesQuery(env(), { date: "20260715", source: "nar" }),
+    );
+    expect(
+      result
+        .getRowObjectsJson()
+        .map((row) => [row.race_bango, row.umaban, row.shusso_tosu, row.finish_norm]),
+    ).toStrictEqual([
+      ["01", 1, "2", 0],
+      ["01", 2, "2", 1],
+      ["02", 1, "12", 0],
+      ["02", 2, "12", 0.09090909361839294],
+    ]);
+  } finally {
+    connection.closeSync();
+    instance.closeSync();
+  }
 });

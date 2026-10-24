@@ -70,6 +70,16 @@ const RUNNER_COLUMNS = `
     zogen_fugo,
     zogen_sa`;
 
+// Active runners per race, computed in the runner scan itself: R2 SQL
+// re-executes a CTE at every reference, so a separate GROUP BY over the
+// runner CTE scanned the runner table a second time.
+const RUNNER_ENTRY_COUNT_COLUMN: string = `
+    count(CASE
+      WHEN nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL
+        AND try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) BETWEEN 1 AND 18
+      THEN 1 END
+    ) OVER (PARTITION BY kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango) AS entry_count`;
+
 const RACE_COLUMNS = `
     kaisai_nen,
     kaisai_tsukihi,
@@ -211,7 +221,7 @@ const buildRawCte = (
 const normalisedFeatureSelect = (config: RawSourceConfig): string => {
   const fieldSize = `coalesce(
     try_cast(nullif(ra.shusso_tosu, '00') AS INT),
-    counts.entry_count
+    se.entry_count
   )`;
   return `SELECT
   '${config.source}' AS source,
@@ -302,11 +312,6 @@ INNER JOIN ${config.prefix}_ra ra
   AND ra.kaisai_tsukihi = se.kaisai_tsukihi
   AND ra.keibajo_code = se.keibajo_code
   AND ra.race_bango = se.race_bango
-INNER JOIN ${config.prefix}_counts counts
-  ON counts.kaisai_nen = se.kaisai_nen
-  AND counts.kaisai_tsukihi = se.kaisai_tsukihi
-  AND counts.keibajo_code = se.keibajo_code
-  AND counts.race_bango = se.race_bango
 WHERE nullif(btrim(coalesce(se.ketto_toroku_bango, '')), '') IS NOT NULL
   AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) BETWEEN 1 AND 18
   AND try_cast(nullif(ra.kyori, '') AS INT) IS NOT NULL
@@ -314,16 +319,6 @@ WHERE nullif(btrim(coalesce(se.ketto_toroku_bango, '')), '') IS NOT NULL
   AND try_cast(nullif(ra.keibajo_code, '') AS INT) IS NOT NULL
   AND try_cast(nullif(ra.race_bango, '') AS INT) IS NOT NULL`;
 };
-
-const buildRunnerCountsCte = (config: RawSourceConfig): string =>
-  `${config.prefix}_counts AS (
-  SELECT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
-    count(*) AS entry_count
-  FROM ${config.prefix}_se
-  WHERE nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL
-    AND try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) BETWEEN 1 AND 18
-  GROUP BY kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango
-)`;
 
 const buildRawFeatureSource = (
   env: R2SqlCatalogConfig,
@@ -336,7 +331,7 @@ const buildRawFeatureSource = (
       buildRawCte(
         `${config.prefix}_se`,
         rawTableName(env, config.runnerTable),
-        RUNNER_COLUMNS,
+        `${RUNNER_COLUMNS},${RUNNER_ENTRY_COUNT_COLUMN}`,
         predicates,
       ),
       buildRawCte(
@@ -345,7 +340,6 @@ const buildRawFeatureSource = (
         RACE_COLUMNS,
         predicates,
       ),
-      buildRunnerCountsCte(config),
     ],
     select: normalisedFeatureSelect(config),
   };
