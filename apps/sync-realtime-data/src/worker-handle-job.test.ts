@@ -4319,3 +4319,238 @@ it("handleJob plan-realtime-fetches swallows logFetch error in skipped path", as
     "circuit breaker open",
   );
 });
+
+it("selectPremiumRaceDataPages fetches every JRA page when the stored payload is unreadable", async () => {
+  const { selectPremiumRaceDataPages } = await import("./worker");
+  const pages = selectPremiumRaceDataPages(
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      source: "jra",
+    } as never,
+    null,
+    new Date("2026-05-12T00:00:00.000Z"),
+  );
+  expect(pages).toStrictEqual({ comment: true, dataTop: true, work: true });
+});
+
+it("selectPremiumRaceDataPages fetches only data-top for an unread NAR race", async () => {
+  const { selectPremiumRaceDataPages } = await import("./worker");
+  const pages = selectPremiumRaceDataPages(
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      source: "nar",
+    } as never,
+    null,
+    new Date("2026-05-12T00:00:00.000Z"),
+  );
+  expect(pages).toStrictEqual({ comment: false, dataTop: true, work: false });
+});
+
+it("selectPremiumRaceDataPages skips every page of a stored NAR race hours before start", async () => {
+  const { selectPremiumRaceDataPages } = await import("./worker");
+  const pages = selectPremiumRaceDataPages(
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      source: "nar",
+    } as never,
+    {
+      dataTopHorses: [{ fetchedAt: "x", horseName: "h", horseNumber: "1", rank: 1, reasons: [] }],
+      paddockBulletins: [],
+      stableComments: [],
+      trainingReviews: [],
+    } as never,
+    new Date("2026-05-12T00:00:00.000Z"),
+  );
+  expect(pages).toStrictEqual({ comment: false, dataTop: false, work: false });
+});
+
+it("selectPremiumRaceDataPages fetches only the missing stable-comment page of a JRA race", async () => {
+  const { selectPremiumRaceDataPages } = await import("./worker");
+  const pages = selectPremiumRaceDataPages(
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      source: "jra",
+    } as never,
+    {
+      dataTopHorses: [{ fetchedAt: "x", horseName: "h", horseNumber: "1", rank: 1, reasons: [] }],
+      paddockBulletins: [],
+      stableComments: [],
+      trainingReviews: [{ commentText: "good", horseNumber: "1" }],
+    } as never,
+    new Date("2026-05-12T00:00:00.000Z"),
+  );
+  expect(pages).toStrictEqual({ comment: true, dataTop: false, work: false });
+});
+
+it("selectPremiumRaceDataPages re-fetches the work page while no training review has a comment", async () => {
+  const { selectPremiumRaceDataPages } = await import("./worker");
+  const pages = selectPremiumRaceDataPages(
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      raceStartAtJst: "",
+      source: "jra",
+    } as never,
+    {
+      dataTopHorses: [{ fetchedAt: "x", horseName: "h", horseNumber: "1", rank: 1, reasons: [] }],
+      paddockBulletins: [],
+      stableComments: [{ commentText: "順調", horseNumber: "1" }],
+      trainingReviews: [{ commentText: null, horseNumber: "1" }],
+    } as never,
+    new Date("2026-05-12T00:00:00.000Z"),
+  );
+  expect(pages).toStrictEqual({ comment: false, dataTop: false, work: true });
+});
+
+it("selectPremiumRaceDataPages refreshes every stored page inside the 30-minute pre-post window", async () => {
+  const { selectPremiumRaceDataPages } = await import("./worker");
+  const pages = selectPremiumRaceDataPages(
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      source: "jra",
+    } as never,
+    {
+      dataTopHorses: [{ fetchedAt: "x", horseName: "h", horseNumber: "1", rank: 1, reasons: [] }],
+      paddockBulletins: [],
+      stableComments: [{ commentText: "順調", horseNumber: "1" }],
+      trainingReviews: [{ commentText: "good", horseNumber: "1" }],
+    } as never,
+    new Date("2026-05-12T05:40:00.000Z"),
+  );
+  expect(pages).toStrictEqual({ comment: true, dataTop: true, work: true });
+});
+
+it("selectPremiumRaceDataPages stops the refresh once the race is 15 minutes past post", async () => {
+  const { selectPremiumRaceDataPages } = await import("./worker");
+  const pages = selectPremiumRaceDataPages(
+    {
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "0512",
+      raceStartAtJst: "2026-05-12T15:00:00+09:00",
+      source: "jra",
+    } as never,
+    {
+      dataTopHorses: [{ fetchedAt: "x", horseName: "h", horseNumber: "1", rank: 1, reasons: [] }],
+      paddockBulletins: [],
+      stableComments: [{ commentText: "順調", horseNumber: "1" }],
+      trainingReviews: [{ commentText: "good", horseNumber: "1" }],
+    } as never,
+    new Date("2026-05-12T06:15:00.000Z"),
+  );
+  expect(pages).toStrictEqual({ comment: false, dataTop: false, work: false });
+});
+
+it("handleJob fetch-premium-race-data skips the browser fetch when every section is already stored", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    getPremiumRaceLink,
+    getPremiumRacePayload,
+    getRaceSource,
+    updatePremiumRaceDataFetchState,
+  } = await import("./storage");
+  const { fetchPremiumHtml } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "44",
+    raceBango: "01",
+    raceKey: "nar:2026:0512:44:01",
+    raceStartAtJst: "2026-05-12T23:00:00+09:00",
+    source: "nar",
+  } as never);
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202644051201",
+    sourceRaceId: "202644051201",
+  } as never);
+  vi.mocked(getPremiumRacePayload).mockResolvedValueOnce({
+    dataTopHorses: [{ fetchedAt: "x", horseName: "h", horseNumber: "1", rank: 1, reasons: [] }],
+    paddockBulletins: [],
+    stableComments: [],
+    trainingReviews: [],
+  });
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+    } as never),
+    { raceKey: "nar:2026:0512:44:01", type: "fetch-premium-race-data" },
+  );
+  expect(fetchPremiumHtml).toHaveBeenCalledTimes(0);
+  expect(vi.mocked(updatePremiumRaceDataFetchState).mock.calls).toStrictEqual([
+    [
+      {},
+      {
+        message: '{"skipped":"all-sections-stored"}',
+        raceKey: "nar:2026:0512:44:01",
+        status: "ok",
+      },
+    ],
+  ]);
+});
+
+it("handleJob fetch-premium-race-data fetches only the missing comment page and keeps status ok", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    getPremiumRaceLink,
+    getPremiumRacePayload,
+    getRaceSource,
+    updatePremiumRaceDataFetchState,
+  } = await import("./storage");
+  const { fetchPremiumHtml } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0512",
+    keibajoCode: "08",
+    raceBango: "01",
+    raceKey: "jra:2026:0512:08:01",
+    raceStartAtJst: "2026-05-12T23:00:00+09:00",
+    source: "jra",
+  } as never);
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  } as never);
+  vi.mocked(getPremiumRacePayload).mockResolvedValueOnce({
+    dataTopHorses: [{ fetchedAt: "x", horseName: "h", horseNumber: "1", rank: 1, reasons: [] }],
+    paddockBulletins: [],
+    stableComments: [],
+    trainingReviews: [
+      {
+        commentText: "good",
+        evaluationGrade: null,
+        evaluationText: null,
+        fetchedAt: "x",
+        horseName: "h",
+        horseNumber: "1",
+        riderName: null,
+        trainingDate: "2026-05-10",
+      },
+    ],
+  });
+  vi.mocked(fetchPremiumHtml).mockResolvedValue(
+    '<div class="Icon_Account"></div><table class="Comment_Table_Show_All"></table>',
+  );
+  await handleJob(
+    buildEnv({
+      PREMIUM_RACE_COMMENT_PATH_TEMPLATE: "/c/{sourceRaceId}",
+      PREMIUM_RACE_DATA_TOP_PATH_TEMPLATE: "/d/{sourceRaceId}",
+      PREMIUM_RACE_ORIGIN: "https://x.test",
+      PREMIUM_RACE_WORK_PATH_TEMPLATE: "/w/{sourceRaceId}",
+    } as never),
+    { raceKey: "jra:2026:0512:08:01", type: "fetch-premium-race-data" },
+  );
+  expect(vi.mocked(fetchPremiumHtml).mock.calls.map((call) => call[1])).toStrictEqual([
+    "https://x.test/c/202605120801",
+  ]);
+  expect(vi.mocked(updatePremiumRaceDataFetchState).mock.calls.at(-1)?.[1].status).toBe("ok");
+});

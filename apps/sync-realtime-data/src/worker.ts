@@ -331,6 +331,12 @@ interface PremiumRaceDataSections {
   trainingReviews?: PremiumTrainingReview[];
 }
 
+interface PremiumRaceDataPages {
+  comment: boolean;
+  dataTop: boolean;
+  work: boolean;
+}
+
 // True at most once per hour so the discover-urls fallback only fires off
 // the :02 result-poller tick of each JST hour. Without this guard the
 // cron would re-discover every 2 minutes, which is wasteful.
@@ -451,6 +457,10 @@ const TRACK_CONDITION_FETCH_LOCK_MINUTES = 15;
 const QUEUE_RETRY_DELAY_SECONDS = 60;
 const RUNNING_STYLE_QUEUE_LOG_MARKER = "queue=running-style-predictions";
 const PREMIUM_RACE_DATA_RETRY_DELAY_SECONDS = 20 * 60;
+// Pre-post refresh window; mirrors the near-start arm of
+// listPremiumRaceDataFetchCandidatesByDate.
+const PREMIUM_RACE_DATA_REFRESH_BEFORE_MINUTES = 30;
+const PREMIUM_RACE_DATA_REFRESH_AFTER_MINUTES = 15;
 // Proxy session expiries auto-recover within minutes; keep the auth re-queue
 // gap short so a flaky session does not block a whole race-day window. Cap
 // total attempts so a permanently broken upstream cannot loop forever — past
@@ -5017,6 +5027,29 @@ const hasPremiumRaceDataChanged = (
   );
 };
 
+// Every page is one Browser Run session behind the premium proxy, so fetch a
+// page only when its section is missing (or the stored payload is unreadable)
+// or the race is inside its pre-post refresh window. NAR has no work/comment.
+export const selectPremiumRaceDataPages = (
+  race: NarRaceSource,
+  previous: PremiumRacePayload | null,
+  now: Date,
+): PremiumRaceDataPages => {
+  const minutes = minutesUntilRace(race, now);
+  const nearStart =
+    minutes !== null &&
+    minutes <= PREMIUM_RACE_DATA_REFRESH_BEFORE_MINUTES &&
+    minutes > -PREMIUM_RACE_DATA_REFRESH_AFTER_MINUTES;
+  const jra = race.source === "jra";
+  return previous === null || nearStart
+    ? { comment: jra, dataTop: true, work: jra }
+    : {
+        comment: jra && previous.stableComments.length === 0,
+        dataTop: previous.dataTopHorses.length === 0,
+        work: jra && !previous.trainingReviews.some((review) => Boolean(review.commentText)),
+      };
+};
+
 const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<void> => {
   const race = await getRaceSource(env.REALTIME_DB, raceKey);
   if (!race || !isPremiumRaceDataTarget(race)) {
@@ -5044,8 +5077,19 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   if (!link) {
     throw new Error(`premium race link not found: ${raceKey}`);
   }
+  const previousPayload = await getPremiumRacePayload(env.REALTIME_DB, raceKey).catch(() => null);
+  const pages = selectPremiumRaceDataPages(race, previousPayload, getNow(env));
+  if (!pages.work && !pages.comment && !pages.dataTop) {
+    // Leave last_fetch_at untouched so the pre-post refresh still fires.
+    await updatePremiumRaceDataFetchState(env.REALTIME_DB, {
+      message: JSON.stringify({ skipped: "all-sections-stored" }),
+      raceKey,
+      status: "ok",
+    });
+    return;
+  }
   const [workUrl, commentUrl, dataTopUrl] = [
-    race.source === "jra"
+    pages.work
       ? buildPremiumUrl(
           config,
           config.workPathTemplate,
@@ -5053,7 +5097,7 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
           { source: race.source },
         )
       : null,
-    race.source === "jra"
+    pages.comment
       ? buildPremiumUrl(
           config,
           config.commentPathTemplate,
@@ -5061,12 +5105,14 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
           { source: race.source },
         )
       : null,
-    buildPremiumUrl(
-      config,
-      config.dataTopPathTemplate,
-      { sourceRaceId: link.sourceRaceId },
-      { source: race.source },
-    ),
+    pages.dataTop
+      ? buildPremiumUrl(
+          config,
+          config.dataTopPathTemplate,
+          { sourceRaceId: link.sourceRaceId },
+          { source: race.source },
+        )
+      : null,
   ];
   const fetchedAt = toJstIsoString();
   const [workResult, commentResult, dataTopResult] = await Promise.allSettled([
@@ -5136,7 +5182,6 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
   // authenticated, so it must not be used to suppress data-top persistence
   // (it wrongly wiped valid, already-fetched data-top data in production).
   const dataTopHorsesForReplace = dataTopAuthRequired ? undefined : dataTopHorses;
-  const previousPayload = await getPremiumRacePayload(env.REALTIME_DB, raceKey).catch(() => null);
   const premiumRaceDataChanged = hasPremiumRaceDataChanged(previousPayload, {
     dataTopHorses: dataTopHorsesForReplace,
     stableComments,
@@ -5157,10 +5202,14 @@ const fetchAndStorePremiumRaceData = async (env: Env, raceKey: string): Promise<
       rows: dataTopHorsesForReplace.map((row) => ({ ...row, fetchedAt })),
     });
   }
+  // selectPremiumRaceDataPages skips a page only when its section is stored,
+  // so a skipped page still counts as data.
   const hasAnyData =
     (trainingReviews?.length ?? 0) > 0 ||
     (parsedStableComments?.length ?? 0) > 0 ||
-    (dataTopHorses?.length ?? 0) > 0;
+    (dataTopHorses?.length ?? 0) > 0 ||
+    !pages.dataTop ||
+    (race.source === "jra" && !(pages.work && pages.comment));
   // The premium queue polls hot races repeatedly. Compare semantic content
   // against the durable D1 snapshot (ignoring fetchedAt) so an unchanged poll
   // does not fan out another Viewer invalidation + warm. A first insert,

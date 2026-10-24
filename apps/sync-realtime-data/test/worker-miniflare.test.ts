@@ -651,8 +651,8 @@ describe("worker scheduling with Miniflare", () => {
     });
   });
 
-  it("requeues stale premium race data when last fetch is more than 30 minutes before race start", async () => {
-    await seedRace("jra:2026:0512:08:01", "2026-05-12T15:40:00+09:00", { source: "jra" });
+  it("requeues stale premium race data inside the 30-minute pre-post window when last fetch predates it", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T12:20:00+09:00", { source: "jra" });
     await db
       .prepare(
         `
@@ -1064,6 +1064,90 @@ describe("worker scheduling with Miniflare", () => {
       "2026-05-12T12:00:00+09:00",
     );
     expect(candidates).toEqual([]);
+  });
+
+  // 2026-10-24: the near-start arm used to match every not-yet-started race
+  // whose last fetch predated start-30min, so a stored race was re-fetched on
+  // every planner tick from the day before until post time.
+  it("does not requeue a stored NAR race hours before start even when its last fetch is old", async () => {
+    await seedRace("nar:2026:0512:55:01", "2026-05-12T15:40:00+09:00", { source: "nar" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605125501', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("nar:2026:0512:55:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-11T08:56:21+09:00', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("nar:2026:0512:55:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605125501', '2026-05-11T08:56:21+09:00', 1, '1', 'sample', '[]', '2026-05-11T08:56:21+09:00')
+        `,
+      )
+      .bind("nar:2026:0512:55:01")
+      .run();
+    const candidates = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T12:00:00+09:00",
+    );
+    expect(candidates).toEqual([]);
+  });
+
+  it("does not requeue a failed premium race until its retry_after has passed", async () => {
+    await seedRace("nar:2026:0512:55:01", "2026-05-12T15:40:00+09:00", { source: "nar" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605125501', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("nar:2026:0512:55:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, retry_after, updated_at
+          )
+          values (?, 'failed', '2026-05-12T12:10:00+09:00', '2026-05-12T11:50:00+09:00')
+        `,
+      )
+      .bind("nar:2026:0512:55:01")
+      .run();
+    const before = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T12:00:00+09:00",
+    );
+    const after = await listPremiumRaceDataFetchCandidatesByDate(
+      db,
+      TEST_DATE,
+      "2026-05-12T12:10:00+09:00",
+    );
+    expect(before).toEqual([]);
+    expect(after).toEqual([{ raceKey: "nar:2026:0512:55:01" }]);
   });
 
   // 2026-07-04 (later): training reviews / stable comments are pre-race

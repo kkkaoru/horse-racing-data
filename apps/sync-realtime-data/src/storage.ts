@@ -2134,7 +2134,8 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
           and rs.kaisai_tsukihi = ?
           and (
             state.race_key is null
-            or state.status in ('idle', 'failed')
+            or state.status = 'idle'
+            or (state.status = 'failed' and (state.retry_after is null or state.retry_after <= ?))
             or (state.status = 'pending' and (state.retry_after is null or state.retry_after <= ?))
             or (
               state.status = 'queued'
@@ -2153,6 +2154,11 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
                 or (
                   rs.race_start_at_jst is not null
                   and datetime(rs.race_start_at_jst) > datetime(?, '-15 minutes')
+                  -- 2026-10-24: without this lower bound every not-yet-started race
+                  -- whose last fetch predates start-30min matched on every planner
+                  -- tick (~35-50 browser-proxied fetches per race per day). The arm
+                  -- is the pre-post refresh: one re-fetch inside the last 30 minutes.
+                  and datetime(?) >= datetime(rs.race_start_at_jst, '-30 minutes')
                   and (
                     state.last_fetch_at is null
                     or datetime(state.last_fetch_at) < datetime(rs.race_start_at_jst, '-30 minutes')
@@ -2207,6 +2213,8 @@ export const listPremiumRaceDataFetchCandidatesByDate = async (
     .bind(
       targetDate.slice(0, 4),
       targetDate.slice(4, 8),
+      now,
+      now,
       now,
       now,
       now,

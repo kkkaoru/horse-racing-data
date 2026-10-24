@@ -1287,6 +1287,8 @@ it("listPremiumRaceDataFetchCandidatesByDate binds the auth retry_after placehol
     "2026-05-12T03:00:00+09:00",
     "2026-05-12T03:00:00+09:00",
     "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
   );
 });
 
@@ -1424,6 +1426,8 @@ it("listPremiumRaceDataFetchCandidatesByDate keeps the same bind placeholder cou
   expect(bind).toHaveBeenCalledWith(
     "2026",
     "0704",
+    "2026-07-04T21:00:00+09:00",
+    "2026-07-04T21:00:00+09:00",
     "2026-07-04T21:00:00+09:00",
     "2026-07-04T21:00:00+09:00",
     "2026-07-04T21:00:00+09:00",
