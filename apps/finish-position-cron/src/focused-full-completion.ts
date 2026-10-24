@@ -117,6 +117,18 @@ const NAR_CELL_TOP1_MODEL_VERSIONS: readonly string[] = [
   "nar-cell-top1-43-c-mile-summer-tc1-rolling-v1-nowin2",
   "nar-cell-top1-43-c-1400-1500-tc1-rolling-v1-nowin2",
 ];
+// Mirrors predict_lib/named_race_cells.json: a named-race cell writes every row
+// of its race under the cell's own (or prerace route's) model_version, never the
+// grade/joken default above, so completion must also accept those per venue.
+const JRA_NAMED_RACE_MODEL_VERSIONS: Readonly<Record<string, readonly string[]>> = {
+  "01": ["jra-named-sapporo-suzuran-v2-noexo1"],
+  "04": ["jra-named-niigata-bsn-v1-noexo1", "jra-named-niigata-kinen-draw-v2-noexo1"],
+  "07": [
+    "jra-named-chukyo-nisai-stakes-focal-v3-noexo1",
+    "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1",
+    "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
+  ],
+};
 const BANEI_DEFAULT_MODEL_VERSION = "banei-cb-v9-sim-2011-nowin2";
 const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y-nowin2";
 
@@ -616,6 +628,16 @@ const countMatchesModelVersion = async (params: CountMatchParams): Promise<boole
   return toCount(result[0].actual_rows) === params.expectedCount;
 };
 
+const cellModelVersionsFor = (
+  category: PredictCategory,
+  keibajoCode: string,
+): readonly string[] => {
+  if (category === "nar") return NAR_CELL_TOP1_MODEL_VERSIONS;
+  return category === "jra"
+    ? (JRA_NAMED_RACE_MODEL_VERSIONS[keibajoCode.padStart(2, "0")] ?? [])
+    : [];
+};
+
 export const isFocusedFullPredictionComplete = async (
   params: CompletionParams,
 ): Promise<boolean> => {
@@ -631,10 +653,11 @@ export const isFocusedFullPredictionComplete = async (
     runYmd: params.runYmd,
   });
   const stage1ModelVersion = STAGE1_MARKET_FREE_MODEL_VERSIONS[params.category];
+  const cellModelVersions = cellModelVersionsFor(params.category, params.keibajoCode);
   const acceptableModelVersions = new Set([
     modelVersion,
     ...(stage1ModelVersion === undefined ? [] : [stage1ModelVersion]),
-    ...(params.category === "nar" ? NAR_CELL_TOP1_MODEL_VERSIONS : []),
+    ...cellModelVersions,
   ]);
   const kvComplete = await kvMatchesCompletion(
     params,
@@ -673,11 +696,8 @@ export const isFocusedFullPredictionComplete = async (
   ) {
     return true;
   }
-  if (params.category !== "nar") return false;
   const cellMatches = await Promise.all(
-    NAR_CELL_TOP1_MODEL_VERSIONS.map((modelVersion) =>
-      countMatchesModelVersion({ ...shared, modelVersion }),
-    ),
+    cellModelVersions.map((modelVersion) => countMatchesModelVersion({ ...shared, modelVersion })),
   );
   return cellMatches.some((matches) => matches);
 };

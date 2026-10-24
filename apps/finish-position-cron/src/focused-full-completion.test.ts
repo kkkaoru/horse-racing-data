@@ -1598,3 +1598,39 @@ test("STAGE1_MARKET_FREE_MODEL_VERSIONS covers every enabled category in the rea
     );
   }
 });
+
+test("recognizes a JRA named-race cell race written under the venue's named model_version as complete", async () => {
+  queryMock
+    .mockResolvedValueOnce([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 12 }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "4",
+      raceBango: "11",
+      runYmd: "20260830",
+    }),
+  ).resolves.toBe(true);
+
+  expect(queryMock).toHaveBeenCalledTimes(4);
+  expect(queryMock.mock.calls[2]?.[1]?.[5]).toBe("jra-named-niigata-bsn-v1-noexo1");
+  expect(queryMock.mock.calls[3]?.[1]?.[5]).toBe("jra-named-niigata-kinen-draw-v2-noexo1");
+});
+
+test("does not query named-race model_versions for a JRA venue without a named cell", async () => {
+  queryMock.mockResolvedValue([{ actual_rows: 0 }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "05",
+      raceBango: "11",
+      runYmd: "20260613",
+    }),
+  ).resolves.toBe(false);
+
+  expect(queryMock).toHaveBeenCalledTimes(2);
+});
