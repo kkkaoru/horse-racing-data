@@ -1097,13 +1097,18 @@ const handleBulkFreshRaceEntries = async (
     return jsonResponse({ error: "unauthorized" }, 401);
   }
   const filters = parseBulkFreshRaceEntryFilters(url);
-  const rows = await executeR2Sql(
-    env,
-    buildBulkFreshRaceEntriesQuery(env, filters),
-    dependencies.fetchImpl,
+  const query = buildBulkFreshRaceEntriesQuery(env, filters);
+  // Never cached (readiness checks need the current runners), but callers
+  // asking at the same moment share one in-flight scan.
+  const entries = await coalesce(`fresh-race-entries-bulk:${query}`, async () =>
+    JSON.stringify(
+      normaliseBulkFreshRaceEntries(
+        await executeR2Sql(env, query, dependencies.fetchImpl),
+        filters.source,
+      ),
+    ),
   );
-  const entries = normaliseBulkFreshRaceEntries(rows, filters.source);
-  return jsonResponse({ ...filters, entries });
+  return jsonResponse({ ...filters, entries: JSON.parse(entries) });
 };
 
 const handleRaceTrainings = (

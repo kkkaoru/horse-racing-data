@@ -686,6 +686,47 @@ it("keeps bulk JRA, NAR, and ban-ei route filters disjoint", async () => {
   expect(String(banEiHarness.fetchCalls[0]?.init?.body)).toMatch("keibajo_code = '83'");
 });
 
+it("shares one in-flight bulk fresh-entry scan between concurrent callers only", async () => {
+  const harness = createHarness([
+    {
+      keibajo_code: "35",
+      ketto_toroku_bango: "2023100002",
+      race_bango: "01",
+      source: "nar",
+      umaban: 1,
+    },
+  ]);
+  const request = (): Request =>
+    new Request(
+      "https://catalog.test/v1/internal/fresh-race-entries-bulk?date=20260825&source=nar",
+      { headers: { Authorization: "Bearer attestation-secret" } },
+    );
+  const slowFetch: Fetcher = async (input, init) => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return harness.dependencies.fetchImpl(input, init);
+  };
+  const concurrent = await Promise.all([
+    handleRequest(request(), harness.env, { ...harness.dependencies, fetchImpl: slowFetch }),
+    handleRequest(request(), harness.env, { ...harness.dependencies, fetchImpl: slowFetch }),
+  ]);
+  expect(await concurrent[1]?.json()).toStrictEqual({
+    date: "20260825",
+    entries: [
+      {
+        keibajoCode: "35",
+        kettoTorokuBango: "2023100002",
+        raceBango: "01",
+        source: "nar",
+        umaban: 1,
+      },
+    ],
+    source: "nar",
+  });
+  expect(harness.fetchCalls).toHaveLength(1);
+  await handleRequest(request(), harness.env, harness.dependencies);
+  expect(harness.fetchCalls).toHaveLength(2);
+});
+
 it("validates bulk scope and fails closed for empty or malformed rows", async () => {
   const invalidHarness = createHarness([
     {
