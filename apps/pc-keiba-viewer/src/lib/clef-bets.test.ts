@@ -8,13 +8,16 @@ import {
   describePlan,
   formatPlanOdds,
   formatPlanPayout,
+  formatPlanSetProfit,
   formatPlanStake,
   formatYen,
   normalizeBudget,
+  normalizeTarget,
   planGroups,
   readClefBets,
   readHiddenBetColumns,
   readSelectedBetTypes,
+  readStoredTarget,
   requestedBetTypes,
   summarizePlanSet,
   trimName,
@@ -68,16 +71,16 @@ it("builds the Worker URL with padded parts and the budget", () => {
       { year: "2026", month: "1", day: "8", keibajoCode: "08", raceNumber: "3" },
       2500,
     ),
-  ).toBe("/api/clef-rerank/bets/20260108/08/03?budget=2500");
+  ).toBe("/api/clef-rerank/bets/20260108/08/03?budget=2500&target=10000");
 });
 
 it("adds the selected bet types in display order unless every type is chosen", () => {
   const race = { year: "2026", month: "10", day: "18", keibajoCode: "08", raceNumber: "11" };
-  expect(buildClefBetsUrl(race, 2000, ["3rentan", "wakuren", "tansho", "x"])).toBe(
-    "/api/clef-rerank/bets/20261018/08/11?budget=2000&types=tansho,wakuren,3rentan",
+  expect(buildClefBetsUrl(race, 2000, 5000, ["3rentan", "wakuren", "tansho", "x"])).toBe(
+    "/api/clef-rerank/bets/20261018/08/11?budget=2000&target=5000&types=tansho,wakuren,3rentan",
   );
   expect(
-    buildClefBetsUrl(race, 2000, [
+    buildClefBetsUrl(race, 2000, 0, [
       "3rentan",
       "3renpuku",
       "umatan",
@@ -87,7 +90,7 @@ it("adds the selected bet types in display order unless every type is chosen", (
       "fukusho",
       "tansho",
     ]),
-  ).toBe("/api/clef-rerank/bets/20261018/08/11?budget=2000");
+  ).toBe("/api/clef-rerank/bets/20261018/08/11?budget=2000&target=0");
 });
 
 it("restores the selected bet types or falls back to every type", () => {
@@ -109,6 +112,43 @@ it("decodes the multi-type plans and drops unused fields", () => {
     runners: payload.runners,
     plans: payload.plans,
   });
+});
+
+it("keeps the target the Worker answered with when it is a number", () => {
+  expect(readClefBets({ ...payload, target: 5000 })?.target).toBe(5000);
+  expect(readClefBets({ ...payload, target: "5000" })).toStrictEqual({
+    oddsFetchedAt: "2026-10-18T06:55:31+09:00",
+    runners: payload.runners,
+    plans: payload.plans,
+  });
+});
+
+it("rounds and clamps the target profit and falls back to 10,000 yen", () => {
+  expect(normalizeTarget(12_345.6)).toBe(12_346);
+  expect(normalizeTarget(-1)).toBe(0);
+  expect(normalizeTarget(20_000_000)).toBe(10_000_000);
+  expect(normalizeTarget(Number.NaN)).toBe(10_000);
+  expect(normalizeTarget(Number.POSITIVE_INFINITY)).toBe(10_000);
+});
+
+it("restores the stored target profit or falls back to 10,000 yen", () => {
+  expect(readStoredTarget(null)).toBe(10_000);
+  expect(readStoredTarget("")).toBe(10_000);
+  expect(readStoredTarget("abc")).toBe(10_000);
+  expect(readStoredTarget("3000")).toBe(3000);
+  expect(readStoredTarget("0")).toBe(0);
+  expect(readStoredTarget("99999999")).toBe(10_000_000);
+});
+
+it("formats the plan set profit as a signed single value or range", () => {
+  expect(formatPlanSetProfit(payload.plans)).toBe("−560円〜+1,440円");
+  expect(formatPlanSetProfit({ ...payload.plans, plans: [tanshoPlan] })).toBe("+1,440円");
+  expect(formatPlanSetProfit({ ...payload.plans, totalStake: 5000, plans: [tanshoPlan] })).toBe(
+    "−1,560円",
+  );
+  expect(formatPlanSetProfit({ ...payload.plans, totalStake: 3440, plans: [tanshoPlan] })).toBe(
+    "+0円",
+  );
 });
 
 it("accepts a single plan when only one bet type is selected", () => {

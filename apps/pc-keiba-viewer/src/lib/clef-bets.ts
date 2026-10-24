@@ -41,12 +41,17 @@ export interface ClefBetCard {
   oddsFetchedAt: string;
   runners: ClefBetRunner[];
   plans: ClefBetPlanSet;
+  target?: number;
 }
 
 export const DEFAULT_BET_BUDGET: number = 2000;
 export const BET_BUDGET_STEP: number = 100;
 export const MIN_BET_BUDGET: number = 200;
 export const MAX_BET_BUDGET: number = 1_000_000;
+export const DEFAULT_BET_TARGET: number = 10_000;
+export const MIN_BET_TARGET: number = 0;
+export const MAX_BET_TARGET: number = 10_000_000;
+export const BET_TARGET_STORAGE_KEY: string = "pc-keiba:bet-target";
 
 const CLEF_BETS_ENDPOINT: string = "/api/clef-rerank/bets";
 const TWO_DIGITS: number = 2;
@@ -167,11 +172,12 @@ export const requestedBetTypes = (
 export const buildClefBetsUrl = (
   race: ClefRerankRaceAddress,
   budget: number,
+  target: number = DEFAULT_BET_TARGET,
   types: readonly string[] = BET_TYPES,
 ): string => {
   const selected = orderBetTypes(types);
   const filter = selected.length === BET_TYPES.length ? "" : `&types=${selected.join(",")}`;
-  return `${CLEF_BETS_ENDPOINT}/${race.year}${pad(race.month)}${pad(race.day)}/${race.keibajoCode}/${pad(race.raceNumber)}?budget=${String(budget)}${filter}`;
+  return `${CLEF_BETS_ENDPOINT}/${race.year}${pad(race.month)}${pad(race.day)}/${race.keibajoCode}/${pad(race.raceNumber)}?budget=${String(budget)}&target=${String(target)}${filter}`;
 };
 
 export const readClefBets = (value: unknown): ClefBetCard | null =>
@@ -184,6 +190,7 @@ export const readClefBets = (value: unknown): ClefBetCard | null =>
         oddsFetchedAt: value.oddsFetchedAt,
         runners: value.runners,
         plans: value.plans,
+        ...(isFiniteNumber(value.target) ? { target: value.target } : {}),
       }
     : null;
 
@@ -195,6 +202,16 @@ export const normalizeBudget = (value: number): number =>
         Math.max(MIN_BET_BUDGET, Math.round(value / BET_BUDGET_STEP) * BET_BUDGET_STEP),
       )
     : DEFAULT_BET_BUDGET;
+
+// Whole yen within the range the Worker accepts; anything non-numeric falls back to the default.
+export const normalizeTarget = (value: number): number =>
+  Number.isFinite(value)
+    ? Math.min(MAX_BET_TARGET, Math.max(MIN_BET_TARGET, Math.round(value)))
+    : DEFAULT_BET_TARGET;
+
+// The last target on this device wins for every race; absent or unreadable means the default.
+export const readStoredTarget = (stored: string | null): number =>
+  stored === null || stored.trim() === "" ? DEFAULT_BET_TARGET : normalizeTarget(Number(stored));
 
 export const betTypeLabel = (betType: string): string => BET_TYPE_LABELS[betType] ?? betType;
 
@@ -272,6 +289,18 @@ export const formatPlanPayout = (plan: Pick<ClefBetSuggestion, "tickets">): stri
   const low = Math.min(...plan.tickets.map((ticket) => ticket.payout));
   const high = Math.max(...plan.tickets.map((ticket) => ticket.payoutMax ?? ticket.payout));
   return low === high ? formatYen(low) : `${formatYen(low)}〜${formatYen(high)}`;
+};
+
+const formatSignedYen = (value: number): string =>
+  value < 0 ? `−${formatYen(-value)}` : `+${formatYen(value)}`;
+
+// 損益 = 払戻額 − 購入金額 for the whole set, from the smallest to the largest single hit.
+export const formatPlanSetProfit = (set: ClefBetPlanSet): string => {
+  const tickets = set.plans.flatMap((plan) => plan.tickets);
+  const low = Math.min(...tickets.map((ticket) => ticket.payout)) - set.totalStake;
+  const high =
+    Math.max(...tickets.map((ticket) => ticket.payoutMax ?? ticket.payout)) - set.totalStake;
+  return low === high ? formatSignedYen(low) : `${formatSignedYen(low)}〜${formatSignedYen(high)}`;
 };
 
 export const summarizePlanSet = (set: ClefBetPlanSet): string =>

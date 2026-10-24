@@ -14,24 +14,31 @@ import {
   BET_BUDGET_STEP,
   BET_COLUMNS_STORAGE_KEY,
   BET_TYPES,
+  BET_TARGET_STORAGE_KEY,
   BET_TYPES_STORAGE_KEY,
   OPTIONAL_BET_COLUMNS,
   DEFAULT_BET_BUDGET,
+  DEFAULT_BET_TARGET,
   MAX_BET_BUDGET,
+  MAX_BET_TARGET,
   MIN_BET_BUDGET,
+  MIN_BET_TARGET,
   betStyleLabel,
   betTypeLabel,
   buildClefBetsUrl,
   describePlan,
   formatPlanOdds,
   formatPlanPayout,
+  formatPlanSetProfit,
   formatPlanStake,
   formatYen,
   normalizeBudget,
+  normalizeTarget,
   planGroups,
   readClefBets,
   readHiddenBetColumns,
   readSelectedBetTypes,
+  readStoredTarget,
   requestedBetTypes,
   summarizePlanSet,
   trimName,
@@ -43,9 +50,12 @@ import type { ClefRerankRaceAddress } from "../../../lib/clef-rerank";
 import { FrameNumberBadge, PlainHorseNumberBadge } from "./frame-number-badge";
 import { useRealtimeRaceSelector } from "./realtime-client";
 
+// The Worker found odds but no ticket that reaches the target within the budget.
+const UNREACHABLE = "target-unreachable";
+
 interface ClefBetState {
   url: string;
-  card: ClefBetCard | null;
+  card: ClefBetCard | null | typeof UNREACHABLE;
 }
 
 interface BetBodyProps {
@@ -73,6 +83,11 @@ interface GroupCellProps {
 interface BudgetControlProps {
   budget: number;
   onChange: (budget: number) => void;
+}
+
+interface TargetControlProps {
+  target: number;
+  onChange: (target: number) => void;
 }
 
 interface PickColumn {
@@ -103,10 +118,15 @@ const PICK_COLUMNS: readonly PickColumn[] = [
   { label: "馬主", pick: (runner) => trimName(runner.owner) },
 ];
 
-const loadCard = async (url: string, signal: AbortSignal): Promise<ClefBetCard | null> => {
+const isUnreachable = (body: unknown): boolean =>
+  typeof body === "object" && body !== null && "reason" in body && body.reason === UNREACHABLE;
+
+const loadCard = async (url: string, signal: AbortSignal): Promise<ClefBetState["card"]> => {
   try {
     const response = await fetch(url, { credentials: "same-origin", signal, cache: "no-store" });
-    return response.ok ? readClefBets(await response.json()) : null;
+    const body: unknown = await response.json();
+    if (response.ok) return readClefBets(body);
+    return isUnreachable(body) ? UNREACHABLE : null;
   } catch {
     return null;
   }
@@ -190,7 +210,7 @@ const readStored = (key: string): string | null => {
   }
 };
 
-const writeStored = (key: string, values: readonly string[]): void => {
+const writeStored = (key: string, values: readonly string[] | number): void => {
   try {
     window.localStorage.setItem(key, JSON.stringify(values));
   } catch {
@@ -202,6 +222,12 @@ function BetBody({ state, hidden }: BetBodyProps) {
   if (state === null) return <p>推奨馬券を計算しています…</p>;
   const card = state.card;
   if (card === null) return <p>オッズ発表後に推奨馬券を表示します。</p>;
+  if (card === UNREACHABLE)
+    return (
+      <p>
+        この予算では目標損益額に届く買い目がありません。予算を増やすか目標損益額を下げてください。
+      </p>
+    );
   const runners = new Map(card.runners.map((runner) => [runner.horseNumber, runner]));
   const columns = PICK_COLUMNS.filter((column) => !hidden.includes(column.label));
   return (
@@ -249,6 +275,14 @@ function BetBody({ state, hidden }: BetBodyProps) {
               </tr>
             ))}
           </tbody>
+          <tfoot>
+            <tr>
+              <th colSpan={columns.length + 3} scope="row">
+                損益（払戻額 − 購入金額）
+              </th>
+              <td className="clef-bet-number">{formatPlanSetProfit(card.plans)}</td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </>
@@ -342,11 +376,48 @@ function BudgetControl({ budget, onChange }: BudgetControlProps) {
   );
 }
 
+// 目標損益額: a numeric field that applies on blur or Enter like the typed budget.
+function TargetControl({ target, onChange }: TargetControlProps) {
+  const id = useId();
+  const [draft, setDraft] = useState<string>(String(target));
+  useEffect(() => setDraft(String(target)), [target]);
+  const commit = (): void => {
+    const next = normalizeTarget(Number(draft));
+    setDraft(String(next));
+    onChange(next);
+  };
+  const onKey = (event: KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === "Enter") commit();
+  };
+  return (
+    <fieldset className="clef-bet-budget">
+      <legend>目標損益額</legend>
+      <div className="clef-bet-budget-input">
+        <label htmlFor={id}>目標損益額を入力（円単位）</label>
+        <input
+          id={id}
+          inputMode="numeric"
+          max={MAX_BET_TARGET}
+          min={MIN_BET_TARGET}
+          onBlur={commit}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={onKey}
+          step={1}
+          type="number"
+          value={draft}
+        />
+        <span aria-hidden="true">円</span>
+      </div>
+    </fieldset>
+  );
+}
+
 // Shows suggested tickets under the realtime odds. The page polls realtime odds only while it is
 // open, so suggestions follow each new snapshot only for viewers; the Worker re-runs clef-flash
 // only when the favourites' order or the served prediction changes.
 export function ClefBetSection(race: ClefRerankRaceAddress) {
   const [budget, setBudget] = useState<number>(DEFAULT_BET_BUDGET);
+  const [target, setTarget] = useState<number>(DEFAULT_BET_TARGET);
   const [state, setState] = useState<ClefBetState | null>(null);
   const [hidden, setHidden] = useState<string[]>([]);
   const [types, setTypes] = useState<string[]>([...BET_TYPES]);
@@ -355,7 +426,12 @@ export function ClefBetSection(race: ClefRerankRaceAddress) {
       typeof window.matchMedia === "function" && window.matchMedia(MOBILE_QUERY).matches;
     setHidden(readHiddenBetColumns(readStored(BET_COLUMNS_STORAGE_KEY), mobile));
     setTypes(readSelectedBetTypes(readStored(BET_TYPES_STORAGE_KEY)));
+    setTarget(readStoredTarget(readStored(BET_TARGET_STORAGE_KEY)));
   }, []);
+  const onTarget = (next: number): void => {
+    setTarget(next);
+    writeStored(BET_TARGET_STORAGE_KEY, next);
+  };
   const onToggle = (label: string, visible: boolean): void => {
     const next = visible ? hidden.filter((item) => item !== label) : [...hidden, label];
     setHidden(next);
@@ -374,7 +450,7 @@ export function ClefBetSection(race: ClefRerankRaceAddress) {
   const url =
     available.length > 0 && requested.length === 0
       ? null
-      : `${buildClefBetsUrl(race, budget, requested)}&odds=${encodeURIComponent(oddsFetchedAt)}`;
+      : `${buildClefBetsUrl(race, budget, target, requested)}&odds=${encodeURIComponent(oddsFetchedAt)}`;
   useEffect(() => {
     if (url === null) return undefined;
     const controller = new AbortController();
@@ -394,6 +470,7 @@ export function ClefBetSection(race: ClefRerankRaceAddress) {
     <section aria-label="推奨馬券" className="clef-bet-section">
       <h3>推奨馬券</h3>
       <BudgetControl budget={budget} onChange={setBudget} />
+      <TargetControl onChange={onTarget} target={target} />
       <BetTypeToggles available={available} onToggle={onToggleType} selected={types} />
       <ColumnToggles hidden={hidden} onToggle={onToggle} />
       {url === null ? (

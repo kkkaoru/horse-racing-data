@@ -2472,7 +2472,7 @@ it("get_bet_suggestions returns the Worker suggestion for the default budget", a
   const result = await callMcpTool(
     "get_bet_suggestions",
     betRaceArgs,
-    jsonFetch({ "/api/clef-rerank/bets/20261018/08/03?budget=2000": betPayload }),
+    jsonFetch({ "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000": betPayload }),
   );
   expect(result.isError).toBe(false);
   expect(JSON.parse(result.content[0]?.text ?? "{}")).toStrictEqual(betPayload);
@@ -2482,7 +2482,7 @@ it("get_bet_suggestions forwards an explicit budget", async () => {
   const result = await callMcpTool(
     "get_bet_suggestions",
     { ...betRaceArgs, budget: 5000 },
-    jsonFetch({ "/api/clef-rerank/bets/20261018/08/03?budget=5000": betPayload }),
+    jsonFetch({ "/api/clef-rerank/bets/20261018/08/03?budget=5000&target=10000": betPayload }),
   );
   expect(result.isError).toBe(false);
 });

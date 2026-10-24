@@ -102,9 +102,13 @@ it("renders one row per bet plan with legs grouped inside each column", async ()
     "馬券枠番馬番馬名騎手調教師馬主オッズ購入金額払戻額",
     "ワイド軸流し軸 11 → 相手 4・9軸11相手4-軸イレブン相手フォー-軸騎手イレブン相手騎手フォー-軸調教師イレブン相手調教師フォー-軸馬主イレブン相手馬主フォー-2.4〜3.6各600円 × 2点 = 1,200円1,440円〜2,160円",
     "単勝通常11番811イレブン騎手イレブン調教師イレブン馬主イレブン4.3800円3,440円",
+    "損益（払戻額 − 購入金額）−560円〜+1,440円",
   ]);
+  expect(
+    screen.getByRole("rowheader", { name: "損益（払戻額 − 購入金額）" }).getAttribute("colSpan"),
+  ).toBe("9");
   expect(fetcher).toHaveBeenCalledWith(
-    "/api/clef-rerank/bets/20261018/08/03?budget=2000&odds=T1",
+    "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&odds=T1",
     expect.objectContaining({ credentials: "same-origin", cache: "no-store" }),
   );
 });
@@ -140,7 +144,7 @@ it("changes the budget with the slider, step buttons and the typed amount", asyn
   await waitFor(
     () =>
       expect(fetcher).toHaveBeenLastCalledWith(
-        "/api/clef-rerank/bets/20261018/08/03?budget=60000&odds=T1",
+        "/api/clef-rerank/bets/20261018/08/03?budget=60000&target=10000&odds=T1",
         expect.objectContaining({ cache: "no-store" }),
       ),
     { timeout: 2000 },
@@ -205,7 +209,7 @@ it("refetches for each new odds snapshot and keeps the last suggestion visible m
   await waitFor(
     () =>
       expect(fetcher).toHaveBeenLastCalledWith(
-        "/api/clef-rerank/bets/20261018/08/03?budget=2000&odds=T2",
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&odds=T2",
         expect.objectContaining({ cache: "no-store" }),
       ),
     { timeout: 2000 },
@@ -220,7 +224,7 @@ it("requests without an odds snapshot before realtime data arrives", async () =>
   await waitFor(
     () =>
       expect(fetcher).toHaveBeenCalledWith(
-        "/api/clef-rerank/bets/20261018/08/03?budget=2000&odds=",
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&odds=",
         expect.objectContaining({ cache: "no-store" }),
       ),
     { timeout: 2000 },
@@ -366,7 +370,7 @@ it("disables bet types without odds and requests only checked types with odds", 
     "3連単（オッズなし）:false:true",
   ]);
   expect(fetcher).toHaveBeenLastCalledWith(
-    "/api/clef-rerank/bets/20261018/08/03?budget=2000&odds=T1",
+    "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&odds=T1",
     expect.objectContaining({ cache: "no-store" }),
   );
   fireEvent.click(screen.getByRole("checkbox", { name: "ワイド" }));
@@ -376,7 +380,7 @@ it("disables bet types without odds and requests only checked types with odds", 
   await waitFor(
     () =>
       expect(fetcher).toHaveBeenLastCalledWith(
-        "/api/clef-rerank/bets/20261018/08/03?budget=2000&types=tansho,umaren&odds=T1",
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&types=tansho,umaren&odds=T1",
         expect.objectContaining({ cache: "no-store" }),
       ),
     { timeout: 2000 },
@@ -405,7 +409,7 @@ it("asks for a bet type with odds instead of fetching when none is checked", asy
   fireEvent.click(screen.getByRole("checkbox", { name: "単勝" }));
   expect(await screen.findByText("馬主フォー", {}, { timeout: 2000 })).toBeTruthy();
   expect(fetcher).toHaveBeenLastCalledWith(
-    "/api/clef-rerank/bets/20261018/08/03?budget=2000&odds=T1",
+    "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&odds=T1",
     expect.objectContaining({ cache: "no-store" }),
   );
 });
@@ -418,9 +422,71 @@ it("requests the remembered types before any odds are published", async () => {
   await waitFor(
     () =>
       expect(fetcher).toHaveBeenCalledWith(
-        "/api/clef-rerank/bets/20261018/08/03?budget=2000&types=tansho,umaren&odds=T1",
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=10000&types=tansho,umaren&odds=T1",
         expect.objectContaining({ cache: "no-store" }),
       ),
     { timeout: 2000 },
   );
+});
+
+it("restores the target profit, saves edits and refetches with the new target", async () => {
+  const store = memoryStorage({ "pc-keiba:bet-target": "3000" });
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload));
+  vi.stubGlobal("fetch", fetcher);
+  render(<ClefBetSection {...race} />);
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  expect(fetcher).toHaveBeenLastCalledWith(
+    "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=3000&odds=T1",
+    expect.objectContaining({ cache: "no-store" }),
+  );
+  const typed = screen.getByLabelText<HTMLInputElement>("目標損益額を入力（円単位）");
+  expect(typed.value).toBe("3000");
+  fireEvent.change(typed, { target: { value: "4500.4" } });
+  expect(store.get("pc-keiba:bet-target")).toBe("3000");
+  fireEvent.keyDown(typed, { key: "a" });
+  fireEvent.keyDown(typed, { key: "Enter" });
+  expect(typed.value).toBe("4500");
+  expect(store.get("pc-keiba:bet-target")).toBe("4500");
+  await waitFor(
+    () =>
+      expect(fetcher).toHaveBeenLastCalledWith(
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&target=4500&odds=T1",
+        expect.objectContaining({ cache: "no-store" }),
+      ),
+    { timeout: 2000 },
+  );
+  fireEvent.change(typed, { target: { value: "-5" } });
+  fireEvent.blur(typed);
+  expect(typed.value).toBe("0");
+  expect(store.get("pc-keiba:bet-target")).toBe("0");
+});
+
+it("explains when no ticket reaches the target profit within the budget", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        Response.json({ error: "unreachable", reason: "target-unreachable" }, { status: 404 }),
+      ),
+  );
+  render(<ClefBetSection {...race} />);
+  expect(
+    await screen.findByText(
+      "この予算では目標損益額に届く買い目がありません。予算を増やすか目標損益額を下げてください。",
+      {},
+      { timeout: 2000 },
+    ),
+  ).toBeTruthy();
+});
+
+it("asks to wait for odds when an error body is not an object", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn<typeof fetch>().mockResolvedValue(Response.json(null, { status: 500 })),
+  );
+  render(<ClefBetSection {...race} />);
+  expect(
+    await screen.findByText("オッズ発表後に推奨馬券を表示します。", {}, { timeout: 2000 }),
+  ).toBeTruthy();
 });
