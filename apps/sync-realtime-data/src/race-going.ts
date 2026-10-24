@@ -55,6 +55,9 @@ const JRA_GOING_PATTERN: RegExp =
 const NAR_GOING_PATTERN: RegExp = /<ul class="dataArea">\s*<li>(芝|ダート)[^<]*?馬場：([^\s<]+)/u;
 const RACE_GOING_PATH_PATTERN: RegExp = /^\/api\/race-going\/(.+)$/u;
 const RACE_KEY_PATTERN: RegExp = /^(jra|nar):\d{4}:\d{4}:[0-9A-Z]{2}:\d{2}$/u;
+// Repeated pre-post reads within this window reuse the stored observation
+// instead of re-fetching jra.go.jp / keiba.go.jp.
+const RACE_GOING_REFETCH_INTERVAL_MS: number = 5 * 60_000;
 const UPSERT_RACE_GOING_SQL: string = `
   insert into race_going_snapshots (race_key, surface, going, observed_at)
   values (?, ?, ?, ?)
@@ -139,8 +142,14 @@ export const readRaceGoing = async (
 ): Promise<RaceGoingPayload | null> => {
   const race = await getRaceSource(params.db, params.raceKey);
   if (!race) return null;
-  if (params.now.getTime() < new Date(race.raceStartAtJst).getTime()) {
-    await refreshRaceGoing({ ...params, debaUrl: race.debaUrl, source: race.source });
+  const stored = await listRaceGoings(params.db, params.raceKey);
+  const nowMs = params.now.getTime();
+  const fresh = stored.some(
+    (going) => nowMs - new Date(going.observedAt).getTime() < RACE_GOING_REFETCH_INTERVAL_MS,
+  );
+  if (fresh || nowMs >= new Date(race.raceStartAtJst).getTime()) {
+    return { goings: stored, raceKey: params.raceKey };
   }
+  await refreshRaceGoing({ ...params, debaUrl: race.debaUrl, source: race.source });
   return { goings: await listRaceGoings(params.db, params.raceKey), raceKey: params.raceKey };
 };

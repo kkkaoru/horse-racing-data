@@ -159,9 +159,9 @@ it("readRaceGoing returns null for an unknown race", async () => {
   expect(fetchRacePage).not.toHaveBeenCalled();
 });
 
-it("readRaceGoing refreshes from the JRA race page before post time", async () => {
+it("readRaceGoing refetches the JRA race page when the stored observation is stale", async () => {
   const { batch, bind, db } = buildDb([
-    { going: "稍重", observed_at: "2026-10-25T09:00:00+09:00", surface: "turf" },
+    { going: "稍重", observed_at: "2026-10-25T08:55:00+09:00", surface: "turf" },
   ]);
   vi.mocked(getRaceSource).mockResolvedValueOnce(RACE_SOURCE as never);
   vi.mocked(fetchRacePage).mockResolvedValueOnce(JRA_KYOTO_11R_TURF);
@@ -172,14 +172,14 @@ it("readRaceGoing refreshes from the JRA race page before post time", async () =
       raceKey: "jra:2026:1025:08:11",
     }),
   ).toStrictEqual({
-    goings: [{ going: "稍重", observedAt: "2026-10-25T09:00:00+09:00", surface: "turf" }],
+    goings: [{ going: "稍重", observedAt: "2026-10-25T08:55:00+09:00", surface: "turf" }],
     raceKey: "jra:2026:1025:08:11",
   });
   expect(fetchRacePage).toHaveBeenCalledWith(
     "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde0108202604091120261025/39",
   );
   expect(batch).toHaveBeenCalledTimes(1);
-  expect(bind.mock.calls[0]).toStrictEqual([
+  expect(bind.mock.calls[1]).toStrictEqual([
     "jra:2026:1025:08:11",
     "turf",
     "稍重",
@@ -200,7 +200,7 @@ it("readRaceGoing parses NAR pages with the NAR parser", async () => {
     now: new Date("2026-10-24T05:00:00Z"),
     raceKey: "nar:2026:1024:54:01",
   });
-  expect(bind.mock.calls[0]).toStrictEqual([
+  expect(bind.mock.calls[1]).toStrictEqual([
     "nar:2026:1024:54:01",
     "dirt",
     "不良",
@@ -239,4 +239,23 @@ it("readRaceGoing logs a failed page fetch and keeps the stored rows", async () 
     "error",
     "jra:2026:1025:08:11",
   ]);
+});
+
+it("readRaceGoing reuses an observation younger than the refetch interval", async () => {
+  const { batch, db } = buildDb([
+    { going: "稍重", observed_at: "2026-10-25T08:56:00+09:00", surface: "turf" },
+  ]);
+  vi.mocked(getRaceSource).mockResolvedValueOnce(RACE_SOURCE as never);
+  expect(
+    await readRaceGoing({
+      db,
+      now: new Date("2026-10-25T00:00:00Z"),
+      raceKey: "jra:2026:1025:08:11",
+    }),
+  ).toStrictEqual({
+    goings: [{ going: "稍重", observedAt: "2026-10-25T08:56:00+09:00", surface: "turf" }],
+    raceKey: "jra:2026:1025:08:11",
+  });
+  expect(fetchRacePage).not.toHaveBeenCalled();
+  expect(batch).not.toHaveBeenCalled();
 });
