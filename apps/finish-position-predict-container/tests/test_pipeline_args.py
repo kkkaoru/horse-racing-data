@@ -759,6 +759,34 @@ def test_build_layer_argv_kohan3f_going_target_race_adds_scope() -> None:
     assert argv[-2:] == ["--target-race", "10:02"]
 
 
+def test_build_layer_argv_passes_current_going_to_baba_layer_only() -> None:
+    baba = build_layer_argv(
+        BABA_PEDIGREE_SCRIPT,
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        target_race="08:11",
+        current_going_path=Path("/tmp/going.parquet"),
+    )
+    lineage = build_layer_argv(
+        LINEAGE_SCRIPT,
+        "jra",
+        LAYER_DIR,
+        Path("/tmp/in"),
+        Path("/tmp/out"),
+        URL,
+        current_going_path=Path("/tmp/going.parquet"),
+    )
+    without = build_layer_argv(
+        BABA_PEDIGREE_SCRIPT, "jra", LAYER_DIR, Path("/tmp/in"), Path("/tmp/out"), URL
+    )
+    assert baba[-2:] == ["--current-going", "/tmp/going.parquet"]
+    assert "--current-going" not in lineage
+    assert "--current-going" not in without
+
+
 def test_kohan3f_going_script_is_in_scripts_with_pg_url() -> None:
     assert KOHAN3F_GOING_SCRIPT in SCRIPTS_WITH_PG_URL
 

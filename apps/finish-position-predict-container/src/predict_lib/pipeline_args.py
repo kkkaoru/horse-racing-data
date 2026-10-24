@@ -621,6 +621,13 @@ def _near_miss_target_date_args(
     ]
 
 
+def _current_going_args(script: str, current_going_path: Path | None) -> list[str]:
+    """``--current-going`` (race-day going side record) for the baba layer only."""
+    if script == BABA_PEDIGREE_SCRIPT and current_going_path is not None:
+        return ["--current-going", str(current_going_path)]
+    return []
+
+
 def build_layer_argv(
     script: str,
     category: Category,
@@ -631,6 +638,7 @@ def build_layer_argv(
     target_date: str | None = None,
     target_race: str | None = None,
     target_to_date: str | None = None,
+    current_going_path: Path | None = None,
 ) -> list[str]:
     """Argv for one layer script (input/output dirs + only its declared flags).
 
@@ -648,7 +656,9 @@ def build_layer_argv(
       it to restrict their PG staging to input-derived target entities;
     * the course-numerical layer additionally takes ``--course-lookup``;
     * the similar-race layer additionally takes ``--category`` plus the DuckDB
-      ``--threads`` / ``--memory-limit`` resource caps.
+      ``--threads`` / ``--memory-limit`` resource caps;
+    * the baba layer additionally takes ``--current-going`` when a race-day
+      going side record was fetched.
     """
     base = [
         PYTHON_BIN,
@@ -674,6 +684,7 @@ def build_layer_argv(
         + _prophet_entity_trend_args(script, category, target_date)
         + _target_race_scope_args(script, target_race)
         + _near_miss_target_date_args(script, target_date, target_to_date)
+        + _current_going_args(script, current_going_path)
     )
 
 

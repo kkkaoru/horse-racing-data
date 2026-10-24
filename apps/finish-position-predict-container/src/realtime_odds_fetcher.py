@@ -48,10 +48,12 @@ import urllib.request
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from predict_lib.current_going import GOING_CATEGORIES, ra_going_pair
 from predict_lib.debug_log import debug_log
 
 HOT_WORKER_BASE_URL: str = "https://sync-realtime-data-hot.kkk4oru.com/api/odds"
 WEIGHT_WORKER_BASE_URL: str = "https://sync-realtime-data.kkk4oru.com/api/horse-weight"
+GOING_WORKER_BASE_URL: str = "https://sync-realtime-data.kkk4oru.com/api/race-going"
 FETCH_TIMEOUT_SECONDS: float = 5.0
 
 # Cloudflare WAF blocks Python's default User-Agent (empty / "Python-urllib/3.x").
@@ -571,5 +573,81 @@ def fetch_realtime_odds_parquet(
     debug_log(
         f"[realtime-odds] wrote {len(all_rows)} rows to {out_path} "
         f"category={category} races={len(race_keys)} bataiju={bataiju_count}/{len(all_rows)}"
+    )
+    return out_path
+
+
+def fetch_going_pair_for_race(
+    fetcher: RealtimeOddsFetcher,
+    source: str,
+    target_date: str,
+    keibajo_code: str,
+    race_bango: str,
+) -> tuple[str, str] | None:
+    """Return the race-day RA-shaped going pair for one race; ``None`` when unknown.
+
+    Any fetch failure or malformed body is "going unknown": the baba layer then
+    keeps its NULL features rather than guessing a going.
+    """
+    race_key = build_race_key(source, target_date, keibajo_code, race_bango)
+    url = f"{GOING_WORKER_BASE_URL}/{encode_race_key(race_key)}"
+    try:
+        response = fetch_with_retry(fetcher, url, FETCH_TIMEOUT_SECONDS)
+    except Exception as exc:
+        debug_log(f"[race-going] fetch failed race_key={race_key} error={exc}")
+        return None
+    goings = response.get("goings")
+    if not isinstance(goings, list):
+        return None
+    return ra_going_pair(going for going in goings if isinstance(going, dict))
+
+
+def fetch_current_going_parquet(
+    category: str,
+    target_date: str,
+    work_dir: Path,
+    race_keys: list[tuple[str, str]],
+    fetcher: RealtimeOddsFetcher | None = None,
+) -> Path | None:
+    """Write the race-day going side record for ``race_keys``; ``None`` when none is known.
+
+    Only jra/nar carry a going grade (ban-ei reports moisture). The parquet is
+    keyed exactly like the baba layer's ``race_baba`` table and RA-shaped
+    (``babajotai_code_shiba`` / ``babajotai_code_dirt``).
+    """
+    if category not in GOING_CATEGORIES:
+        return None
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    resolved = fetcher if fetcher is not None else HttpRealtimeOddsFetcher()
+    rows = [
+        (keibajo_code, race_bango, pair)
+        for keibajo_code, race_bango in race_keys
+        if (
+            pair := fetch_going_pair_for_race(
+                resolved, category, target_date, keibajo_code, race_bango
+            )
+        )
+        is not None
+    ]
+    if not rows:
+        return None
+    work_dir.mkdir(parents=True, exist_ok=True)
+    out_path = work_dir / f"current-going-{category}.parquet"
+    table = pa.table(
+        {
+            "source": pa.array([category] * len(rows), type=pa.string()),
+            "kaisai_nen": pa.array([target_date[:4]] * len(rows), type=pa.string()),
+            "kaisai_tsukihi": pa.array([target_date[4:]] * len(rows), type=pa.string()),
+            "keibajo_code": pa.array([row[0] for row in rows], type=pa.string()),
+            "race_bango": pa.array([row[1] for row in rows], type=pa.string()),
+            "babajotai_code_shiba": pa.array([row[2][0] for row in rows], type=pa.string()),
+            "babajotai_code_dirt": pa.array([row[2][1] for row in rows], type=pa.string()),
+        }
+    )
+    pq.write_table(table, str(out_path))
+    debug_log(
+        f"[race-going] wrote {len(rows)}/{len(race_keys)} races to {out_path} category={category}"
     )
     return out_path

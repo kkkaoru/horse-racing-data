@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import predict_upcoming
+import realtime_odds_fetcher
 
 REAL_FETCH_MARKET_DEVIATION_POOLS = predict_upcoming.fetch_market_deviation_pools
 REPO_BASELINE_PATH = (
@@ -20,5 +21,8 @@ REPO_BASELINE_PATH = (
 def no_live_market_deviation_fetch(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Keep every test hermetic: no test may reach the live hot-worker odds API."""
     monkeypatch.setattr(predict_upcoming, "fetch_market_deviation_pools", lambda _races: {})
+    monkeypatch.setattr(
+        realtime_odds_fetcher, "fetch_current_going_parquet", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setenv("MARKET_DEVIATION_BASELINE_PATH", str(REPO_BASELINE_PATH))
     yield

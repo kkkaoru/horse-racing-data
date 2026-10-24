@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from realtime_odds_fetcher import (
+    GOING_WORKER_BASE_URL,
     HOT_WORKER_BASE_URL,
     WEIGHT_WORKER_BASE_URL,
     RealtimeOddsFetcher,
@@ -28,6 +29,8 @@ from realtime_odds_fetcher import (
     extract_rows,
     extract_sanrenpuku_p3,
     extract_weight_map,
+    fetch_current_going_parquet,
+    fetch_going_pair_for_race,
     fetch_latest_odds_for_race,
     fetch_odds_and_sanrenpuku_for_race,
     fetch_odds_for_race,
@@ -1322,3 +1325,71 @@ def test_fetch_realtime_odds_parquet_exotic_column_populated_for_known_horses(
     p3_h2 = df_sorted.iloc[1]["exotic_sanrenpuku_p3_realtime"]
     assert p3_h1 > 0.0
     assert p3_h2 > 0.0
+
+
+def test_fetch_going_pair_for_race_maps_worker_goings() -> None:
+    url = f"{GOING_WORKER_BASE_URL}/jra%3A2026%3A1025%3A08%3A11"
+    stub = _StubFetcher(
+        {
+            url: {
+                "goings": [
+                    {"going": "稍重", "observedAt": "2026-10-25T07:30:00+09:00", "surface": "turf"}
+                ],
+                "raceKey": "jra:2026:1025:08:11",
+            }
+        }
+    )
+    assert fetch_going_pair_for_race(stub, "jra", "20261025", "08", "11") == ("2", "0")
+    assert stub.calls == [url]
+
+
+def test_fetch_going_pair_for_race_is_unknown_on_malformed_body() -> None:
+    url = f"{GOING_WORKER_BASE_URL}/nar%3A2026%3A1025%3A46%3A01"
+    stub = _StubFetcher({url: {"goings": None}})
+    assert fetch_going_pair_for_race(stub, "nar", "20261025", "46", "01") is None
+
+
+def test_fetch_going_pair_for_race_is_unknown_on_fetch_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("realtime_odds_fetcher.time.sleep", lambda _seconds: None)
+    assert fetch_going_pair_for_race(_StubFetcher({}), "jra", "20261025", "08", "11") is None
+
+
+def test_fetch_current_going_parquet_skips_banei(tmp_path: Path) -> None:
+    stub = _StubFetcher({})
+    assert fetch_current_going_parquet("ban-ei", "20261025", tmp_path, [("83", "01")], stub) is None
+    assert stub.calls == []
+
+
+def test_fetch_current_going_parquet_writes_known_races_only(tmp_path: Path) -> None:
+    import pyarrow.parquet as pq
+
+    stub = _StubFetcher(
+        {
+            f"{GOING_WORKER_BASE_URL}/jra%3A2026%3A1025%3A08%3A01": {
+                "goings": [{"going": "重", "surface": "dirt"}]
+            },
+            f"{GOING_WORKER_BASE_URL}/jra%3A2026%3A1025%3A08%3A02": {"goings": []},
+        }
+    )
+    path = fetch_current_going_parquet(
+        "jra", "20261025", tmp_path, [("08", "01"), ("08", "02")], stub
+    )
+    assert path == tmp_path / "current-going-jra.parquet"
+    assert pq.read_table(path).to_pylist() == [
+        {
+            "source": "jra",
+            "kaisai_nen": "2026",
+            "kaisai_tsukihi": "1025",
+            "keibajo_code": "08",
+            "race_bango": "01",
+            "babajotai_code_shiba": "0",
+            "babajotai_code_dirt": "3",
+        }
+    ]
+
+
+def test_fetch_current_going_parquet_returns_none_when_no_going_known(tmp_path: Path) -> None:
+    stub = _StubFetcher({f"{GOING_WORKER_BASE_URL}/nar%3A2026%3A1025%3A46%3A01": {"goings": []}})
+    assert fetch_current_going_parquet("nar", "20261025", tmp_path, [("46", "01")], stub) is None

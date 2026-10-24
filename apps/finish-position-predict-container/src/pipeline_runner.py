@@ -59,6 +59,12 @@ from predict_lib.container_role import (
     PredictContainerRole,
     predict_container_role,
 )
+from predict_lib.current_going import (
+    CURRENT_BABA_FIELD,
+    GOING_CATEGORIES,
+    baba_condition,
+    baba_refresh_needed,
+)
 from predict_lib.debug_log import (
     debug_log,
     debug_logs_enabled,
@@ -580,6 +586,119 @@ def run_with_stderr_capture(args: Sequence[str]) -> None:
 
 def _final_parquet_dir(category: Category) -> Path:
     return WORK_DIR / f"feat-{category}-v7-final"
+
+
+def fetch_current_going(
+    category: Category, target_date: str, race_keys: list[tuple[str, str]]
+) -> Path | None:
+    """Fetch the race-day going side record for ``race_keys`` (``None`` when unknown)."""
+    from realtime_odds_fetcher import fetch_current_going_parquet  # bundled in image
+
+    return fetch_current_going_parquet(category, target_date, WORK_DIR, race_keys)
+
+
+def _sql_literal(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def current_going_changed(features_dir: Path, target_race: str, going_path: Path) -> bool:
+    """True when ``target_race``'s cached ``current_baba_condition`` != the observed going.
+
+    ``going_path`` holds one RA-shaped row per race; the code is resolved with
+    the same shiba-first coalesce as the baba layer. A race absent from the
+    side record (going not yet announced) never triggers a refresh.
+    """
+    import duckdb
+
+    keibajo_code, race_bango = target_race.split(":", 1)
+    connection = duckdb.connect(":memory:")
+    try:
+        pair = connection.execute(
+            "select babajotai_code_shiba, babajotai_code_dirt from read_parquet(?) "
+            "where keibajo_code = ? and race_bango = ?",
+            [str(going_path), keibajo_code, race_bango],
+        ).fetchone()
+        if pair is None:
+            return False
+        cursor = connection.execute(
+            f"select {CURRENT_BABA_FIELD} from read_parquet(?, hive_partitioning = false, "
+            "union_by_name = true) where keibajo_code = ? and race_bango = ?",
+            [str(features_dir / "**" / "*.parquet"), keibajo_code, race_bango],
+        )
+        entries = [{CURRENT_BABA_FIELD: row[0]} for row in cursor.fetchall()]
+    finally:
+        connection.close()
+    return baba_refresh_needed(entries, baba_condition((str(pair[0]), str(pair[1]))))
+
+
+def refresh_baba_for_current_going(
+    *,
+    category: Category,
+    target_date: str,
+    target_race: str,
+    database_url: str,
+    final_dir: Path,
+) -> bool:
+    """Re-run the baba layer over a cached single-race feature dir when the going changed.
+
+    Used by ``mode=rescore`` (triggered after horse weights land) so a going
+    announced or changed after the first pass reaches the baba x pedigree
+    features without a full rebuild. Returns ``True`` when ``final_dir`` was
+    rewritten (one flat ``features.parquet``, the cache layout).
+    """
+    if category not in GOING_CATEGORIES:
+        return False
+    keibajo_code, race_bango = target_race.split(":", 1)
+    going_path = fetch_current_going(category, target_date, [(keibajo_code, race_bango)])
+    if going_path is None or not current_going_changed(final_dir, target_race, going_path):
+        return False
+    import duckdb
+
+    staged = WORK_DIR / f"baba-refresh-{category}-input"
+    refreshed = WORK_DIR / f"baba-refresh-{category}-output"
+    rewritten = WORK_DIR / f"baba-refresh-{category}.parquet"
+    shutil.rmtree(staged, ignore_errors=True)
+    shutil.rmtree(refreshed, ignore_errors=True)
+    connection = duckdb.connect(":memory:")
+    try:
+        # The layer reads race_year=*/*.parquet; the flat cache carries no
+        # race_year column (it was the partition key), so derive it back.
+        connection.execute(
+            "copy (select columns(c -> c <> 'race_year'), "
+            "cast(substr(race_date, 1, 4) as integer) as race_year "
+            f"from read_parquet({_sql_literal(str(final_dir / '**' / '*.parquet'))}, "
+            f"hive_partitioning = false)) to {_sql_literal(str(staged))} "
+            "(format parquet, partition_by (race_year))"
+        )
+        run_with_stderr_capture(
+            build_layer_argv(
+                BABA_PEDIGREE_SCRIPT,
+                category,
+                LAYER_DIR,
+                staged,
+                refreshed,
+                database_url,
+                target_date=target_date,
+                target_race=target_race,
+                current_going_path=going_path,
+            )
+        )
+        connection.execute(
+            "copy (select * from read_parquet("
+            f"{_sql_literal(str(refreshed / '**' / '*.parquet'))}, hive_partitioning = false)) "
+            f"to {_sql_literal(str(rewritten))} (format parquet)"
+        )
+    finally:
+        connection.close()
+        shutil.rmtree(staged, ignore_errors=True)
+        shutil.rmtree(refreshed, ignore_errors=True)
+    shutil.rmtree(final_dir, ignore_errors=True)
+    final_dir.mkdir(parents=True, exist_ok=True)
+    rewritten.rename(final_dir / HIVE_PARQUET_FILENAME)
+    _log_pipeline_progress(
+        f"done baba-refresh category={category} target_race={target_race} reason=race-day-going"
+    )
+    return True
 
 
 def _duckdb_temp_dir(category: Category, target_date: str, target_race: str | None) -> Path:
@@ -1450,6 +1569,7 @@ def build_upcoming_feature_rows(
         realtime_odds_path,
         venue_weather_dir,
         target_race,
+        current_going_path=fetch_current_going(category, target_date, race_keys),
     )
     if not built:
         return {}
@@ -1531,6 +1651,7 @@ def build_pipeline(
     realtime_odds_path: Path | None = None,
     venue_weather_dir: Path | None = None,
     target_race: str | None = None,
+    current_going_path: Path | None = None,
 ) -> bool:
     """Run the DuckDB base build then each v7 layer into ``final_dir``.
 
@@ -1547,6 +1668,9 @@ def build_pipeline(
     When ``target_race`` (``keibajo_code:race_bango``) is provided it is
     forwarded to the base build via ``--target-race`` so only that single race
     is built instead of every race on ``target_date``.
+
+    ``current_going_path`` (race-day going side record) is forwarded to the
+    baba layer only.
     """
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     # Reset the category-scoped work dirs left by any prior race in this
@@ -1648,6 +1772,7 @@ def build_pipeline(
                     database_url,
                     target_date=target_date,
                     target_race=target_race,
+                    current_going_path=current_going_path,
                 )
             )
         except Exception:
@@ -2416,6 +2541,7 @@ def _run_fused_race_chain(
     chain: Sequence[str],
     final_dir: Path,
     run_start: float,
+    current_going_path: Path | None = None,
 ) -> bool:
     """Run ordered layer entrypoints in one killable Python/DuckDB process."""
     commands: list[list[str]] = []
@@ -2432,6 +2558,7 @@ def _run_fused_race_chain(
                 database_url,
                 target_date=target_date,
                 target_race=target_race,
+                current_going_path=current_going_path,
             )
         )
         source = destination
@@ -2495,6 +2622,7 @@ def build_pipeline_from_day_base(
     realtime_odds_path: Path | None = None,
     venue_weather_dir: Path | None = None,
     market_signal_foundation_dir: Path | None = None,
+    current_going_path: Path | None = None,
 ) -> bool:
     """Run only the RACE_CHAIN layers against a pre-built day-base, into ``final_dir``.
 
@@ -2519,11 +2647,17 @@ def build_pipeline_from_day_base(
     RACE_CHAIN loop needs no day-window bound beyond ``target_race`` itself.
     Kept in the signature so a future RACE_CHAIN script that DOES need
     race-time-fresh odds/weather can be wired without changing every caller.
+
+    ``current_going_path`` (race-day going side record) re-runs the baba layer
+    for this race when the day-base's frozen ``current_baba_condition`` no
+    longer matches the observed going (see :func:`_race_chain_for_day_base`).
     """
     del days_ahead, realtime_odds_path, venue_weather_dir
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     _reset_category_work_dirs(category, final_dir)
-    chain = _race_chain_for_day_base(category, day_base_dir)
+    chain = _race_chain_for_day_base(
+        category, day_base_dir, current_going_path=current_going_path, target_race=target_race
+    )
     run_id = f"{category}:{target_date}:{target_race}:racechain:{uuid.uuid4().hex[:8]}"
     run_start = perf_counter()
     current = day_base_dir
@@ -2562,6 +2696,7 @@ def build_pipeline_from_day_base(
             chain=chain,
             final_dir=final_dir,
             run_start=run_start,
+            current_going_path=current_going_path,
         )
     for index, script in enumerate(chain):
         nxt = WORK_DIR / f"feat-{category}-layer-{index}"
@@ -2582,6 +2717,7 @@ def build_pipeline_from_day_base(
                     database_url,
                     target_date=target_date,
                     target_race=target_race,
+                    current_going_path=current_going_path,
                 )
             )
         except Exception:
@@ -2671,13 +2807,24 @@ def _day_base_has_static_race_features(day_base_dir: Path) -> bool:
     )
 
 
-def _race_chain_for_day_base(category: Category, day_base_dir: Path) -> Sequence[str]:
+def _race_chain_for_day_base(
+    category: Category,
+    day_base_dir: Path,
+    *,
+    current_going_path: Path | None = None,
+    target_race: str | None = None,
+) -> Sequence[str]:
     """Keep legacy day-base objects compatible after baba moves to DAY_CHAIN.
 
     Catalog-v1 objects produced by an older image have no baba columns. For
     JRA/NAR only, restore that one layer at its original full-chain position;
     freshly prewarmed objects skip it. Ban-ei still owns baba in RACE_CHAIN and
     needs no compatibility inspection.
+
+    The day-base freezes ``current_baba_condition`` before race day, when
+    pre-race RA has no going yet. When a race-day going side record disagrees
+    with the target race's frozen value, the baba layer re-runs for this race
+    (the same script, fed ``--current-going``).
     """
     selected = set(race_chain_for(category))
     models_dir = Path(os.environ.get("MODELS_DIR", "/models"))
@@ -2703,6 +2850,17 @@ def _race_chain_for_day_base(category: Category, day_base_dir: Path) -> Sequence
         _log_pipeline_progress(
             f"step=daybase-compat category={category} reason=baba-columns-missing "
             f"fallback_script={BABA_PEDIGREE_SCRIPT}"
+        )
+    elif (
+        category in GOING_CATEGORIES
+        and current_going_path is not None
+        and target_race is not None
+        and current_going_changed(day_base_dir, target_race, current_going_path)
+    ):
+        selected.add(BABA_PEDIGREE_SCRIPT)
+        _log_pipeline_progress(
+            f"step=racechain-layer status=added category={category} "
+            f"script={BABA_PEDIGREE_SCRIPT} target_race={target_race} reason=race-day-going"
         )
     full_chain = layer_chain_for(category)
     ordered = [script for script in full_chain if script in selected]
@@ -3370,6 +3528,10 @@ def build_upcoming_feature_rows_split(
             if foundation_hit
             else None
         )
+        keibajo_code, race_bango = target_race.split(":", 1)
+        current_going_path = fetch_current_going(
+            category, target_date, [(keibajo_code, race_bango)]
+        )
         if market_foundation_dir is None:
             built = build_pipeline_from_day_base(
                 category,
@@ -3379,6 +3541,7 @@ def build_upcoming_feature_rows_split(
                 day_base_dir,
                 final_dir,
                 target_race,
+                current_going_path=current_going_path,
             )
         else:
             built = build_pipeline_from_day_base(
@@ -3390,6 +3553,7 @@ def build_upcoming_feature_rows_split(
                 final_dir,
                 target_race,
                 market_signal_foundation_dir=market_foundation_dir,
+                current_going_path=current_going_path,
             )
         if not built:
             if role is PredictContainerRole.RACE_CHAIN:

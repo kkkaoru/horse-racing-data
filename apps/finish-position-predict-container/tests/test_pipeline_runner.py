@@ -467,8 +467,10 @@ def test_query_upcoming_race_keys_filters_to_target_race(monkeypatch: pytest.Mon
         realtime_odds_path: Path | None = None,
         venue_weather_dir: Path | None = None,
         target_race: str | None = None,
+        current_going_path: Path | None = None,
     ) -> bool:
         nonlocal captured_target_race
+        assert current_going_path is None
         assert category == "nar"
         assert target_date == "20260629"
         assert days_ahead == 0
@@ -3319,6 +3321,7 @@ def test_build_upcoming_feature_rows_split_r2_hit_does_not_rebuild_banei_day_bas
         target_race: str,
         realtime_odds_path: Path | None = None,
         venue_weather_dir: Path | None = None,
+        current_going_path: Path | None = None,
     ) -> bool:
         race_chain_calls.append((day_base_dir_arg, target_race))
         final_dir.mkdir(parents=True, exist_ok=True)
@@ -3697,6 +3700,7 @@ def test_build_pipeline_from_day_base_runs_race_chain_only_from_day_base_dir(
         database_url: str,
         target_date: str | None = None,
         target_race: str | None = None,
+        current_going_path: Path | None = None,
     ) -> list[str]:
         captured_inputs.append(input_dir)
         captured_target_races.append(target_race)
@@ -3818,6 +3822,7 @@ def test_build_pipeline_from_day_base_records_racechain_layer_step(
         database_url: str,
         target_date: str | None = None,
         target_race: str | None = None,
+        current_going_path: Path | None = None,
     ) -> list[str]:
         return ["layer", str(output_dir)]
 
@@ -3856,7 +3861,7 @@ def test_build_pipeline_from_day_base_skips_only_attested_market_layer(
     monkeypatch.setattr(
         pipeline_runner,
         "_race_chain_for_day_base",
-        lambda *_args: (
+        lambda *_args, **_kwargs: (
             "add-market-signal-features.py",
             "add-near-miss-features.py",
             "add-jra-jockey-pedigree-cell-features.py",
@@ -4506,6 +4511,7 @@ def test_build_upcoming_feature_rows_split_prefers_foundation_over_whole_day(
         _realtime_odds_path: Path | None = None,
         _venue_weather_dir: Path | None = None,
         market_signal_foundation_dir: Path | None = None,
+        current_going_path: Path | None = None,
     ) -> bool:
         assert day_base_dir == foundation_dir
         assert market_signal_foundation_dir == tmp_path / "market-foundation"
@@ -4602,6 +4608,7 @@ def test_build_upcoming_feature_rows_split_success_reads_grouped_rows(
         target_race: str,
         realtime_odds_path: Path | None = None,
         venue_weather_dir: Path | None = None,
+        current_going_path: Path | None = None,
     ) -> bool:
         final_dir.mkdir(parents=True, exist_ok=True)
         frame = pd.DataFrame(
@@ -4691,6 +4698,7 @@ def test_build_upcoming_feature_rows_split_race_chain_hit_matches_legacy_rows(
         target_race: str,
         realtime_odds_path: Path | None = None,
         venue_weather_dir: Path | None = None,
+        current_going_path: Path | None = None,
     ) -> bool:
         final_dir.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(
@@ -4924,3 +4932,280 @@ def test_query_race_names_skips_empty_catalog_row(monkeypatch: pytest.MonkeyPatc
         lambda _database_url, _sql, _params=(): [],
     )
     assert pipeline_runner.query_race_names("r2-catalog://pc-keiba", ["jra:2026:0830:04:08"]) == {}
+
+
+_race_chain_for_day_base_with_going = cast(
+    "Callable[..., Sequence[str]]", getattr(pipeline_runner, _RACE_CHAIN_FOR_DAY_BASE_ATTR)
+)
+
+
+def _write_going_parquet(path: Path, shiba: str, dirt: str) -> Path:
+    import duckdb
+
+    connection = duckdb.connect(":memory:")
+    connection.execute(
+        f"copy (select 'jra' as source, '2026' as kaisai_nen, '1025' as kaisai_tsukihi, "
+        f"'08' as keibajo_code, '11' as race_bango, '{shiba}' as babajotai_code_shiba, "
+        f"'{dirt}' as babajotai_code_dirt) to '{path.as_posix()}' (format parquet)"
+    )
+    connection.close()
+    return path
+
+
+def _write_feature_parquet(path: Path, current_baba_condition: str) -> Path:
+    import duckdb
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = duckdb.connect(":memory:")
+    connection.execute(
+        "copy (select 'jra:2026:1025:08:11' as race_id, '08' as keibajo_code, "
+        "'11' as race_bango, '20261025' as race_date, 1 as umaban, "
+        f"cast({current_baba_condition} as integer) as current_baba_condition) "
+        f"to '{path.as_posix()}' (format parquet)"
+    )
+    connection.close()
+    return path
+
+
+def test_current_going_changed_when_frozen_baba_is_null(tmp_path: Path) -> None:
+    going = _write_going_parquet(tmp_path / "going.parquet", "2", "0")
+    _write_feature_parquet(tmp_path / "features" / "race_year=2026" / "data_0.parquet", "null")
+
+    assert pipeline_runner.current_going_changed(tmp_path / "features", "08:11", going) is True
+
+
+def test_current_going_unchanged_when_frozen_baba_matches(tmp_path: Path) -> None:
+    going = _write_going_parquet(tmp_path / "going.parquet", "0", "3")
+    _write_feature_parquet(tmp_path / "features" / "features.parquet", "3")
+
+    assert pipeline_runner.current_going_changed(tmp_path / "features", "08:11", going) is False
+
+
+def test_current_going_unchanged_when_race_has_no_side_record(tmp_path: Path) -> None:
+    going = _write_going_parquet(tmp_path / "going.parquet", "2", "0")
+    _write_feature_parquet(tmp_path / "features" / "features.parquet", "null")
+
+    assert pipeline_runner.current_going_changed(tmp_path / "features", "08:12", going) is False
+
+
+def test_race_chain_adds_baba_layer_when_race_day_going_changed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
+    monkeypatch.setattr(
+        pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: False
+    )
+    going = _write_going_parquet(tmp_path / "going.parquet", "2", "0")
+    _write_feature_parquet(tmp_path / "daybase" / "race_year=2026" / "data_0.parquet", "null")
+
+    result = _race_chain_for_day_base_with_going(
+        "jra", tmp_path / "daybase", current_going_path=going, target_race="08:11"
+    )
+
+    assert result == (
+        "add-market-signal-features.py",
+        "add-baba-pedigree-affinity-features.py",
+        "add-jra-jockey-pedigree-cell-features.py",
+    )
+
+
+def test_race_chain_keeps_day_base_baba_when_going_matches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_baba_features", lambda _path: True)
+    monkeypatch.setattr(pipeline_runner, "_day_base_has_static_race_features", lambda _path: True)
+    monkeypatch.setattr(
+        pipeline_runner, "relationship_layer_is_provably_unused", lambda *_args, **_kwargs: False
+    )
+    going = _write_going_parquet(tmp_path / "going.parquet", "2", "0")
+    _write_feature_parquet(tmp_path / "daybase" / "race_year=2026" / "data_0.parquet", "2")
+
+    result = _race_chain_for_day_base_with_going(
+        "nar", tmp_path / "daybase", current_going_path=going, target_race="08:11"
+    )
+
+    assert result == ()
+
+
+def test_refresh_baba_skips_banei_without_fetching(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def unexpected_fetch(*_args: object) -> Path:
+        raise AssertionError("ban-ei has no going grade to fetch")
+
+    monkeypatch.setattr(pipeline_runner, "fetch_current_going", unexpected_fetch)
+
+    assert (
+        pipeline_runner.refresh_baba_for_current_going(
+            category="ban-ei",
+            target_date="20261025",
+            target_race="83:01",
+            database_url="r2-catalog://pc-keiba",
+            final_dir=tmp_path,
+        )
+        is False
+    )
+
+
+def test_refresh_baba_skips_when_going_unknown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(pipeline_runner, "fetch_current_going", lambda *_args: None)
+
+    assert (
+        pipeline_runner.refresh_baba_for_current_going(
+            category="jra",
+            target_date="20261025",
+            target_race="08:11",
+            database_url="r2-catalog://pc-keiba",
+            final_dir=tmp_path,
+        )
+        is False
+    )
+
+
+def test_refresh_baba_skips_when_cached_baba_already_matches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    going = _write_going_parquet(tmp_path / "going.parquet", "2", "0")
+    final_dir = tmp_path / "final"
+    _write_feature_parquet(final_dir / "features.parquet", "2")
+    monkeypatch.setattr(pipeline_runner, "fetch_current_going", lambda *_args: going)
+
+    def unexpected_run(_args: Sequence[str]) -> None:
+        raise AssertionError("baba layer must not re-run for an unchanged going")
+
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", unexpected_run)
+
+    assert (
+        pipeline_runner.refresh_baba_for_current_going(
+            category="jra",
+            target_date="20261025",
+            target_race="08:11",
+            database_url="r2-catalog://pc-keiba",
+            final_dir=final_dir,
+        )
+        is False
+    )
+
+
+def test_refresh_baba_reruns_layer_and_rewrites_flat_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import duckdb
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    going = _write_going_parquet(tmp_path / "going.parquet", "2", "0")
+    final_dir = tmp_path / "final"
+    _write_feature_parquet(final_dir / "features.parquet", "null")
+    monkeypatch.setattr(pipeline_runner, "fetch_current_going", lambda *_args: going)
+    captured: list[Sequence[str]] = []
+
+    def fake_run(args: Sequence[str]) -> None:
+        captured.append(args)
+        input_dir = Path(args[args.index("--input-dir") + 1])
+        output_dir = Path(args[args.index("--output-dir") + 1])
+        connection = duckdb.connect(":memory:")
+        connection.execute(
+            "copy (select * replace (2 as current_baba_condition) from read_parquet("
+            f"'{input_dir.as_posix()}/race_year=*/*.parquet', hive_partitioning = true)) "
+            f"to '{output_dir.as_posix()}' (format parquet, partition_by (race_year))"
+        )
+        connection.close()
+
+    monkeypatch.setattr(pipeline_runner, "run_with_stderr_capture", fake_run)
+
+    refreshed = pipeline_runner.refresh_baba_for_current_going(
+        category="jra",
+        target_date="20261025",
+        target_race="08:11",
+        database_url="r2-catalog://pc-keiba",
+        final_dir=final_dir,
+    )
+
+    connection = duckdb.connect(":memory:")
+    rows = connection.execute(
+        f"select * from read_parquet('{final_dir.as_posix()}/*.parquet')"
+    ).fetchall()
+    connection.close()
+    assert refreshed is True
+    assert [path.name for path in final_dir.iterdir()] == ["features.parquet"]
+    assert rows == [("jra:2026:1025:08:11", "08", "11", "20261025", 1, 2)]
+    assert captured[0][-2:] == ["--current-going", str(going)]
+    assert not (work_dir / "baba-refresh-jra-input").exists()
+
+
+def test_split_path_forwards_race_day_going_to_race_chain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import pandas as pd
+
+    work_dir = tmp_path / "work"
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", work_dir)
+    day_base_dir = tmp_path / "daybase-final"
+    day_base_dir.mkdir()
+    monkeypatch.setattr(pipeline_runner, "ensure_day_base", lambda *args, **kwargs: day_base_dir)
+    monkeypatch.setattr(pipeline_runner, "day_base_covers_entry_list", lambda *args, **kwargs: True)
+    going = tmp_path / "going.parquet"
+    fetched: list[tuple[str, str, list[tuple[str, str]]]] = []
+
+    def fake_fetch(category: str, target_date: str, race_keys: list[tuple[str, str]]) -> Path:
+        fetched.append((category, target_date, race_keys))
+        return going
+
+    captured: list[Path | None] = []
+
+    def fake_build_pipeline_from_day_base(
+        category: str,
+        target_date: str,
+        days_ahead: int,
+        database_url: str,
+        day_base_dir_arg: Path,
+        final_dir: Path,
+        target_race: str,
+        current_going_path: Path | None = None,
+    ) -> bool:
+        captured.append(current_going_path)
+        final_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"race_id": ["jra:2026:1025:08:11"], "umaban": [1]}).to_parquet(
+            final_dir / "data.parquet"
+        )
+        return True
+
+    monkeypatch.setattr(pipeline_runner, "fetch_current_going", fake_fetch)
+    monkeypatch.setattr(
+        pipeline_runner, "build_pipeline_from_day_base", fake_build_pipeline_from_day_base
+    )
+
+    result = pipeline_runner.build_upcoming_feature_rows_split(
+        "jra", "20261025", 0, "postgresql://u:p@h/db", "08:11"
+    )
+
+    assert result == {"jra:2026:1025:08:11": [{"race_id": "jra:2026:1025:08:11", "umaban": 1}]}
+    assert fetched == [("jra", "20261025", [("08", "11")])]
+    assert captured == [going]
+
+
+def test_fetch_current_going_delegates_to_fetcher_with_work_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import realtime_odds_fetcher
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+    calls: list[tuple[str, str, Path, list[tuple[str, str]]]] = []
+
+    def fake_fetch(
+        category: str, target_date: str, work_dir: Path, race_keys: list[tuple[str, str]]
+    ) -> Path:
+        calls.append((category, target_date, work_dir, race_keys))
+        return tmp_path / "going.parquet"
+
+    monkeypatch.setattr(realtime_odds_fetcher, "fetch_current_going_parquet", fake_fetch)
+
+    assert pipeline_runner.fetch_current_going("nar", "20261025", [("46", "01")]) == (
+        tmp_path / "going.parquet"
+    )
+    assert calls == [("nar", "20261025", tmp_path, [("46", "01")])]

@@ -253,6 +253,7 @@ def test_split_path_first_and_second_banei_predict_are_race_chain_hits(
         target_race: str,
         realtime_odds_path: Path | None = None,
         venue_weather_dir: Path | None = None,
+        current_going_path: Path | None = None,
     ) -> bool:
         race_chain_calls.append((day_base_dir_arg, target_race))
         final_dir.mkdir(parents=True, exist_ok=True)

@@ -3661,6 +3661,33 @@ def _as_entry_map(
     return {race_id: [dict(entry) for entry in entries] for race_id, entries in races.items()}
 
 
+def _refresh_baba_for_current_going(
+    category: Category,
+    run_date: str,
+    database_url: str,
+    final_dir: Path,
+    race_key: tuple[str, str],
+) -> bool:
+    """Re-run the baba layer on the cached race when the race-day going changed.
+
+    A refresh failure keeps the cached (pre-going) baba features and the
+    rescore continues: odds/weight freshness must not depend on this layer.
+    """
+    from pipeline_runner import refresh_baba_for_current_going  # bundled in image
+
+    try:
+        return refresh_baba_for_current_going(
+            category=category,
+            target_date=run_date,
+            target_race=f"{race_key[0]}:{race_key[1]}",
+            database_url=database_url,
+            final_dir=final_dir,
+        )
+    except (OSError, RuntimeError, DuckDbError) as err:
+        debug_log(f"[predict-serve] rescore baba refresh failed race={race_key}: {err}")
+        return False
+
+
 def _fetch_fresh_snapshots(
     category_str: str,
     run_date: str,
@@ -3840,6 +3867,10 @@ def _make_rescore_fn(
 
         races = _as_entry_map(_load_cached_races(final_dir))
         race_keys = _scope_race_keys(races, scope)
+        if len(race_keys) == 1 and _refresh_baba_for_current_going(
+            category, run_date, database_url, final_dir, race_keys[0]
+        ):
+            races = _as_entry_map(_load_cached_races(final_dir))
         if weight_snapshot_generation is None:
             raise CacheValidationError("post-weight snapshot generation unavailable")
         if race_start_at_jst is None:
