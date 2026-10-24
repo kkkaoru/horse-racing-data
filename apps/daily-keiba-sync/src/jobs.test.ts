@@ -584,6 +584,39 @@ describe("sync queue jobs", () => {
         now,
       ),
     ).rejects.toThrow("Source acquisition failed");
+    const diagnosed: Env = {
+      ...baseEnv,
+      NV_SOURCE: {
+        fetch: async () =>
+          Response.json(
+            { error: "NV-Link acquisition failed" },
+            {
+              status: 502,
+              headers: {
+                "X-NV-Link-Failure-Stage": "file-list",
+                "X-NV-Link-Upstream-Status": "503",
+              },
+            },
+          ),
+      },
+    };
+    await expect(
+      acquireRun(
+        {
+          advanceCursor: true,
+          cursorTime: "20260904010000",
+          fromTime: "20260902000000",
+          provider: "nv",
+          runDate: "20260904",
+          runId: failed.run_id,
+          toTime: null,
+        },
+        diagnosed,
+        now,
+      ),
+    ).rejects.toThrow(
+      "Source acquisition failed status=502 X-NV-Link-Failure-Stage=file-list X-NV-Link-Upstream-Status=503",
+    );
     const emptyBody: Env = {
       ...baseEnv,
       NV_SOURCE: { fetch: async () => new Response(null) },

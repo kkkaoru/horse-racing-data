@@ -63,6 +63,13 @@ interface FinishRunInput {
 }
 
 const NDJSON_CONTENT_TYPE = "application/x-ndjson";
+// Only the source's own diagnostic headers: no secrets, URLs or records (umacon README).
+const SOURCE_FAILURE_HEADERS: readonly string[] = [
+  "X-NV-Link-Failure-Stage",
+  "X-NV-Link-Upstream-Status",
+  "X-NV-Link-Socket-Stage",
+  "X-NV-Link-Socket-Bytes",
+];
 // pipeline-health-monitor alerts when a provider's scheduled sync stops succeeding.
 export const providerSyncHealthKey = (provider: Provider): string =>
   `provider-sync:last-success:${provider}`;
@@ -258,6 +265,15 @@ const completeSyncedRun = async (
   });
 };
 
+const describeSourceFailure = (response: Response): string =>
+  [
+    `status=${response.status}`,
+    ...SOURCE_FAILURE_HEADERS.flatMap((name) => {
+      const value = response.headers.get(name);
+      return value === null ? [] : [`${name}=${value.slice(0, 64)}`];
+    }),
+  ].join(" ");
+
 export const acquireRun = async (
   job: AcquisitionRequest,
   env: Env,
@@ -266,7 +282,8 @@ export const acquireRun = async (
   const { request, source } = await sourceRequest(job, env);
   await updateRunStatus(env.DB, job.runId, "acquiring", now);
   const response = await source.fetch(request);
-  if (!response.ok || response.body === null) throw new Error("Source acquisition failed");
+  if (!response.ok || response.body === null)
+    throw new Error(`Source acquisition failed ${describeSourceFailure(response)}`);
   const contentType = response.headers.get("Content-Type") ?? "";
   if (!contentType.startsWith(NDJSON_CONTENT_TYPE)) throw new Error("Invalid source content type");
   const stagingKey = rawStagingKey(job);
