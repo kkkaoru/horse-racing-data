@@ -1,7 +1,8 @@
 // Run with bun (Next.js route).
 // Internal endpoint hit by sync-realtime-data when a race finishes. Busts the
 // day-level trend caches (race-trend + d1-daily + d1-snapshot) plus every
-// detail-section cache (main + stale tier) for every race on the day so the
+// detail-section cache (main + stale tier) for the later races at the same
+// venue (every race on the day for an unscoped body) so the
 // very next fetch from any open trend page returns fresh data without waiting
 // for the hourly daily-feature-build cron.
 import { NextResponse } from "next/server";
@@ -246,7 +247,11 @@ const runTrendCacheBust = async (body: BustRequestBody): Promise<TrendCacheBustR
   };
   const result = await bustRaceTrendCachesForDay(params);
   const sectionBusted = await bustDetailSectionsForDay({
-    races,
+    // The companion /api/internal/race-cache-bust already busts the finished
+    // race itself; repeating it here only doubles its KV deletes.
+    races: isScopedBustRequest(body)
+      ? races.filter((race) => race.raceBango.padStart(2, "0") !== body.raceBango)
+      : races,
     source: body.source,
     targetYmd: body.targetYmd,
   });

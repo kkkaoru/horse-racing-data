@@ -482,7 +482,11 @@ it("POST scopes a result bust to the same venue at and after the changed race", 
     source: "jra",
     targetYmd: "20260529",
   });
-  expect(bustRaceCachesForRaceMock).toHaveBeenCalledTimes(2);
+  // The finished 07 race is busted by /api/internal/race-cache-bust instead.
+  expect(bustRaceCachesForRaceMock).toHaveBeenCalledOnce();
+  expect(bustRaceCachesForRaceMock).toHaveBeenCalledWith(
+    expect.objectContaining({ keibajoCode: "05", raceBango: "08" }),
+  );
 });
 
 it("POST enqueues immediate changed-hash rebuilds only for scoped affected races", async () => {
