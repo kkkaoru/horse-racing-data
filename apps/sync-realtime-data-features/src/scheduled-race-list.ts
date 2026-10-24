@@ -26,13 +26,13 @@ export interface ListTodayRaceKeysContext {
 
 export type ScheduledRaceListEnv = Pick<Env, "PC_KEIBA_R2_CATALOG"> & TodayRaceKeysKvEnv;
 
+// Shape returned by pc-keiba-r2-catalog normaliseCatalogRaceKeyRow.
 interface CatalogRaceKeyRow {
   [key: string]: unknown;
-  kaisaiNen: string;
-  kaisaiTsukihi: string;
-  keibajoCode: string;
-  raceBango: string;
-  raceKey: string;
+  kaisai_nen: string;
+  kaisai_tsukihi: string;
+  keibajo_code: string;
+  race_bango: string;
   source: TodayRaceKeySource;
 }
 
@@ -41,23 +41,23 @@ const RACE_KEYS_URL = "https://pc-keiba-r2-catalog/v1/race-keys";
 const isTodayRaceKeySource = (value: unknown): value is TodayRaceKeySource =>
   value === "jra" || value === "nar";
 
+// raceKey format matches features/race-key.ts parseRaceKey.
 const toTodayRaceKey = (row: CatalogRaceKeyRow): TodayRaceKey => ({
-  kaisaiNen: row.kaisaiNen,
-  kaisaiTsukihi: row.kaisaiTsukihi,
-  keibajoCode: row.keibajoCode,
-  raceBango: row.raceBango,
-  raceKey: row.raceKey,
+  kaisaiNen: row.kaisai_nen,
+  kaisaiTsukihi: row.kaisai_tsukihi,
+  keibajoCode: row.keibajo_code,
+  raceBango: row.race_bango,
+  raceKey: `${row.source}:${row.kaisai_nen}:${row.kaisai_tsukihi}:${row.keibajo_code}:${row.race_bango}`,
   source: row.source,
 });
 
 const isCompleteRow = (row: unknown): row is CatalogRaceKeyRow =>
   isRecord(row) &&
   isTodayRaceKeySource(row.source) &&
-  typeof row.kaisaiNen === "string" &&
-  typeof row.kaisaiTsukihi === "string" &&
-  typeof row.keibajoCode === "string" &&
-  typeof row.raceBango === "string" &&
-  typeof row.raceKey === "string";
+  typeof row.kaisai_nen === "string" &&
+  typeof row.kaisai_tsukihi === "string" &&
+  typeof row.keibajo_code === "string" &&
+  typeof row.race_bango === "string";
 
 const buildRaceKeysUrl = (yyyymmdd: string): URL => {
   const url = new URL(RACE_KEYS_URL);
