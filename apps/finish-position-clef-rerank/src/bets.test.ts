@@ -1300,3 +1300,58 @@ it("checks every bet type's hits when the target covers all eight types", () => 
     "wakuren",
   ]);
 });
+
+it("narrows the partners until the whole suggestion reaches the target", () => {
+  const sixRunners: RunnerProfile[] = [1, 2, 3, 4, 5, 6].map((horseNumber) => ({
+    horseNumber,
+    frameNumber: horseNumber,
+    horseName: "H",
+    jockey: "J",
+    trainer: "T",
+    owner: "O",
+  }));
+  const pairs = ["1-2", "1-3", "1-4", "1-5", "1-6", "2-3", "2-4", "2-5", "2-6", "3-4"];
+  const input = {
+    race: {
+      runners: sixRunners,
+      odds: {
+        umaren: pairs.map((combination, index) => ({
+          combination,
+          odds: 4 + index * 3,
+          minOdds: null,
+          maxOdds: null,
+        })),
+      },
+      ranks: new Map([
+        [1, 1],
+        [2, 2],
+        [3, 3],
+      ]),
+    },
+    answers: {
+      winner: { "1": 0.4, "2": 0.2, "3": 0.15, "4": 0.1, "5": 0.1, "6": 0.05 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { nagashi: 1 },
+      betType: { umaren: 1 },
+    },
+    budget: 1000,
+    types: new Set<"umaren">(["umaren"]),
+  };
+  expect(suggestPlans(input)?.plans.map((plan) => plan.legs)).toStrictEqual([[[1], [2, 3, 4, 5]]]);
+  expect(
+    suggestPlans({ ...input, target: 500 })?.plans.map((plan) => [
+      plan.legs,
+      plan.tickets.map((ticket) => [ticket.horses, ticket.stake]),
+    ]),
+  ).toStrictEqual([
+    [
+      [[1], [2, 3, 4]],
+      [
+        [[1, 2], 500],
+        [[1, 3], 300],
+        [[1, 4], 200],
+      ],
+    ],
+  ]);
+});

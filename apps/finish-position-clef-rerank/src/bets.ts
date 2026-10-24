@@ -1112,33 +1112,54 @@ export const suggestPlans = ({
     types.slice(0, target).map((type) => (requireAll ? 1 : 0) + (answers.betType[type] ?? 0)),
     units,
   );
-  const context: PlanContext = { race, p, order, axis, minimumUnits: () => 1 };
-  const { plans: built } = types.reduce<PlanAccumulator>(
-    (acc, betType, index) => {
-      const slotUnits = (shares[index] ?? 0) + acc.carry;
-      if (acc.plans.length >= target || slotUnits < 1) return acc;
-      const fitting = styles.filter((style) => style !== "multi" || ORDERED_TYPES.has(betType));
-      const multiHorse = acc.plans.filter((plan) => plan.style !== "single").length;
-      const style = SINGLE_TYPES.has(betType)
-        ? "single"
-        : (fitting[multiHorse % Math.max(fitting.length, 1)] ?? "nagashi");
-      const plan = buildPlan(context, { betType, style, units: slotUnits });
-      return plan === null
-        ? { plans: acc.plans, carry: slotUnits }
-        : { plans: [...acc.plans, plan], carry: 0 };
-    },
-    { plans: [], carry: 0 },
-  );
+  const buildAll = (pool: number): BetSuggestion[] => {
+    const context: PlanContext = {
+      race,
+      p,
+      order: order.slice(0, pool),
+      axis,
+      minimumUnits: () => 1,
+    };
+    return types.reduce<PlanAccumulator>(
+      (acc, betType, index) => {
+        const slotUnits = (shares[index] ?? 0) + acc.carry;
+        if (acc.plans.length >= target || slotUnits < 1) return acc;
+        const fitting = styles.filter((style) => style !== "multi" || ORDERED_TYPES.has(betType));
+        const multiHorse = acc.plans.filter((plan) => plan.style !== "single").length;
+        const style = SINGLE_TYPES.has(betType)
+          ? "single"
+          : (fitting[multiHorse % Math.max(fitting.length, 1)] ?? "nagashi");
+        const plan = buildPlan(context, { betType, style, units: slotUnits });
+        return plan === null
+          ? { plans: acc.plans, carry: slotUnits }
+          : { plans: [...acc.plans, plan], carry: 0 };
+      },
+      { plans: [], carry: 0 },
+    ).plans;
+  };
   const required = requiredPlanCount({
     requireAll,
     profitTarget,
     selected,
     typeCount: types.length,
   });
+  // With a target, fewer partners mean fewer tickets to fund, so the pool narrows until the
+  // whole suggestion can reach it.
+  const pools = Array.from(
+    { length: Math.max(order.length - MIN_PARTNER_POOL + 1, 1) },
+    (_, index) => order.length - index,
+  );
+  // Tries the widest pool first and stops at the first that fits.
+  const fitFromPool = (remaining: readonly number[], goal: number): BetSuggestion[] | null => {
+    const [pool, ...rest] = remaining;
+    if (pool === undefined) return null;
+    const built = buildAll(pool);
+    const fitted =
+      built.length >= required ? fitTarget(built, { race, budget, target: goal, required }) : null;
+    return fitted ?? fitFromPool(rest, goal);
+  };
   const plans =
-    profitTarget === undefined || built.length < required
-      ? built
-      : (fitTarget(built, { race, budget, target: profitTarget, required }) ?? []);
+    profitTarget === undefined ? buildAll(order.length) : (fitFromPool(pools, profitTarget) ?? []);
   const [first, ...rest] = plans;
   return first === undefined || plans.length < required
     ? null
