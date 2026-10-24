@@ -475,10 +475,8 @@ const PREMIUM_PADDOCK_RETRY_DELAY_WARM_SECONDS = 30;
 const PREMIUM_PADDOCK_HOT_WINDOW_MINUTES = 20;
 const PREMIUM_PADDOCK_WARM_WINDOW_MINUTES = 40;
 const PREMIUM_PADDOCK_RECHECK_MINUTES = 1;
-// Earliest stored bulletin (687 races, 2026-07..10) appeared 18 min before post, and the
-// first notified content of 348 races since 2026-09 came at most 17.7 min before post
-// (avg 9). 25 keeps a 7-minute margin; the 25-45 min band was ~35% of paddock page loads.
-const PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES = 25;
+// Earliest stored bulletin (687 races, 2026-07..10) appeared 18 min before post; 45 keeps margin.
+const PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES = 45;
 const PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES = 2;
 const REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS = 60;
 const REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS = 90;
