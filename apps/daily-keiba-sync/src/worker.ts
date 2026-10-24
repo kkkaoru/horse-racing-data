@@ -54,6 +54,7 @@ interface AdminRunRequest extends RequestedAcquisitionWindow {
 
 const STATUS_HEADERS: Readonly<Record<string, string>> = { "Cache-Control": "no-store" };
 const MAX_LOOKBACK_DAYS = 31;
+const SOURCE_FAILURE_PREFIX = "Source acquisition failed";
 const JV_RAW_STAGE_QUEUE = "daily-keiba-sync-jv-raw-stage-jobs";
 const NEON_QUEUE = "daily-keiba-sync-neon-jobs";
 const NV_RAW_STAGE_QUEUE = "daily-keiba-sync-nv-raw-stage-jobs";
@@ -310,7 +311,10 @@ const adminRun = async (request: Request, env: Env, now: Date): Promise<Response
       runId: run.run_id,
       toTime: parsed.toTime,
     });
-  } catch {
+  } catch (error: unknown) {
+    // Log only acquireRun's own source-failure message (diagnostic headers, no secrets).
+    if (error instanceof Error && error.message.startsWith(SOURCE_FAILURE_PREFIX))
+      console.error(`[admin-run] ${error.message}`);
     return Response.json({ error: "Acquisition failed" }, { status: 502 });
   }
 };

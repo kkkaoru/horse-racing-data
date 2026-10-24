@@ -475,6 +475,26 @@ describe("daily sync Worker", () => {
     expect(mocks.createRunWithDataSpec).not.toHaveBeenCalled();
   });
 
+  test("logs the source's diagnostic failure from an admin run", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mocks.acquireRun.mockRejectedValueOnce(
+      new Error("Source acquisition failed status=502 X-NV-Link-Failure-Stage=file-list"),
+    );
+    const response = await fetchHandler(
+      new Request("https://example/admin/run", {
+        body: JSON.stringify({ provider: "nv", runDate: "20260904" }),
+        headers: { Authorization: "Bearer admin", "Content-Type": "application/json" },
+        method: "POST",
+      }),
+      env,
+    );
+    expect(response.status).toBe(502);
+    expect(errorLog).toHaveBeenCalledWith(
+      "[admin-run] Source acquisition failed status=502 X-NV-Link-Failure-Stage=file-list",
+    );
+    errorLog.mockRestore();
+  });
+
   test("records acquisition failures without misreporting them as invalid input", async () => {
     mocks.acquireRun.mockRejectedValueOnce(new Error("private upstream failure"));
     const response = await fetchHandler(
