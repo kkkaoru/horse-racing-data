@@ -2765,3 +2765,37 @@ it("fetch GET /api/internal/neon-write-pool-health returns 502 for unknown query
     status: "unknown",
   });
 });
+
+it("fetch GET race-going returns 404 for an unknown race", async () => {
+  const { default: worker } = await import("./worker");
+  const response = await worker.fetch(
+    new Request("https://x.test/api/race-going/jra%3A2026%3A1025%3A08%3A11"),
+    buildEnv(),
+    buildCtx(),
+  );
+  expect(response.status).toBe(404);
+});
+
+it("fetch GET race-going serves the stored pre-race going after post time", async () => {
+  const { default: worker } = await import("./worker");
+  const { getRaceSource } = await import("./storage");
+  vi.mocked(getRaceSource).mockResolvedValueOnce({
+    debaUrl: "https://www.jra.go.jp/JRADB/accessD.html?CNAME=x",
+    raceStartAtJst: "2026-01-01T10:00:00+09:00",
+    source: "jra",
+  } as never);
+  const response = await worker.fetch(
+    new Request("https://x.test/api/race-going/jra%3A2026%3A0101%3A08%3A01"),
+    buildEnv({
+      REALTIME_DB: buildDb(null, [
+        { going: "重", observed_at: "2026-01-01T09:30:00+09:00", surface: "dirt" },
+      ]),
+    }),
+    buildCtx(),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toStrictEqual({
+    goings: [{ going: "重", observedAt: "2026-01-01T09:30:00+09:00", surface: "dirt" }],
+    raceKey: "jra:2026:0101:08:01",
+  });
+});

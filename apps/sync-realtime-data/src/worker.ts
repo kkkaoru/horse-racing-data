@@ -81,6 +81,7 @@ import {
 } from "./premium-paddock-cache";
 import { fetchJraRacesByDate, fetchNarRacesByDate } from "./postgres";
 import { buildRealtimeRaceKey, raceKeyFromRealtimePath, type RealtimeSource } from "./race-key";
+import { raceGoingRaceKeyFromRequest, readRaceGoing } from "./race-going";
 import {
   buildRealtimePayload,
   claimPremiumPaddockNotificationSend,
@@ -6688,6 +6689,16 @@ export default {
         env.HORSE_WEIGHT_DO.idFromName(horseWeightsLatestRaceKey),
       );
       return proxyHorseWeightLatestWithD1Fallback(env, horseWeightsLatestRaceKey, latestStub);
+    }
+
+    const raceGoingRaceKey = raceGoingRaceKeyFromRequest(url);
+    if (raceGoingRaceKey && request.method === "GET") {
+      const payload = await readRaceGoing({
+        db: env.REALTIME_DB,
+        now: new Date(),
+        raceKey: raceGoingRaceKey,
+      });
+      return payload ? json(payload) : json({ error: "race not found" }, { status: 404 });
     }
 
     const horseWeightFlatRaceKey = horseWeightRaceKeyFromRequest(url);
