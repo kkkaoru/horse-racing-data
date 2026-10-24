@@ -189,11 +189,11 @@ it("cron-every-15-min-utc-warms-ssr-cache-without-date", () => {
   expect(scheduleTodayWinRateHeatmapWarmMock).toHaveBeenCalledTimes(0);
 });
 
-it("cron-every-15-min-all-day-resweeps-today-heatmaps-after-jst-midnight", () => {
-  vi.setSystemTime(new Date("2026-09-25T15:15:00.000Z"));
+it("cron-every-15-min-race-hours-resweeps-today-heatmaps", () => {
+  vi.setSystemTime(new Date("2026-09-26T03:15:00.000Z"));
   const env = buildEnv();
   const ctx = buildCtx();
-  worker.scheduled({ cron: "*/15 * * * *" }, env, ctx);
+  worker.scheduled({ cron: "*/15 0-12 * * *" }, env, ctx);
   expect(ctx.waitUntil).toHaveBeenCalledTimes(1);
   expect(scheduleTodayWinRateHeatmapWarmMock).toHaveBeenCalledTimes(1);
   expect(scheduleTodayWinRateHeatmapWarmMock.mock.calls[0]?.[0].todayJstYmd).toBe("2026-09-26");

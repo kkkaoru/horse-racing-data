@@ -131,9 +131,9 @@ export default {
         }),
       );
     }
-    if (controller.cron === "*/15 * * * *") {
-      // Runner updates can invalidate tomorrow's heatmaps just after JST midnight.
-      // Re-sweep the whole day; HIT races only need a cache probe.
+    if (controller.cron === "*/15 0-12 * * *") {
+      // Race-hours heatmap sweep (JST 09:00-21:59); the 06:00 JST pass covers
+      // overnight runner updates. HIT races only need a cache probe.
       ctx.waitUntil(
         scheduleTodayWinRateHeatmapWarm({
           ctx,

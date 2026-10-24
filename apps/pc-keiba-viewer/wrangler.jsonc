@@ -103,10 +103,12 @@
     // trends from 20 minutes before post time. Every 15 minutes (only JST
     // 09:00-23:xx race hours) refreshes today's SSR snapshot in KV so cache misses
     // never need a full Hyperdrive fan-out. The trend and SSR crons stay within
-    // UTC 0-14; the heatmap sweep runs all day because runner updates after
-    // JST midnight invalidate tomorrow's heatmaps before 09:00 JST.
+    // UTC 0-14. The heatmap sweep runs every 15 minutes only in JST 09:00-21:59
+    // (UTC 0-12, last NAR night race ~21:00): each miss rebuilds from R2 SQL,
+    // billed by bytes scanned. Overnight runner updates are covered by the
+    // 06:00 JST pass, which also starts the heatmap workflows.
     // 06:00 JST warms today's detail sections + SSR snapshot for late-registered venues.
-    "crons": ["0 12 * * *", "0 21 * * *", "*/5 0-14 * * *", "*/15 0-14 * * *", "*/15 * * * *"],
+    "crons": ["0 12 * * *", "0 21 * * *", "*/5 0-14 * * *", "*/15 0-14 * * *", "*/15 0-12 * * *"],
   },
   "workflows": [
     {

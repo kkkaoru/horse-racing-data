@@ -204,7 +204,7 @@ export default async function PaddockEditPage({ params }: PaddockEditPageProps) 
 
   // Reuse the race-detail SSR snapshot (race + runners + courseInfo +
   // sameVenueRaces) so the paddock-edit fan-out collapses to a single KV
-  // read on warm requests. The cron at `0 12 * * *` / `*/15 * * * *`
+  // read on warm requests. The cron at `0 12 * * *` / `*/15 0-14 * * *`
   // populates this for upcoming and today's races.
   const ssrCacheKey = buildRaceDetailSsrCacheKey({
     day,
