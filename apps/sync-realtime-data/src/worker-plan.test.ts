@@ -2313,7 +2313,7 @@ it("findStaleWeightFetchRaces binds post window and dynamic retry backoffs as JS
     "2026-06-07T12:30:00+09:00",
     "2026-06-07T11:55:00+09:00",
     "2026-06-07T11:45:00+09:00",
-    24,
+    256,
   );
 });
 
@@ -2334,7 +2334,7 @@ it("findStaleWeightFetchRaces binds JST iso strings that lexically compare corre
     "2026-06-13T11:43:00+09:00",
     "2026-06-13T11:08:00+09:00",
     "2026-06-13T10:58:00+09:00",
-    24,
+    256,
   );
   // Watchdog SQL: race_start_at_jst > lookBack AND < lookAhead AND
   // last_weight_fetch_at IS NULL. Confirm a real stored JST
@@ -2430,7 +2430,7 @@ it("findStaleWeightFetchRaces gates on attempts and prioritizes the earliest rac
     "2026-07-03T12:30:00+09:00",
     "2026-07-03T11:55:00+09:00",
     "2026-07-03T11:45:00+09:00",
-    24,
+    256,
   );
 });
 
@@ -3259,4 +3259,40 @@ it("planResultFetchesOnly attempts inline JRA result fetches with a low per-tick
     '{"enqueued":1,"eligible":2,"inlineAttempted":1,"inlineError":0,"skipped_too_recent":0}',
     undefined,
   );
+});
+
+it("runWeightWatchdog enqueues ready JRA races behind 24 earlier unready NAR races", async () => {
+  const { runWeightWatchdog } = await import("./worker");
+  const narRows = Array.from({ length: 24 }, (_, index) => ({
+    last_weight_fetch_at: null,
+    last_weight_fetch_attempt_at: null,
+    race_key: `nar:2026:1024:54:${String(index + 1).padStart(2, "0")}`,
+    race_start_at_jst: "2026-10-24T14:00:00+09:00",
+  }));
+  const jraRows = [
+    {
+      last_weight_fetch_at: null,
+      last_weight_fetch_attempt_at: null,
+      race_key: "jra:2026:1024:04:11",
+      race_start_at_jst: "2026-10-24T15:45:00+09:00",
+    },
+  ];
+  // The fake D1 honours the bound LIMIT, so a SQL cap below the unready rows starves JRA.
+  const bind = vi.fn((...args: unknown[]) => ({
+    all: async () => ({ results: [...narRows, ...jraRows].slice(0, Number(args.at(-1))) }),
+  }));
+  const prepare = vi.fn(() => ({ bind }));
+  const send = vi.fn(async () => {});
+  const env = {
+    ...buildReadyFinishPositionBinding(["jra:2026:1024:04:11"]),
+    REALTIME_DB: { prepare } as unknown as D1Database,
+    REALTIME_JOBS: { send, sendBatch: vi.fn(async () => {}) },
+  } as unknown as Env;
+
+  await runWeightWatchdog(env, new Date("2026-10-24T05:00:00.000Z"));
+
+  const sent = send.mock.calls as unknown as [Job][];
+  expect(
+    sent.map((call) => (call[0].type === "fetch-weights" ? call[0].raceKey : null)),
+  ).toStrictEqual(["jra:2026:1024:04:11"]);
 });

@@ -615,6 +615,10 @@ const WEIGHT_WATCHDOG_ADAPTIVE_RACE_THRESHOLD_MINUTES = 90;
 // weakening the per-race atomic reservation.
 const WEIGHT_WATCHDOG_ADAPTIVE_ATTEMPT_BACKOFF_MINUTES = 1;
 const WEIGHT_WATCHDOG_MAX_PER_TICK = 24;
+// Candidates are capped only after the readiness filter: unready races are never
+// claimed, so a SQL cap of MAX_PER_TICK let nar/ban-ei races stalled on a provider
+// outage fill every tick and starve later ready JRA races. The ±3h window bounds this.
+const WEIGHT_WATCHDOG_CANDIDATE_LIMIT = 256;
 const WEIGHT_WATCHDOG_HEARTBEAT_DEDUPE_TTL_SECONDS = 60 * 60;
 const JRA_KEIBAJO_NAMES: Record<string, string> = {
   "01": "札幌",
@@ -1978,7 +1982,7 @@ export const findStaleWeightFetchRaces = async (
       nearRaceJst,
       nearAttemptBackoffJst,
       farAttemptBackoffJst,
-      WEIGHT_WATCHDOG_MAX_PER_TICK,
+      WEIGHT_WATCHDOG_CANDIDATE_LIMIT,
     )
     .all<StaleWeightFetchRaceRow>();
   return result.results.map((row) => ({
@@ -2019,7 +2023,10 @@ export const runWeightWatchdog = async (env: Env, now: Date): Promise<void> => {
       );
       return;
     }
-    const ready = await filterPreweightReadyWeightRaces(env, stale);
+    const ready = (await filterPreweightReadyWeightRaces(env, stale)).slice(
+      0,
+      WEIGHT_WATCHDOG_MAX_PER_TICK,
+    );
     if (ready.length === 0) {
       await logFetch(
         env.REALTIME_DB,
