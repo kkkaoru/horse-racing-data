@@ -15,7 +15,7 @@ Neither path depends on a Mac process, launchd, or Cloudflare Tunnel.
 - Container Durable Object: `MlflowContainer`
 - MLflow backend: Neon PostgreSQL
 - Artifact store: Cloudflare R2 bucket `mlflow-artifacts`, prefix `mlflow`
-- Preview sync: every 10 minutes during JST 02:00-21:59
+- Preview sync: every 30 minutes during JST 02:00-21:59
 - Sync range: current JST date through two days ahead
 
 The preview sync records genuinely served finish-position and running-style
