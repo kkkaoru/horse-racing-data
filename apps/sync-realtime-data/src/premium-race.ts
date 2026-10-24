@@ -273,7 +273,12 @@ export const fetchPremiumHtmlAttempts = async (
     }
     const buffer = await response.arrayBuffer();
     const charset = config.responseCharset ?? detectHtmlCharset(buffer) ?? "utf-8";
-    results.push({ html: new TextDecoder(charset).decode(buffer), mode: attempt.mode });
+    const html = new TextDecoder(charset).decode(buffer);
+    results.push({ html, mode: attempt.mode });
+    // An authenticated page is final; skipping the remaining attempts saves netkeiba requests.
+    if (html.includes(PREMIUM_HTML_AUTHENTICATED_MARKER)) {
+      break;
+    }
   }
   if (results.length === 0) {
     throw new Error(`premium race fetch failed: ${errors.join("; ")}`);

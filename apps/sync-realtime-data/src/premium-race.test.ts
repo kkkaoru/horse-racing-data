@@ -231,6 +231,46 @@ it("fetchPremiumHtmlAttempts uses cookie attempt when cookie is configured", asy
   expect(fetchSpy.mock.calls[0]![1]).toBeDefined();
 });
 
+it("fetchPremiumHtmlAttempts stops after an authenticated proxy page", async () => {
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+    async (): Promise<Response> =>
+      new Response('<html><div class="Icon_Account">user</div></html>', {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        status: 200,
+      }),
+  );
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_COOKIE: "s",
+    PREMIUM_RACE_ORIGIN: "https://x.test",
+    PREMIUM_RACE_PROXY_BEARER: "tk",
+    PREMIUM_RACE_PROXY_URL: "https://proxy.example",
+    PREMIUM_RACE_PROXY_USER_ID: "u1",
+  });
+  const attempts = await fetchPremiumHtmlAttempts(config, "https://x.test/race");
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
+  expect(attempts.map((attempt) => attempt.mode)).toStrictEqual(["proxy"]);
+});
+
+it("fetchPremiumHtmlAttempts continues to cookie and direct when the proxy page is not authenticated", async () => {
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(
+    async (): Promise<Response> =>
+      new Response("<html>guest</html>", {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        status: 200,
+      }),
+  );
+  const config = getPremiumRaceConfig({
+    PREMIUM_RACE_COOKIE: "s",
+    PREMIUM_RACE_ORIGIN: "https://x.test",
+    PREMIUM_RACE_PROXY_BEARER: "tk",
+    PREMIUM_RACE_PROXY_URL: "https://proxy.example",
+    PREMIUM_RACE_PROXY_USER_ID: "u1",
+  });
+  const attempts = await fetchPremiumHtmlAttempts(config, "https://x.test/race");
+  expect(fetchSpy).toHaveBeenCalledTimes(3);
+  expect(attempts.map((attempt) => attempt.mode)).toStrictEqual(["proxy", "cookie", "direct"]);
+});
+
 it("discoverPremiumRaceLinks extracts unique sourceRaceIds from anchor hrefs in HTML", () => {
   const config = getPremiumRaceConfig({
     PREMIUM_RACE_ORIGIN: "https://x.test",
