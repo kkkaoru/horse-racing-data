@@ -641,6 +641,21 @@ it("counts active runners per race inside the single runner scan", async () => {
       ["02", 1, "12", 0],
       ["02", 2, "12", 0.09090909361839294],
     ]);
+    const race = await connection.runAndReadAll(
+      buildRaceFeaturesQuery(env(), {
+        date: "20260715",
+        keibajoCode: "44",
+        raceBango: "02",
+        source: "nar",
+      }),
+    );
+    expect(race.getRowObjectsJson()).toStrictEqual(
+      result.getRowObjectsJson().filter((row) => row.race_bango === "02"),
+    );
+    const banEiOnNar = await connection.runAndReadAll(
+      buildRaceFeaturesQuery(env(), { date: "20260715", keibajoCode: "83", source: "nar" }),
+    );
+    expect(banEiOnNar.getRowObjectsJson()).toStrictEqual([]);
   } finally {
     connection.closeSync();
     instance.closeSync();

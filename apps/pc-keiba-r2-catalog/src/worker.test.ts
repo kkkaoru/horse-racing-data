@@ -321,8 +321,86 @@ it("queries fixed race-feature SQL and returns DailyRaceEntryRow objects", async
     umaban: 7,
   });
   const requestBody = String(harness.fetchCalls[0]?.init?.body);
-  expect(requestBody).toMatch("keibajo_code = '05'");
-  expect(requestBody).toMatch("race_bango = '01'");
+  expect(requestBody).toMatch("kaisai_tsukihi = '0715'");
+  expect(requestBody).not.toMatch("keibajo_code = '05'");
+  expect(requestBody).not.toMatch("race_bango = '01'");
+  expect(harness.cacheCalls.puts).toStrictEqual([
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&schema=confirmed-runners-v1&source=jra",
+  ]);
+});
+
+it("serves every per-race feature request of a day from one day-wide scan", async () => {
+  const harness = createHarness([
+    featureRow(),
+    { ...featureRow(), ketto_toroku_bango: "2023100002", umaban: "8" },
+    { ...featureRow(), ketto_toroku_bango: "2023100003", race_bango: "2", umaban: "1" },
+    { ...featureRow(), keibajo_code: "6", ketto_toroku_bango: "2023100004", umaban: "1" },
+  ]);
+  const race = async (query: string): Promise<unknown> => {
+    const response = await handleRequest(
+      new Request(`https://catalog.test/v1/race-features?date=20260715&source=jra&${query}`),
+      harness.env,
+      harness.dependencies,
+    );
+    const payload = await response.json();
+    if (!isRecord(payload) || !Array.isArray(payload.rows)) throw new Error("expected rows");
+    return payload.rows.map((row: Record<string, unknown>) => [
+      row.keibajo_code,
+      row.race_bango,
+      row.umaban,
+      response.headers.get("X-Catalog-Cache"),
+    ]);
+  };
+  expect(await race("keibajoCode=05&raceBango=01")).toStrictEqual([
+    ["05", "01", 7, "r2-sql"],
+    ["05", "01", 8, "r2-sql"],
+  ]);
+  expect(await race("keibajoCode=05&raceBango=02")).toStrictEqual([["05", "02", 1, "cache-api"]]);
+  expect(await race("keibajoCode=06")).toStrictEqual([["06", "01", 1, "cache-api"]]);
+  expect(await race("raceBango=02")).toStrictEqual([["05", "02", 1, "cache-api"]]);
+  expect(await race("keibajoCode=07&raceBango=01")).toStrictEqual([]);
+  expect(harness.fetchCalls).toHaveLength(1);
+});
+
+it("coalesces concurrent per-race feature requests into one day-wide scan", async () => {
+  const harness = createHarness([featureRow()]);
+  const responses = await Promise.all([
+    handleRequest(
+      new Request(
+        "https://catalog.test/v1/race-features?date=20260716&source=jra&keibajoCode=5&raceBango=1",
+      ),
+      harness.env,
+      harness.dependencies,
+    ),
+    handleRequest(
+      new Request(
+        "https://catalog.test/v1/race-features?date=20260716&source=jra&keibajoCode=5&raceBango=2",
+      ),
+      harness.env,
+      harness.dependencies,
+    ),
+  ]);
+  expect(responses.map((response) => response.status)).toStrictEqual([200, 200]);
+  expect(harness.fetchCalls).toHaveLength(1);
+});
+
+it("falls back to the per-race query when another race of the day fails validation", async () => {
+  const harness = createHarness([
+    featureRow(),
+    { ...featureRow(), race_bango: "2" },
+    { ...featureRow(), race_bango: "2", ketto_toroku_bango: "2023100009" },
+  ]);
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/race-features?date=20260717&source=jra&keibajoCode=5&raceBango=2",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.status).toBe(502);
+  expect(harness.fetchCalls).toHaveLength(2);
+  expect(String(harness.fetchCalls[1]?.init?.body)).toMatch("race_bango = '02'");
+  expect(harness.cacheCalls.puts).toStrictEqual([]);
 });
 
 it("requires the attestation Bearer token before querying fresh race entries", async () => {
@@ -1607,13 +1685,12 @@ it("purges one source and its exact race-training cache key", async () => {
     harness.dependencies,
   );
   expect(response.status).toBe(200);
-  await expect(response.json()).resolves.toStrictEqual({ ok: true, purged: 2 });
-  expect(harness.cacheCalls.deletes[0]).toBe(
+  await expect(response.json()).resolves.toStrictEqual({ ok: true, purged: 3 });
+  expect(harness.cacheCalls.deletes).toStrictEqual([
     "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&schema=confirmed-runners-v1&source=ban-ei&keibajoCode=83&raceBango=09",
-  );
-  expect(harness.cacheCalls.deletes[1]).toBe(
+    "https://pc-keiba-r2-catalog-cache.internal/v2/race-features?date=20260715&schema=confirmed-runners-v1&source=ban-ei",
     "https://pc-keiba-r2-catalog-cache.internal/v2/race-trainings?date=20260715&schema=complete-horse-workouts-v2&keibajoCode=83&raceBango=09",
-  );
+  ]);
 });
 
 it("purges only the training cache for an exact-race ingestion update", async () => {

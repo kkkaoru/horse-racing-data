@@ -116,6 +116,7 @@ import type { DayBloodlineEntry } from "./win-rate-heatmap-stats";
 import type {
   BulkFreshRaceEntryFilters,
   CatalogSource,
+  DailyRaceEntryRow,
   Env,
   Fetcher,
   FreshRaceEntryFilters,
@@ -983,18 +984,84 @@ const handleRaceKeys = async (
   return jsonRowsResponse(body, "r2-sql");
 };
 
-const handleRaceFeatures = (
+const normaliseDayFeatureRows = (
+  rows: ReadonlyArray<Record<string, unknown>>,
+): DailyRaceEntryRow[] | null => {
+  try {
+    return normaliseDailyRaceEntryRows(rows);
+  } catch {
+    return null;
+  }
+};
+
+// Resolves the day-wide feature body for one date and source, from cache or
+// one coalesced R2 SQL scan. An empty string means the day's rows failed
+// validation somewhere, so the caller falls back to its own narrower query
+// and a bad race elsewhere on the day never fails an unrelated race.
+const dayFeatureBody = async (
+  filters: RaceFeatureFilters,
+  env: Env,
+  dependencies: WorkerDependencies,
+): Promise<{ body: string; cacheStatus: string }> => {
+  const dayFilters: RaceFeatureFilters = { date: filters.date, source: filters.source };
+  const descriptor = featureDescriptor(dayFilters);
+  const cached = await cachedCatalogResponse(descriptor, env, dependencies, readKvRows);
+  if (cached)
+    return {
+      body: await cached.text(),
+      cacheStatus: String(cached.headers.get("X-Catalog-Cache")),
+    };
+  const body = await coalesce(`race-features:${cacheRequestFor(descriptor).url}`, async () => {
+    const rows = normaliseDayFeatureRows(
+      await executeR2Sql(env, buildRaceFeaturesQuery(env, dayFilters), dependencies.fetchImpl),
+    );
+    if (rows === null) return "";
+    const dayBody = JSON.stringify({ rows });
+    await populateCaches(
+      dependencies.cache,
+      env.CATALOG_KV,
+      descriptor,
+      dayBody,
+      parsePositiveSeconds(env.CACHE_TTL_SECONDS, 60),
+      parsePositiveSeconds(env.KV_TTL_SECONDS, 600),
+    );
+    return dayBody;
+  });
+  return { body, cacheStatus: "r2-sql" };
+};
+
+const isRequestedRace =
+  (filters: RaceFeatureFilters) =>
+  (row: DailyRaceEntryRow): boolean =>
+    (filters.keibajoCode === undefined || row.keibajo_code === filters.keibajoCode) &&
+    (filters.raceBango === undefined || row.race_bango === filters.raceBango);
+
+// Per-race requests (one per race, every few minutes from the prediction
+// crons) are answered from the day-wide answer: R2 SQL bills at least 10 MB
+// per query and each per-race query scanned the same year partition. The
+// day-wide rows carry the same values (entry counts are per race), and the
+// day-wide entry has the same Cache API / KV TTLs, so freshness is unchanged.
+const handleRaceFeatures = async (
   url: URL,
   env: Env,
   dependencies: WorkerDependencies,
 ): Promise<Response> => {
   const filters = parseFeatureFilters(url);
-  return queryAndCacheRows(
-    featureDescriptor(filters),
-    env,
-    dependencies,
-    buildRaceFeaturesQuery(env, filters),
-    normaliseDailyRaceEntryRows,
+  const narrowQuery = (): Promise<Response> =>
+    queryAndCacheRows(
+      featureDescriptor(filters),
+      env,
+      dependencies,
+      buildRaceFeaturesQuery(env, filters),
+      normaliseDailyRaceEntryRows,
+    );
+  if (filters.keibajoCode === undefined && filters.raceBango === undefined) return narrowQuery();
+  const day = await dayFeatureBody(filters, env, dependencies);
+  if (day.body === "") return narrowQuery();
+  const payload: { rows: DailyRaceEntryRow[] } = JSON.parse(day.body);
+  return jsonRowsResponse(
+    JSON.stringify({ rows: payload.rows.filter(isRequestedRace(filters)) }),
+    day.cacheStatus,
   );
 };
 
@@ -1701,15 +1768,12 @@ const purgeTargets = (url: URL): CacheDescriptor[] => {
   if (kind === "race-trainings" && (keibajoCode === undefined || raceBango === undefined))
     throw new Error("training purge must target an exact race");
   const featureSources = source === undefined ? FEATURE_SOURCES : [source];
-  const features = featureSources.map(
-    (featureSource): CacheDescriptor => ({
-      date,
-      keibajoCode,
-      kind: "race-features",
-      raceBango,
-      source: featureSource,
-    }),
-  );
+  const scoped = keibajoCode !== undefined || raceBango !== undefined;
+  // Scoped feature reads are served from the day-wide entry, so purge it too.
+  const features = featureSources.flatMap((featureSource): CacheDescriptor[] => [
+    { date, keibajoCode, kind: "race-features", raceBango, source: featureSource },
+    ...(scoped ? [featureDescriptor({ date, source: featureSource })] : []),
+  ]);
   const trainings =
     keibajoCode === undefined || raceBango === undefined
       ? []
