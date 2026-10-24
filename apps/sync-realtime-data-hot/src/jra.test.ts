@@ -892,58 +892,222 @@ it("fetchJraOddsWithPlaywright clicks the exact オッズ filtered link when cou
   expect(result.entryHtml).toBe("<html>entry</html>");
 });
 
-it("fetchJraOddsWithPlaywright retries once when the first browser session throws on launch (F4 retry)", async () => {
-  urlCounter = 0;
-  innerHtmlCounter = 0;
-  const okBrowser = makeBrowser({
-    content: "<html>entry</html>",
-    locators: {
-      "#odds_list": { innerHtml: () => "<table></table>" },
-      "#race_related_link a": { count: 1 },
-    },
-  });
-  const mod = await import("@cloudflare/playwright");
-  const launch = mod.launch as unknown as ReturnType<typeof vi.fn>;
-  launch.mockReset();
-  launch.mockRejectedValueOnce(new Error("transient launch failure"));
-  launch.mockResolvedValueOnce({ close: okBrowser.close, newContext: okBrowser.newContext });
-  const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  const result = await fetchJraOddsWithPlaywright({} as never, "https://x.test/race");
-  expect(result.entryHtml).toBe("<html>entry</html>");
-  expect(launch).toHaveBeenCalledTimes(2);
-  expect(consoleSpy).toHaveBeenCalled();
-  consoleSpy.mockRestore();
-});
-
-it("fetchJraOddsWithPlaywright surfaces the second-attempt error when both retries fail", async () => {
+it("fetchJraOddsWithPlaywright makes a single Chromium attempt and surfaces its error", async () => {
   urlCounter = 0;
   innerHtmlCounter = 0;
   const mod = await import("@cloudflare/playwright");
   const launch = mod.launch as unknown as ReturnType<typeof vi.fn>;
   launch.mockReset();
   launch.mockRejectedValueOnce(new Error("first failure"));
-  launch.mockRejectedValueOnce(new Error("second failure"));
-  const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   await expect(fetchJraOddsWithPlaywright({} as never, "https://x.test/race")).rejects.toThrow(
-    "second failure",
+    "first failure",
   );
-  expect(launch).toHaveBeenCalledTimes(2);
-  consoleSpy.mockRestore();
+  expect(launch).toHaveBeenCalledTimes(1);
 });
 
-it("fetchJraOddsWithPlaywright wraps non-Error rejection values in an Error before throwing", async () => {
-  urlCounter = 0;
-  innerHtmlCounter = 0;
+// Trimmed from live JRA HTML (2026-10-24 東京11R): deba `#race_related_link`
+// odds link, the odds page tab nav, and the first `#odds_list` rows.
+const HTTP_DEBA_HTML = `<div id="race_related_link"><ul>
+<li class="odds"><a href="#" class="btn-def btn-sm blue btn-block" onclick="return doAction('/JRADB/accessO.html', 'pw151ouS305202604081120261024Z/CE');"><i class="fa fa-chevron-circle-right" aria-hidden="true"></i>オッズ</a></li></ul></div>`;
+const HTTP_TAB_NAV = `<ul class="nav pills mt10">
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw154ouS305202604081020261024Z/11');">馬連</a></li>
+<li class="current"><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw151ouS305202604081120261024Z/CE');">単勝・複勝</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw153ouS305202604081120261024Z/D6');">枠連</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw154ouS305202604081120261024Z/5A');">馬連</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw155ouS305202604081120261024Z/DE');">ワイド</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw156ouS305202604081120261024Z/62');">馬単</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw157ouS305202604081120261024Z99/48');">3連複</a></li>
+<li><a href="#" onclick="return doAction('/JRADB/accessO.html', 'pw158ouS305202604081120261024Z/6A');">3連単</a></li>
+</ul>`;
+const HTTP_WIN_HTML = `${HTTP_TAB_NAV}<div id="odds_list" class="mt25">
+<table class="basic narrow-xy tanpuku"><tbody>
+<tr><td class="waku" rowspan="1"><img src="/JRADB/img/waku/1.png" alt="枠1白" /></td><td class="num">1</td>
+<td class="horse"><a href="/JRADB/accessU.html?CNAME=pw01dud002024100935/16">タプティ</a></td>
+<td class="odds_tan">30.8</td><td class="odds_fuku"><span class="inner"><span class="min">3.7</span><span class="cap">-</span><span class="max">5.1</span></span></td></tr>
+<tr><td class="waku" rowspan="1"><img src="/JRADB/img/waku/2.png" alt="枠2黒" /></td><td class="num">2</td>
+<td class="horse"><a href="/JRADB/accessU.html?CNAME=pw01dud002024103955/03">マリアンデール</a></td>
+<td class="odds_tan">15.1</td><td class="odds_fuku"><span class="inner"><span class="min">3.2</span><span class="cap">-</span><span class="max">4.4</span></span></td></tr>
+</tbody></table></div>`;
+const HTTP_UMAREN_HTML = `<div id="odds_list" class="mt25"><ul class="umaren_list mt15"><li>
+<table class="basic narrow-xy umaren"><caption>1</caption><tbody>
+<tr><th scope="row">2</th><td>200.5</td></tr>
+</tbody></table></li></ul></div>`;
+
+interface HttpFetchCall {
+  body: string | null;
+  method: string;
+  url: string;
+}
+
+const stubJraHttp = (pages: Record<string, string | Uint8Array>, calls: HttpFetchCall[] = []) => {
+  const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+    const body = init.body instanceof URLSearchParams ? init.body.toString() : null;
+    calls.push({ body, method: String(init.method), url });
+    const key = body ?? url;
+    const page = pages[key];
+    return page === undefined ? new Response("missing", { status: 404 }) : new Response(page);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+};
+
+it("fetchJraOddsWithHttp walks deba -> win page -> tab pages and parses every bet type", async () => {
+  const calls: HttpFetchCall[] = [];
+  stubJraHttp(
+    {
+      "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde": HTTP_DEBA_HTML,
+      "cname=pw151ouS305202604081120261024Z%2FCE": HTTP_WIN_HTML,
+      "cname=pw153ouS305202604081120261024Z%2FD6": '<div id="odds_list"></div>',
+      "cname=pw154ouS305202604081120261024Z%2F5A": HTTP_UMAREN_HTML,
+      "cname=pw155ouS305202604081120261024Z%2FDE": '<div id="odds_list"></div>',
+      "cname=pw156ouS305202604081120261024Z%2F62": '<div id="odds_list"></div>',
+      "cname=pw157ouS305202604081120261024Z99%2F48": '<div id="odds_list"></div>',
+      "cname=pw158ouS305202604081120261024Z%2F6A": '<div id="odds_list"></div>',
+    },
+    calls,
+  );
+  const { fetchJraOddsWithHttp } = await import("./jra");
+  const result = await fetchJraOddsWithHttp(
+    "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde",
+  );
+  expect(result.missingTypes).toStrictEqual([]);
+  expect(result.latest.tansho).toStrictEqual([
+    { combination: "2", odds: 15.1, rank: 1 },
+    { combination: "1", odds: 30.8, rank: 2 },
+  ]);
+  expect(result.latest.umaren).toStrictEqual([{ combination: "1-2", odds: 200.5, rank: 1 }]);
+  expect(result.latest.wakuren).toStrictEqual([]);
+  expect(calls.length).toBe(8);
+  expect(calls[0]).toStrictEqual({
+    body: null,
+    method: "GET",
+    url: "https://www.jra.go.jp/JRADB/accessD.html?CNAME=pw01dde",
+  });
+  expect(calls[1]).toStrictEqual({
+    body: "cname=pw151ouS305202604081120261024Z%2FCE",
+    method: "POST",
+    url: "https://www.jra.go.jp/JRADB/accessO.html",
+  });
+  vi.unstubAllGlobals();
+});
+
+it("fetchJraOddsWithHttp decodes Shift_JIS pages so Japanese tab labels match", async () => {
+  // "馬連" in Shift_JIS is 94 6E 98 41; the rest of the page is ASCII.
+  const sjisWinHtml = new Uint8Array([
+    ...new TextEncoder().encode(
+      `<a onclick="return doAction('/JRADB/accessO.html', 'pw154ouS305202604081120261024Z/5A');">`,
+    ),
+    0x94,
+    0x6e,
+    0x98,
+    0x41,
+    ...new TextEncoder().encode('</a><div id="odds_list"></div>'),
+  ]);
+  stubJraHttp({
+    "https://x.test/deba": HTTP_DEBA_HTML,
+    "cname=pw151ouS305202604081120261024Z%2FCE": sjisWinHtml,
+    "cname=pw154ouS305202604081120261024Z%2F5A": HTTP_UMAREN_HTML,
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const { fetchJraOddsWithHttp } = await import("./jra");
+  const result = await fetchJraOddsWithHttp("https://x.test/deba");
+  expect(result.latest.umaren).toStrictEqual([{ combination: "1-2", odds: 200.5, rank: 1 }]);
+  expect(result.missingTypes).toStrictEqual(["wakuren", "wide", "umatan", "3renpuku", "3rentan"]);
+  warnSpy.mockRestore();
+  vi.unstubAllGlobals();
+});
+
+it("fetchJraOddsWithHttp rejects when the deba page returns a non-OK status", async () => {
+  stubJraHttp({});
+  const { fetchJraOddsWithHttp } = await import("./jra");
+  await expect(fetchJraOddsWithHttp("https://x.test/deba")).rejects.toThrow(
+    "JRA HTTP 404 for https://x.test/deba",
+  );
+  vi.unstubAllGlobals();
+});
+
+it("fetchJraOddsWithHttp rejects when the deba page has no odds link", async () => {
+  stubJraHttp({ "https://x.test/deba": "<html></html>" });
+  const { fetchJraOddsWithHttp } = await import("./jra");
+  await expect(fetchJraOddsWithHttp("https://x.test/deba")).rejects.toThrow(
+    "JRA odds cname was not found on race entry page.",
+  );
+  vi.unstubAllGlobals();
+});
+
+it("fetchJraOddsWithHttp rejects when the win odds page is a JRA error page (no #odds_list)", async () => {
+  stubJraHttp({
+    "https://x.test/deba": HTTP_DEBA_HTML,
+    "cname=pw151ouS305202604081120261024Z%2FCE": "<html>error013</html>",
+  });
+  const { fetchJraOddsWithHttp } = await import("./jra");
+  await expect(fetchJraOddsWithHttp("https://x.test/deba")).rejects.toThrow(
+    "JRA odds page pw151ouS305202604081120261024Z/CE has no #odds_list.",
+  );
+  vi.unstubAllGlobals();
+});
+
+it("fetchJraOddsWithHttp rejects when every tab page fails", async () => {
+  stubJraHttp({
+    "https://x.test/deba": HTTP_DEBA_HTML,
+    "cname=pw151ouS305202604081120261024Z%2FCE": HTTP_WIN_HTML,
+  });
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const { fetchJraOddsWithHttp } = await import("./jra");
+  await expect(fetchJraOddsWithHttp("https://x.test/deba")).rejects.toThrow(
+    "All JRA odds tab pages failed over HTTP.",
+  );
+  warnSpy.mockRestore();
+  vi.unstubAllGlobals();
+});
+
+it("fetchJraOdds serves from HTTP without launching a browser", async () => {
+  stubJraHttp({
+    "https://x.test/deba": HTTP_DEBA_HTML,
+    "cname=pw151ouS305202604081120261024Z%2FCE": HTTP_WIN_HTML,
+    "cname=pw154ouS305202604081120261024Z%2F5A": HTTP_UMAREN_HTML,
+  });
   const mod = await import("@cloudflare/playwright");
   const launch = mod.launch as unknown as ReturnType<typeof vi.fn>;
   launch.mockReset();
-  launch.mockRejectedValueOnce("non-error one");
-  launch.mockRejectedValueOnce("non-error two");
-  const consoleSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-  await expect(fetchJraOddsWithPlaywright({} as never, "https://x.test/race")).rejects.toThrow(
-    "JRA odds fetch failed after",
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const { fetchJraOdds } = await import("./jra");
+  const result = await fetchJraOdds({} as never, "https://x.test/deba");
+  expect(result.latest.umaren).toStrictEqual([{ combination: "1-2", odds: 200.5, rank: 1 }]);
+  expect(launch).not.toHaveBeenCalled();
+  expect(logSpy).toHaveBeenCalledWith(
+    "JRA odds served by engine=fetch missing=5 url=https://x.test/deba",
   );
-  consoleSpy.mockRestore();
+  warnSpy.mockRestore();
+  logSpy.mockRestore();
+  vi.unstubAllGlobals();
+});
+
+it("fetchJraOdds falls back to one Playwright attempt when HTTP fails", async () => {
+  urlCounter = 0;
+  innerHtmlCounter = 0;
+  stubJraHttp({});
+  const browser = makeBrowser({
+    content: "<html>entry</html>",
+    locators: {
+      "#odds_list": { innerHtml: () => "<table></table>" },
+      "#race_related_link a": { count: 1 },
+    },
+  });
+  await setMockLaunch(browser);
+  const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const { fetchJraOdds } = await import("./jra");
+  const result = await fetchJraOdds({} as never, "https://x.test/deba");
+  expect(result.entryHtml).toBe("<html>entry</html>");
+  expect(browser.close).toHaveBeenCalledTimes(1);
+  expect(logSpy).toHaveBeenCalledWith(
+    "JRA odds served by engine=playwright missing=0 url=https://x.test/deba",
+  );
+  warnSpy.mockRestore();
+  logSpy.mockRestore();
+  vi.unstubAllGlobals();
 });
 
 it("waitForOddsListWithFallback falls back to broad selectors when #odds_list times out (F4 selector fallback)", async () => {

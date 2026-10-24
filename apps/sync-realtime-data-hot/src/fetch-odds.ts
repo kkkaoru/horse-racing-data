@@ -5,7 +5,7 @@ import {
   fetchOdds,
   fetchRacePage,
 } from "./keiba-go";
-import { fetchJraOddsWithPlaywright } from "./jra";
+import { fetchJraOdds } from "./jra";
 import { getCachedNarVenueLastRaceStartAtJst } from "./nar-venue-cache";
 import { readOddsPayloadFromR2, writeOddsPayloadToR2 } from "./r2-odds-store";
 import {
@@ -45,6 +45,8 @@ const BROWSER_BACKOFF_ERROR_FRAGMENTS = [
   "Target page, context or browser has been closed",
 ] satisfies readonly string[];
 const BROWSER_BACKOFF_LOCK_SECONDS = 900;
+// Cloudflare KV minimum expirationTtl.
+const KV_MIN_TTL_SECONDS = 60;
 // fetch_logs job_type for a successful insert that missed some odds tabs.
 // Status `warn` so dashboards can flag partial coverage without treating it
 // as a hard error.
@@ -55,6 +57,12 @@ export interface FetchAndStoreOddsResult {
   fetchedAt: string;
   inserted: number;
   latest: Partial<Record<OddsType, OddsData[]>>;
+}
+
+export interface OddsSlotResolution {
+  // NAR sale start (null for JRA); lets the caller hold the lock until sale opens.
+  saleStart: Date | null;
+  slotAt: string | null;
 }
 
 interface ScrapeResult {
@@ -111,9 +119,12 @@ export const resolveOddsSlotAt = async (
   state: OddsFetchStateRow,
   raceStart: Date,
   now: Date,
-): Promise<string | null> => {
+): Promise<OddsSlotResolution> => {
   if (state.source === "jra") {
-    return getJraAdvanceOddsFetchSlotAt(raceStart, now) ?? getOddsFetchSlotAt(raceStart, now);
+    return {
+      saleStart: null,
+      slotAt: getJraAdvanceOddsFetchSlotAt(raceStart, now) ?? getOddsFetchSlotAt(raceStart, now),
+    };
   }
   const venueLastRaceStartAtJst = await getCachedNarVenueLastRaceStartAtJst(env, {
     kaisaiNen: state.kaisaiNen,
@@ -125,15 +136,18 @@ export const resolveOddsSlotAt = async (
     raceStartAtJst: state.raceStartAtJst,
     venueLastRaceStartAtJst,
   });
-  return getNarOddsFetchSlotAt(raceStart, now, saleStart);
+  return { saleStart, slotAt: getNarOddsFetchSlotAt(raceStart, now, saleStart) };
 };
+
+const secondsUntil = (target: Date | null, now: Date): number =>
+  target ? Math.ceil((target.getTime() - now.getTime()) / MS_PER_SECOND) : 0;
 
 const scrapeOddsForState = async (env: Env, state: OddsFetchStateRow): Promise<ScrapeResult> => {
   if (state.source === "jra") {
     if (!env.JRA_BROWSER) {
       throw new Error(`JRA_BROWSER binding required for ${state.raceKey}`);
     }
-    const result = await fetchJraOddsWithPlaywright(env.JRA_BROWSER, state.debaUrl);
+    const result = await fetchJraOdds(env.JRA_BROWSER, state.debaUrl);
     return { latest: result.latest, missingTypes: result.missingTypes };
   }
   const cachedLinks = parseOddsLinks(state.oddsLinksJson);
@@ -207,14 +221,16 @@ export const fetchAndStoreOdds = async (
       await failOddsFetch(env.REALTIME_HOT_DB, raceKey);
       return null;
     }
-    const oddsSlotAt = await resolveOddsSlotAt(env, state, raceStart, now);
+    const { saleStart, slotAt: oddsSlotAt } = await resolveOddsSlotAt(env, state, raceStart, now);
     if (oddsSlotAt === null) {
-      // Sale has not opened yet (NAR pre-sale window). Drop the enqueue
-      // lock so the next planner tick can re-evaluate when sale opens; the
-      // cadence-based lock would otherwise keep us off the race for the
-      // full hourly tier even after sale starts.
       await failOddsFetch(env.REALTIME_HOT_DB, raceKey);
-      await releaseEnqueueLock(env, raceKey);
+      const secondsUntilSale = secondsUntil(saleStart, now);
+      // NAR pre-sale: hold the enqueue lock until sale opens (it expires right
+      // then) instead of a planner put + consumer delete on every tick. In the
+      // post-start gap with no slot, drop it so the next tick re-evaluates.
+      await (secondsUntilSale > 0
+        ? acquireEnqueueLock(env, raceKey, Math.max(KV_MIN_TTL_SECONDS, secondsUntilSale))
+        : releaseEnqueueLock(env, raceKey));
       return null;
     }
     if (!isSlotDue(state.lastOddsFetchAt, oddsSlotAt)) {

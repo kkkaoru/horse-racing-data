@@ -29,7 +29,7 @@ const JRA_OVERSEAS_RACE_LIST_BASE_URL = `${JRA_ORIGIN}/keiba/overseas/racelist`;
 const JRA_OVERSEAS_RACE_PAGE_PATH_PATTERN = /^\/keiba\/overseas\/race\/[a-z0-9_-]+\/index\.html$/iu;
 const JRA_OVERSEAS_ENTRY_PATH = "/JRADB/accessSD.html";
 const JRA_OVERSEAS_ENTRY_CNAME_PREFIX = "pk01dde";
-const JRA_USER_AGENT =
+export const JRA_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 sync-realtime-data-hot/1.0";
 const TABLE_ROW_PATTERN = /<tr\b[^>]*>([\s\S]*?)<\/tr>/giu;
 const ANCHOR_PATTERN = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/giu;

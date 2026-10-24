@@ -1,6 +1,7 @@
 import type { Browser, BrowserContext, BrowserWorker, Page, Route } from "@cloudflare/playwright";
 
 import { buildJraRaceEntryUrl, buildJraRaceResultUrl } from "../../pc-keiba-viewer/src/lib/jra-url";
+import { decodeJraOfficialHtml, JRA_USER_AGENT } from "./jra-overseas";
 import type {
   HorseWeight,
   LocalRaceRow,
@@ -29,7 +30,14 @@ const ODDS_LIST_FALLBACK_SELECTORS = [
 const CLICK_TIMEOUT_MS = 8_000;
 const CHANGE_TIMEOUT_MS = 3_000;
 const CONTENT_PROBE_LENGTH = 128;
-const ODDS_LIST_RETRY_LIMIT = 2;
+// JRA serves odds pages only to a form POST of `cname`; a GET redirects to an
+// error page that is still HTTP 200, so every page is validated by marker.
+const JRA_ODDS_URL = "https://www.jra.go.jp/JRADB/accessO.html";
+const HTTP_FETCH_TIMEOUT_MS = 15_000;
+const ODDS_LIST_MARKER = 'id="odds_list"';
+const WIN_ODDS_CNAME_PATTERN = /doAction\('\/JRADB\/accessO\.html', '(pw151ou[^']+)'\)/u;
+const WIN_ODDS_CNAME_PREFIX = "pw151ou";
+const WIN_ODDS_TYPES = new Set<OddsType>(["tansho", "fukusho"]);
 // Increased from 500ms to 10s (task K1-A). The previous `innerHTML({ timeout:
 // 500 })` could win the wait race but lose the read race when JRA upstream
 // rendering trickled into `#odds_list` over 1-2s — leading to silent zero
@@ -49,7 +57,12 @@ export interface FetchJraOddsResult {
   missingTypes: OddsType[];
 }
 
-const ODDS_PAGE_LABELS: ReadonlyArray<{ label: string; type: OddsType }> = [
+interface OddsPageLabel {
+  label: string;
+  type: OddsType;
+}
+
+const ODDS_PAGE_LABELS: readonly OddsPageLabel[] = [
   { label: "単勝・複勝", type: "tansho" },
   { label: "単勝・複勝", type: "fukusho" },
   { label: "枠連", type: "wakuren" },
@@ -739,50 +752,8 @@ const fetchJraOddsWithPlaywrightOnce = async (
   }
 };
 
-interface TryFetchOk extends FetchJraOddsResult {
-  ok: true;
-}
-
-interface TryFetchErr {
-  ok: false;
-  error: unknown;
-}
-
-type TryFetchResult = TryFetchErr | TryFetchOk;
-
-const tryFetchOnce = async (
-  browserBinding: BrowserWorker,
-  entryUrl: string,
-): Promise<TryFetchResult> => {
-  try {
-    const result = await fetchJraOddsWithPlaywrightOnce(browserBinding, entryUrl);
-    return {
-      entryHtml: result.entryHtml,
-      latest: result.latest,
-      missingTypes: result.missingTypes,
-      ok: true,
-    };
-  } catch (error) {
-    return { error, ok: false };
-  }
-};
-
-const fetchJraOddsWithRetry = async (
-  browserBinding: BrowserWorker,
-  entryUrl: string,
-): Promise<TryFetchResult> => {
-  const first = await tryFetchOnce(browserBinding, entryUrl);
-  if (first.ok) {
-    return first;
-  }
-  // Single retry on outer failure (task F4): JRA Playwright sessions can
-  // hit transient `#odds_list` timeouts when the JRA upstream is slow to
-  // render. We tear down and re-launch a fresh browser session before
-  // surfacing the error so a temporary stall does not skip the full slot.
-  console.warn("JRA odds fetch attempt 1 failed, retrying", first.error);
-  return tryFetchOnce(browserBinding, entryUrl);
-};
-
+// One Chromium attempt only: it runs after the HTTP path already failed, and
+// fetch-odds releases the enqueue lock so the next planner tick retries.
 export const fetchJraOddsWithPlaywright = async (
   browserBinding: BrowserWorker | undefined,
   entryUrl: string,
@@ -790,17 +761,106 @@ export const fetchJraOddsWithPlaywright = async (
   if (!browserBinding) {
     throw new Error("JRA_BROWSER binding is required to fetch JRA odds.");
   }
-  const outcome = await fetchJraOddsWithRetry(browserBinding, entryUrl);
-  if (outcome.ok) {
-    return {
-      entryHtml: outcome.entryHtml,
-      latest: outcome.latest,
-      missingTypes: outcome.missingTypes,
-    };
+  return fetchJraOddsWithPlaywrightOnce(browserBinding, entryUrl);
+};
+
+const fetchJraHtml = async (url: string, cname?: string): Promise<string> => {
+  const response = await fetch(url, {
+    body: cname === undefined ? undefined : new URLSearchParams({ cname }),
+    headers: { Accept: "text/html,application/xhtml+xml", "User-Agent": JRA_USER_AGENT },
+    method: cname === undefined ? "GET" : "POST",
+    signal: AbortSignal.timeout(HTTP_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`JRA HTTP ${response.status} for ${url}`);
   }
-  throw outcome.error instanceof Error
-    ? outcome.error
-    : new Error(`JRA odds fetch failed after ${ODDS_LIST_RETRY_LIMIT} attempts.`);
+  return decodeJraOfficialHtml(new Uint8Array(await response.arrayBuffer()));
+};
+
+const fetchJraOddsPage = async (cname: string): Promise<string> => {
+  const html = await fetchJraHtml(JRA_ODDS_URL, cname);
+  if (!html.includes(ODDS_LIST_MARKER)) {
+    throw new Error(`JRA odds page ${cname} has no #odds_list.`);
+  }
+  return html;
+};
+
+// Tab cnames carry a checksum (3連複 also an extra `99`), so they are read from
+// the tab links, filtered to this race so other races' links never match.
+const findOddsTabCname = (winHtml: string, raceBody: string, label: string): string | null =>
+  winHtml.match(
+    new RegExp(
+      `doAction\\('/JRADB/accessO\\.html', '(pw15[3-8]ou${raceBody}[^']*)'\\);">${label}</a>`,
+      "u",
+    ),
+  )?.[1] ?? null;
+
+const fetchJraOddsTab = async (
+  winHtml: string,
+  raceBody: string,
+  { label, type }: OddsPageLabel,
+): Promise<OddsData[] | null> => {
+  if (WIN_ODDS_TYPES.has(type)) {
+    return parseJraOddsByType(type, winHtml);
+  }
+  try {
+    const cname = findOddsTabCname(winHtml, raceBody, label);
+    if (!cname) {
+      throw new Error(`JRA ${type} odds tab link was not found.`);
+    }
+    return parseJraOddsByType(type, await fetchJraOddsPage(cname));
+  } catch (error) {
+    console.warn(`Failed to fetch JRA ${type} odds`, error);
+    return null;
+  }
+};
+
+export const fetchJraOddsWithHttp = async (entryUrl: string): Promise<FetchJraOddsResult> => {
+  const entryHtml = await fetchJraHtml(entryUrl);
+  const winCname = WIN_ODDS_CNAME_PATTERN.exec(entryHtml)?.[1];
+  if (!winCname) {
+    throw new Error("JRA odds cname was not found on race entry page.");
+  }
+  const winHtml = await fetchJraOddsPage(winCname);
+  const raceBody = winCname.slice(WIN_ODDS_CNAME_PREFIX.length).split("/")[0]!;
+  const rows = await Promise.all(
+    ODDS_PAGE_LABELS.map((page) => fetchJraOddsTab(winHtml, raceBody, page)),
+  );
+  const latest: Partial<Record<OddsType, OddsData[]>> = Object.fromEntries(
+    ODDS_PAGE_LABELS.flatMap(({ type }, index) => (rows[index] ? [[type, rows[index]]] : [])),
+  );
+  const missingTypes = ODDS_PAGE_LABELS.filter((_page, index) => !rows[index]).map(
+    ({ type }) => type,
+  );
+  if (missingTypes.length === ODDS_PAGE_LABELS.length - WIN_ODDS_TYPES.size) {
+    throw new Error("All JRA odds tab pages failed over HTTP.");
+  }
+  return { entryHtml, latest, missingTypes };
+};
+
+// Plain HTTP first (no Browser Run cost); Playwright only when it fails.
+export const fetchJraOdds = async (
+  browserBinding: BrowserWorker | undefined,
+  entryUrl: string,
+): Promise<FetchJraOddsResult> => {
+  try {
+    const result = await fetchJraOddsWithHttp(entryUrl);
+    console.log(
+      `JRA odds served by engine=fetch missing=${result.missingTypes.length} url=${entryUrl}`,
+    );
+    return result;
+  } catch (error) {
+    console.warn(
+      `JRA odds engine=fetch failed, falling back to engine=playwright url=${entryUrl}`,
+      error,
+    );
+  }
+  const result = await fetchJraOddsWithPlaywright(browserBinding, entryUrl);
+  console.log(
+    `JRA odds served by engine=playwright missing=${result.missingTypes.length} url=${entryUrl}`,
+  );
+  return result;
 };
 
 export const fetchJraResultHtmlWithPlaywright = async (

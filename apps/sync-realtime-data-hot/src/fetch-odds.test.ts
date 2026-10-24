@@ -9,7 +9,7 @@ vi.mock("./keiba-go", () => ({
 }));
 
 vi.mock("./jra", () => ({
-  fetchJraOddsWithPlaywright: vi.fn(async () => ({
+  fetchJraOdds: vi.fn(async () => ({
     entryHtml: "<html></html>",
     latest: { tansho: [{ combination: "01", odds: 3.5 }] },
     missingTypes: [],
@@ -22,7 +22,7 @@ import {
   fetchOdds,
   fetchRacePage,
 } from "./keiba-go";
-import { fetchJraOddsWithPlaywright } from "./jra";
+import { fetchJraOdds } from "./jra";
 import {
   fetchAndStoreOdds,
   getRaceStartFromState,
@@ -228,7 +228,8 @@ it("resolveOddsSlotAt uses JRA helpers for jra source", async () => {
     new Date("2026-05-28T06:00:00+09:00"),
     new Date("2026-05-28T04:30:00+09:00"),
   );
-  expect(typeof result).toBe("string");
+  expect(result.saleStart).toBeNull();
+  expect(typeof result.slotAt).toBe("string");
 });
 
 it("resolveOddsSlotAt uses NAR sale-start logic for nar source", async () => {
@@ -239,7 +240,8 @@ it("resolveOddsSlotAt uses NAR sale-start logic for nar source", async () => {
     new Date("2026-05-28T15:00:00+09:00"),
     new Date("2026-05-28T10:30:00+09:00"),
   );
-  expect(typeof result === "string" || result === null).toBe(true);
+  expect(result.saleStart?.toISOString()).toBe("2026-05-28T01:00:00.000Z");
+  expect(result.slotAt).toBe("2026-05-28T10:00:00+09:00");
 });
 
 it("fetchAndStoreOdds returns null when claim does not change rows", async () => {
@@ -364,7 +366,7 @@ it("fetchAndStoreOdds scrapes JRA via Playwright when source is jra", async () =
     new Date("2026-05-28T03:00:00Z"),
   );
   expect(result?.inserted).toBe(1);
-  expect(vi.mocked(fetchJraOddsWithPlaywright)).toHaveBeenCalled();
+  expect(vi.mocked(fetchJraOdds)).toHaveBeenCalled();
 });
 
 it("fetchAndStoreOdds throws when JRA_BROWSER binding missing", async () => {
@@ -429,15 +431,42 @@ it("isBrowserBackoffError returns false for ordinary network errors", () => {
   expect(isBrowserBackoffError(new Error("network reset"))).toBe(false);
 });
 
-it("fetchAndStoreOdds releases the enqueue lock when sale has not opened yet (K1-B)", async () => {
-  // NAR sale opens at 09:00 JST; with now = 08:00 JST the slot resolver
-  // returns null and we drop the lock so the next planner tick can take
-  // over once sale starts.
+it("fetchAndStoreOdds holds the enqueue lock until NAR sale opens instead of releasing it", async () => {
+  // NAR sale opens at 10:00 JST; with now = 08:00 JST the lock is kept for
+  // the 2h until sale start so the planner stops re-enqueueing every tick.
   const env = buildEnv();
   const result = await fetchAndStoreOdds(
     env,
     "nar:20260528:42:01",
     new Date("2026-05-27T23:00:00Z"),
+  );
+  expect(result).toBeNull();
+  expect(env.ODDS_HOT_KV.delete).not.toHaveBeenCalled();
+  expect(env.ODDS_HOT_KV.put).toHaveBeenCalledWith("odds:enqueue-lock:nar:20260528:42:01", "1", {
+    expirationTtl: 7200,
+  });
+});
+
+it("fetchAndStoreOdds clamps the pre-sale lock to the KV minimum TTL right before sale opens", async () => {
+  const env = buildEnv();
+  const result = await fetchAndStoreOdds(
+    env,
+    "nar:20260528:42:01",
+    new Date("2026-05-28T00:59:30Z"),
+  );
+  expect(result).toBeNull();
+  expect(env.ODDS_HOT_KV.put).toHaveBeenCalledWith("odds:enqueue-lock:nar:20260528:42:01", "1", {
+    expirationTtl: 60,
+  });
+});
+
+it("fetchAndStoreOdds releases the enqueue lock when no slot exists after race start", async () => {
+  // JRA race at 15:00 JST; at 15:01 the final slot (+2min) is not due yet.
+  const env = buildEnv({}, { state: sampleNarState({ source: "jra", oddsLinksJson: "{}" }) });
+  const result = await fetchAndStoreOdds(
+    env,
+    "nar:20260528:42:01",
+    new Date("2026-05-28T06:01:00Z"),
   );
   expect(result).toBeNull();
   expect(env.ODDS_HOT_KV.delete).toHaveBeenCalledWith("odds:enqueue-lock:nar:20260528:42:01");
@@ -503,7 +532,7 @@ it("fetchAndStoreOdds keeps the enqueue lock when raceStart cannot be parsed (K1
 });
 
 it("fetchAndStoreOdds writes only the partial-fetch warn log when missingTypes is non-empty (K1-A)", async () => {
-  vi.mocked(fetchJraOddsWithPlaywright).mockResolvedValueOnce({
+  vi.mocked(fetchJraOdds).mockResolvedValueOnce({
     entryHtml: "<html></html>",
     latest: { tansho: [{ combination: "01", odds: 3.5 }] },
     missingTypes: ["umaren", "wide"],
@@ -573,7 +602,7 @@ it("fetchAndStoreOdds passes a 3-minute lockUntil (now + 3min in JST iso) to cla
 });
 
 it("fetchAndStoreOdds writes no fetch_logs row when every JRA tab succeeded (K1-A)", async () => {
-  vi.mocked(fetchJraOddsWithPlaywright).mockResolvedValueOnce({
+  vi.mocked(fetchJraOdds).mockResolvedValueOnce({
     entryHtml: "<html></html>",
     latest: { tansho: [{ combination: "01", odds: 3.5 }] },
     missingTypes: [],
