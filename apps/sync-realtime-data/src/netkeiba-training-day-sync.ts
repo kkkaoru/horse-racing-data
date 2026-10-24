@@ -27,7 +27,8 @@ const IN_FLIGHT_STATUSES = new Set<string>(["catalog_pending", "processing"]);
 // just tried; let this one end. Below the 5-minute retry delay so the chain
 // that made the last attempt always survives.
 const FAILED_RETRY_GAP_SECONDS = 4 * 60;
-const NO_WORKOUTS_ERROR_PATTERN = /^netkeiba returned no workouts for (\S+)$/u;
+const BLOCKER_ERROR_PATTERN =
+  /^netkeiba (?:returned no workouts for|workout did not match) (\S+)$/u;
 
 interface SyncStateRow {
   attempted_at: string;
@@ -369,18 +370,22 @@ const shouldStart = (row: SyncStateRow | null): boolean => {
   return isStale(row.attempted_at);
 };
 
-// The race that blocked the previous attempt usually still has no workouts;
-// probe it alone (2 page fetches) before re-fetching every race of the day.
+// The race that blocked the previous attempt (no workouts yet, or a workout
+// whose horse is not in the Catalog entries yet) usually still blocks; probe it
+// alone (2 page fetches) before re-fetching every race of the day.
 const probePreviousBlocker = async (
   env: Env,
   date: string,
-  input: { links: readonly PremiumLinkRow[]; previousError: string | null },
+  input: {
+    entries: readonly CatalogEntry[];
+    links: readonly PremiumLinkRow[];
+    previousError: string | null;
+  },
 ): Promise<void> => {
-  const blockedRaceKey = NO_WORKOUTS_ERROR_PATTERN.exec(input.previousError ?? "")?.[1];
+  const blockedRaceKey = BLOCKER_ERROR_PATTERN.exec(input.previousError ?? "")?.[1];
   const blocker = input.links.find((link) => link.race_key === blockedRaceKey);
   if (blocker === undefined) return;
-  if ((await fetchRaceWorkouts(env, date, blocker.source_race_id)).length === 0)
-    throw new Error(`netkeiba returned no workouts for ${blocker.race_key}`);
+  await buildDayRecords(env, date, [blocker], input.entries, new Date());
 };
 
 // True while another run owns the day and may still finish. A redelivered job
@@ -414,7 +419,11 @@ export const syncNetkeibaTrainingDay = async (env: Env, date: string): Promise<n
     ]);
     if (links.length === 0 || entries.length === 0)
       throw new Error("netkeiba day sync source rows are missing");
-    await probePreviousBlocker(env, date, { links, previousError: state?.error_message ?? null });
+    await probePreviousBlocker(env, date, {
+      entries,
+      links,
+      previousError: state?.error_message ?? null,
+    });
     const records = await buildDayRecords(env, date, links, entries, new Date());
     const catalogRunId = await stageWithDailySync(env, date, records);
     await markState(env.REALTIME_DB, date, "catalog_pending", {

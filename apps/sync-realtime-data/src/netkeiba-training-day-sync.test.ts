@@ -760,6 +760,32 @@ it("probes only the race that blocked the previous attempt while it still has no
   ]);
 });
 
+it("probes only the race whose workouts did not match the Catalog entries last time", async () => {
+  await db
+    .prepare("insert into premium_race_links (race_key, source_race_id) values (?, ?)")
+    .bind("jra:2026:0905:01:02", "202601010102")
+    .run();
+  await db
+    .prepare(
+      `insert into netkeiba_training_day_sync_state (race_date, status, workout_count, error_message, attempted_at)
+       values (?, 'failed', 0, ?, ?)`,
+    )
+    .bind(
+      "20260905",
+      "netkeiba workout did not match jra:2026:0905:01:02",
+      "2026-09-01T00:00:00.000Z",
+    )
+    .run();
+  mocks.parseWorkouts.mockReturnValue([workout, { ...workout, horseNumber: "2" }]);
+  await expect(syncNetkeibaTrainingDay(env, "20260905")).rejects.toThrow(
+    "netkeiba workout did not match jra:2026:0905:01:02",
+  );
+  expect(mocks.fetchPremiumHtml).toHaveBeenCalledTimes(2);
+  expect(mocks.buildPremiumUrl.mock.calls.map((call) => call[2])).toStrictEqual([
+    { sourceRaceId: "202601010102" },
+  ]);
+});
+
 it("does not report a day with no sync state as in flight", async () => {
   expect(await isNetkeibaTrainingDayInFlight(db, "20260905")).toBe(false);
 });
