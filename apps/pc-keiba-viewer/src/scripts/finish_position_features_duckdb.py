@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import Protocol, TextIO, TypedDict, final
+from typing import NotRequired, Protocol, TextIO, TypedDict, final
 
 import duckdb
 
@@ -66,6 +66,11 @@ FRONT_CORNER_THRESHOLD = 0.33
 RIVAL_DISTANCE_THRESHOLD = 0.3
 MAX_FIELD_SIZE = 18
 DISTANCE_BAND_METERS = 400
+# v2 pedigree stats only count the 119 months strictly before the target month
+# that start after (target - 10y). Training (history from (Y-10)-01-01) and
+# serving (history from target - 10y, whose first month is partial) then see
+# the same complete-month window. YYYYMM arithmetic: -1000 = minus 10 years.
+PEDIGREE_V2_WINDOW_YEAR_MONTHS = HISTORY_LOOKBACK_YEARS * 100
 PEDIGREE_MIN_RACES = 5
 PEDIGREE_COMPOSITE_DIVISOR = 3
 TREND_MIN_RACES = 3
@@ -2206,6 +2211,15 @@ def trainer_cte(target_filter: str = "true") -> str:
     return template.replace("{aggregations}", aggregations)
 
 
+def kyori_band_v2_sql(kyori_col: str) -> str:
+    """Floored 400 m pedigree distance band.
+
+    DuckDB ``int / int`` is DOUBLE, so the v1 band (kyori / 400) is effectively
+    the exact distance (3000 -> 7.5); v2 floors it (3000 -> 7).
+    """
+    return f"cast(coalesce({kyori_col}, 0) as int) // {DISTANCE_BAND_METERS}"
+
+
 def pedigree_rec_um_subquery(category: str) -> str:
     if category == "jra":
         return (
@@ -2260,6 +2274,9 @@ class PedigreeStatSpec(TypedDict):
     bucket_alias: str
     monthly_metrics_select: str
     accum_metrics_select: str
+    # True: per-row 10-year window (PEDIGREE_V2_WINDOW_YEAR_MONTHS) instead of
+    # the whole staged history.
+    windowed: NotRequired[bool]
 
 
 PEDIGREE_STAT_SPECS: list[PedigreeStatSpec] = [
@@ -2361,6 +2378,36 @@ PEDIGREE_STAT_SPECS: list[PedigreeStatSpec] = [
             " sum(m.corner1_norm_sum)::double / nullif(sum(m.corner1_norm_count), 0) as sire_corner_1_norm_avg_val"
         ),
     },
+    {
+        "table": "sire_distance_stats_v2",
+        "key_column": "ketto_joho_01b",
+        "key_alias": "sire",
+        "bucket_expr": kyori_band_v2_sql("kyori"),
+        "bucket_alias": "kyori_band_v2",
+        "monthly_metrics_select": (
+            "sum(case when finish_position = 1 then 1 else 0 end) as win_count,"
+            " sum(finish_norm) as finish_norm_sum,"
+            " count(finish_norm) as finish_norm_count"
+        ),
+        "accum_metrics_select": (
+            "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as sire_distance_win_rate_v2_val,"
+            " sum(m.finish_norm_sum)::double / nullif(sum(m.finish_norm_count), 0)"
+            " as sire_avg_finish_at_distance_v2_val"
+        ),
+        "windowed": True,
+    },
+    {
+        "table": "damsire_distance_stats_v2",
+        "key_column": "ketto_joho_05b",
+        "key_alias": "damsire",
+        "bucket_expr": kyori_band_v2_sql("kyori"),
+        "bucket_alias": "kyori_band_v2",
+        "monthly_metrics_select": "sum(case when finish_position = 1 then 1 else 0 end) as win_count",
+        "accum_metrics_select": (
+            "sum(m.win_count)::double / nullif(sum(m.race_count), 0) as dam_sire_distance_win_rate_v2_val"
+        ),
+        "windowed": True,
+    },
 ]
 
 
@@ -2393,11 +2440,29 @@ def pedigree_stat_cumulative_select(spec: PedigreeStatSpec) -> str:
     )
 
 
+def pedigree_stat_window_sql(spec: PedigreeStatSpec, col: str) -> str:
+    """Cumulative ``col`` at the target month, minus the part older than the window."""
+    if spec.get("windowed", False):
+        return f"(c.cum_{col} - coalesce(o.cum_{col}, 0))"
+    return f"c.cum_{col}"
+
+
 def pedigree_stat_accum_from_cumulative(spec: PedigreeStatSpec) -> str:
     accum = spec["accum_metrics_select"]
     for col in pedigree_stat_base_columns(spec):
-        accum = accum.replace(f"sum(m.{col})", f"c.cum_{col}")
+        accum = accum.replace(f"sum(m.{col})", pedigree_stat_window_sql(spec, col))
     return accum
+
+
+def pedigree_stat_window_join_sql(spec: PedigreeStatSpec) -> str:
+    """ASOF join of the cumulative row at the window start (windowed specs only)."""
+    if not spec.get("windowed", False):
+        return ""
+    return f"""
+    asof left join cumulative o
+      on o.{spec["key_alias"]} = k.{spec["key_alias"]}
+      and o.{spec["bucket_alias"]} = k.{spec["bucket_alias"]}
+      and o.race_year_month <= tm.stats_year_month - {PEDIGREE_V2_WINDOW_YEAR_MONTHS}"""
 
 
 def pedigree_monthly_stat_sql(spec: PedigreeStatSpec) -> str:
@@ -2436,13 +2501,13 @@ def pedigree_monthly_stat_sql(spec: PedigreeStatSpec) -> str:
       k.{spec["key_alias"]},
       k.{spec["bucket_alias"]},
       {pedigree_stat_accum_from_cumulative(spec)},
-      c.cum_race_count as race_count
+      {pedigree_stat_window_sql(spec, "race_count")} as race_count
     from target_months tm
     cross join stat_keys k
     asof join cumulative c
       on c.{spec["key_alias"]} = k.{spec["key_alias"]}
       and c.{spec["bucket_alias"]} = k.{spec["bucket_alias"]}
-      and c.race_year_month < tm.stats_year_month
+      and c.race_year_month < tm.stats_year_month{pedigree_stat_window_join_sql(spec)}
     """
 
 
@@ -2452,6 +2517,7 @@ def target_pedigree_sql() -> str:
     select
       t.source, t.kaisai_nen, t.kaisai_tsukihi, t.keibajo_code, t.race_bango, t.ketto_toroku_bango,
       cast(coalesce(t.kyori, 0) as int) / {DISTANCE_BAND_METERS} as kyori_band,
+      {kyori_band_v2_sql("t.kyori")} as kyori_band_v2,
       left(coalesce(t.track_code, ''), 1) as surface,
       t.keibajo_code as target_keibajo_code,
       0 as rs_bucket,
@@ -2556,6 +2622,25 @@ PEDIGREE_JOIN_SPECS: tuple[PedigreeJoinSpec, ...] = (
         "bucket_alias": "keibajo_code",
         "target_bucket": "target_keibajo_code",
         "val_columns": ("damsire_keibajo_win_rate_val",),
+    },
+    {
+        "table": "sire_distance_stats_v2",
+        "alias": "sds2",
+        "key_alias": "sire",
+        "bucket_alias": "kyori_band_v2",
+        "target_bucket": "kyori_band_v2",
+        "val_columns": (
+            "sire_distance_win_rate_v2_val",
+            "sire_avg_finish_at_distance_v2_val",
+        ),
+    },
+    {
+        "table": "damsire_distance_stats_v2",
+        "alias": "dsd2",
+        "key_alias": "damsire",
+        "bucket_alias": "kyori_band_v2",
+        "target_bucket": "kyori_band_v2",
+        "val_columns": ("dam_sire_distance_win_rate_v2_val",),
     },
 )
 
@@ -3405,6 +3490,9 @@ def base_features_select_sql(category: str) -> str:
       case when pf.srs_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_corner_1_norm_avg_val else null end as sire_corner_1_norm_avg,
       case when pf.sks_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_keibajo_win_rate_val else null end as sire_keibajo_win_rate,
       case when pf.dks_race_count >= {PEDIGREE_MIN_RACES} then pf.damsire_keibajo_win_rate_val else null end as damsire_keibajo_win_rate,
+      case when pf.sds2_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_distance_win_rate_v2_val else null end as sire_distance_win_rate_v2,
+      case when pf.dsd2_race_count >= {PEDIGREE_MIN_RACES} then pf.dam_sire_distance_win_rate_v2_val else null end as dam_sire_distance_win_rate_v2,
+      case when pf.sds2_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_avg_finish_at_distance_v2_val else null end as sire_avg_finish_at_distance_v2,
       (
         coalesce(case when pf.sds_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_distance_win_rate_val else null end, 0) +
         coalesce(case when pf.dsd_race_count >= {PEDIGREE_MIN_RACES} then pf.dam_sire_distance_win_rate_val else null end, 0) +
@@ -3450,6 +3538,7 @@ def base_features_select_sql(category: str) -> str:
       coalesce(wl.venue_wind_speed_max, 0) * coalesce(rsh.past_nige_rate_self, 0) as wind_x_front_runner,
       coalesce(case when pf.sks_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_keibajo_win_rate_val else null end, 0) * coalesce(hc.same_keibajo_win_rate, 0) as pedigree_venue_x_horse_venue,
       coalesce(case when pf.sds_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_distance_win_rate_val else null end, 0) * coalesce(hc.same_distance_win_rate, 0) as pedigree_distance_x_horse_distance,
+      coalesce(case when pf.sds2_race_count >= {PEDIGREE_MIN_RACES} then pf.sire_distance_win_rate_v2_val else null end, 0) * coalesce(hc.same_distance_win_rate, 0) as pedigree_distance_x_horse_distance_v2,
       case
         when rsh.past_nige_rate_self is null then null
         else

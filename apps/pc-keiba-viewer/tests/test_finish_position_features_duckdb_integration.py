@@ -2705,6 +2705,18 @@ def test_base_features_pedigree_and_style_interactions_compute_and_null_guard(
         f"('d001', '01', 202001, 0.0, {subject.PEDIGREE_MIN_RACES})) "
         "as t(damsire, keibajo_code, stats_year_month, damsire_keibajo_win_rate_val, race_count)"
     )
+    seeded_con.execute(
+        "create or replace temp table sire_distance_stats_v2 as select * from (values "
+        f"('s001', 4, 202001, 0.6::double, 2.5::double, {subject.PEDIGREE_MIN_RACES})) "
+        "as t(sire, kyori_band_v2, stats_year_month, sire_distance_win_rate_v2_val, "
+        "sire_avg_finish_at_distance_v2_val, race_count)"
+    )
+    seeded_con.execute(
+        "create or replace temp table damsire_distance_stats_v2 as select * from (values "
+        f"('d001', 4, 202001, 0.0, {subject.PEDIGREE_MIN_RACES})) "
+        "as t(damsire, kyori_band_v2, stats_year_month, dam_sire_distance_win_rate_v2_val, "
+        "race_count)"
+    )
     seeded_con.execute(subject.pedigree_features_sql())
     subject.materialize_race_context(seeded_con)
     subject.stage_track_bias(seeded_con, [2020], _silent_heartbeat())
@@ -2728,7 +2740,9 @@ def test_base_features_pedigree_and_style_interactions_compute_and_null_guard(
     rows = seeded_con.execute(
         f"with final as ({base_sql}) "
         "select ketto_toroku_bango, pedigree_venue_x_horse_venue, "
-        "pedigree_distance_x_horse_distance, sire_style_x_horse_style_match "
+        "pedigree_distance_x_horse_distance, sire_style_x_horse_style_match, "
+        "pedigree_distance_x_horse_distance_v2, sire_distance_win_rate_v2, "
+        "sire_avg_finish_at_distance_v2 "
         "from final where ketto_toroku_bango in ('h001', 'h002') "
         "order by ketto_toroku_bango"
     ).fetchall()
@@ -2740,6 +2754,9 @@ def test_base_features_pedigree_and_style_interactions_compute_and_null_guard(
     assert horse_with_style[3] == pytest.approx(
         0.5 * 0.2 + 0.3 * 0.3 + 0.1 * 0.4 + 0.1 * 0.1
     )
+    assert horse_with_style[4] == pytest.approx(0.6 * 0.5)
+    assert horse_with_style[5] == pytest.approx(0.6)
+    assert horse_with_style[6] == pytest.approx(2.5)
     assert horse_without_style[0] == "h002"
     assert horse_without_style[3] is None
 

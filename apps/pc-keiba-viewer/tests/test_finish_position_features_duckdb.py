@@ -583,6 +583,8 @@ def test_pedigree_stat_specs_cover_seven_tables():
         "sire_keibajo_stats",
         "damsire_keibajo_stats",
         "sire_running_style_stats",
+        "sire_distance_stats_v2",
+        "damsire_distance_stats_v2",
     ]
 
 
@@ -4189,12 +4191,14 @@ def test_pedigree_join_specs_cover_all_seven_stats_tables() -> None:
         "sire_running_style_stats",
         "sire_keibajo_stats",
         "damsire_keibajo_stats",
+        "sire_distance_stats_v2",
+        "damsire_distance_stats_v2",
     ]
 
 
 def test_pedigree_join_specs_aliases_match_legacy_base_sql_aliases() -> None:
     aliases = [spec["alias"] for spec in subject.PEDIGREE_JOIN_SPECS]
-    assert aliases == ["sds", "sts", "dsd", "dst", "srs", "sks", "dks"]
+    assert aliases == ["sds", "sts", "dsd", "dst", "srs", "sks", "dks", "sds2", "dsd2"]
 
 
 def test_pedigree_target_key_column_uses_target_sire_for_sire_specs() -> None:
@@ -4299,7 +4303,23 @@ def test_pedigree_features_consolidation_preserves_stats_values() -> None:
         select 'jra' as source, '2023' as kaisai_nen, '0601' as kaisai_tsukihi,
                '01' as keibajo_code, '01' as race_bango, 'H1' as ketto_toroku_bango,
                3 as kyori_band, '1' as surface, '01' as target_keibajo_code,
-               0 as rs_bucket, 'SIRE' as target_sire, 'DAM' as target_damsire
+               0 as rs_bucket, 'SIRE' as target_sire, 'DAM' as target_damsire,
+               4 as kyori_band_v2
+        """
+    )
+    con.execute(
+        """
+        create temp table sire_distance_stats_v2 as
+        select 'SIRE' as sire, 4 as kyori_band_v2, 202306 as stats_year_month,
+               0.25::double as sire_distance_win_rate_v2_val,
+               0.45::double as sire_avg_finish_at_distance_v2_val, 12 as race_count
+        """
+    )
+    con.execute(
+        """
+        create temp table damsire_distance_stats_v2 as
+        select 'DAM' as damsire, 4 as kyori_band_v2, 202306 as stats_year_month,
+               0.15::double as dam_sire_distance_win_rate_v2_val, 3 as race_count
         """
     )
     con.execute(
@@ -4363,7 +4383,9 @@ def test_pedigree_features_consolidation_preserves_stats_values() -> None:
                damsire_avg_finish_at_track_val, dst_race_count,
                sire_nige_rate_val, sire_corner_1_norm_avg_val, srs_race_count,
                sire_keibajo_win_rate_val, sks_race_count,
-               damsire_keibajo_win_rate_val, dks_race_count
+               damsire_keibajo_win_rate_val, dks_race_count,
+               sire_distance_win_rate_v2_val, sire_avg_finish_at_distance_v2_val,
+               sds2_race_count, dam_sire_distance_win_rate_v2_val, dsd2_race_count
         from pedigree_features
         """
     ).fetchone()
@@ -4383,6 +4405,11 @@ def test_pedigree_features_consolidation_preserves_stats_values() -> None:
         10,
         0.09,
         4,
+        0.25,
+        0.45,
+        12,
+        0.15,
+        3,
     )
     con.close()
 
@@ -4397,8 +4424,15 @@ def test_pedigree_features_consolidation_keeps_unmatched_lineage_null() -> None:
         select 'jra' as source, '2023' as kaisai_nen, '0601' as kaisai_tsukihi,
                '01' as keibajo_code, '01' as race_bango, 'H1' as ketto_toroku_bango,
                3 as kyori_band, '1' as surface, '01' as target_keibajo_code,
-               0 as rs_bucket, 'UNKNOWN' as target_sire, 'UNKNOWN' as target_damsire
+               0 as rs_bucket, 'UNKNOWN' as target_sire, 'UNKNOWN' as target_damsire,
+               3 as kyori_band_v2
         """
+    )
+    con.execute(
+        "create temp table sire_distance_stats_v2 as select 'SIRE' as sire, 3 as kyori_band_v2, 202306 as stats_year_month, 0.21 as sire_distance_win_rate_v2_val, 0.42 as sire_avg_finish_at_distance_v2_val, 9 as race_count"
+    )
+    con.execute(
+        "create temp table damsire_distance_stats_v2 as select 'DAM' as damsire, 3 as kyori_band_v2, 202306 as stats_year_month, 0.13 as dam_sire_distance_win_rate_v2_val, 6 as race_count"
     )
     con.execute(
         """
@@ -4428,9 +4462,10 @@ def test_pedigree_features_consolidation_keeps_unmatched_lineage_null() -> None:
     )
     con.execute(subject.pedigree_features_sql())
     row = con.execute(
-        "select ketto_toroku_bango, sire_distance_win_rate_val, sds_race_count from pedigree_features"
+        "select ketto_toroku_bango, sire_distance_win_rate_val, sds_race_count, "
+        "sire_distance_win_rate_v2_val, sds2_race_count from pedigree_features"
     ).fetchone()
-    assert row == ("H1", None, None)
+    assert row == ("H1", None, None, None, None)
     con.close()
 
 
@@ -5339,3 +5374,89 @@ def test_shrink_se_table_recreates_an_existing_temp_index() -> None:
 
     assert rows == 1
     assert horses == [("horse-a",)]
+
+
+def test_kyori_band_v2_sql_floors_to_400m_bands() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    rows = con.execute(
+        f"select kyori, {subject.kyori_band_v2_sql('kyori')}, "
+        f"cast(coalesce(kyori, 0) as int) / {subject.DISTANCE_BAND_METERS} "
+        "from (values (1000), (1200), (1400), (3000), (null)) as v(kyori)"
+    ).fetchall()
+    con.close()
+    assert rows == [
+        (1000, 2, 2.5),
+        (1200, 3, 3.0),
+        (1400, 3, 3.5),
+        (3000, 7, 7.5),
+        (None, 0, 0.0),
+    ]
+
+
+def test_v2_distance_stats_use_floored_band_and_ten_year_row_window() -> None:
+    """v1 keys on the exact distance (1400 -> 3.5) over all staged history;
+    v2 pools 1200/1400 m into band 3 and keeps only the 119 complete months
+    after (target - 10y): 2016-06 and older drop out for a 2026-06 target."""
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create temp table pedigree_rec_um as
+        select * from (values
+          (201505, 1400, 1, 0.0),
+          (201606, 1400, 1, 0.0),
+          (201607, 1400, 5, 1.0),
+          (202001, 1200, 1, 0.0),
+          (202605, 1400, 1, 0.0),
+          (202606, 1400, 1, 0.0)
+        ) as v(race_year_month, kyori, finish_position, finish_norm)
+        cross join (select 'S' as ketto_joho_01b, 'D' as ketto_joho_05b)
+        """
+    )
+    con.execute("create temp table target_months as select 202606 as stats_year_month")
+    v1_spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_distance_stats"
+    )
+    v2_spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "sire_distance_stats_v2"
+    )
+    con.execute(subject.pedigree_monthly_stat_sql(v1_spec))
+    con.execute(subject.pedigree_monthly_stat_sql(v2_spec))
+    v1 = con.execute(
+        "select kyori_band, sire_distance_win_rate_val, race_count "
+        "from sire_distance_stats order by kyori_band"
+    ).fetchall()
+    v2 = con.execute(
+        "select kyori_band_v2, sire_distance_win_rate_v2_val, "
+        "sire_avg_finish_at_distance_v2_val, race_count from sire_distance_stats_v2"
+    ).fetchall()
+    con.close()
+    assert v1 == [(3.0, 1.0, 1), (3.5, 0.75, 4)]
+    assert v2 == [(3, 2 / 3, 1 / 3, 3)]
+
+
+def test_v2_pedigree_stat_spec_without_window_rows_reports_zero_races() -> None:
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute(
+        """
+        create temp table pedigree_rec_um as
+        select 201001 as race_year_month, 1400 as kyori, 1 as finish_position,
+          0.0 as finish_norm, 'S' as ketto_joho_01b, 'D' as ketto_joho_05b
+        """
+    )
+    con.execute("create temp table target_months as select 202606 as stats_year_month")
+    v2_spec = next(
+        s for s in subject.PEDIGREE_STAT_SPECS if s["table"] == "damsire_distance_stats_v2"
+    )
+    con.execute(subject.pedigree_monthly_stat_sql(v2_spec))
+    rows = con.execute(
+        "select damsire, dam_sire_distance_win_rate_v2_val, race_count "
+        "from damsire_distance_stats_v2"
+    ).fetchall()
+    con.close()
+    assert rows == [("D", None, 0)]
