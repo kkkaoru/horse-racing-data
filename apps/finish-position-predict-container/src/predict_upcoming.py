@@ -3664,7 +3664,7 @@ def _as_entry_map(
 def _refresh_baba_for_current_going(
     category: Category,
     run_date: str,
-    database_url: str,
+    source_url: str,
     final_dir: Path,
     race_key: tuple[str, str],
 ) -> bool:
@@ -3680,7 +3680,7 @@ def _refresh_baba_for_current_going(
             category=category,
             target_date=run_date,
             target_race=f"{race_key[0]}:{race_key[1]}",
-            database_url=database_url,
+            database_url=source_url,
             final_dir=final_dir,
         )
     except (OSError, RuntimeError, DuckDbError) as err:
@@ -3867,14 +3867,16 @@ def _make_rescore_fn(
 
         races = _as_entry_map(_load_cached_races(final_dir))
         race_keys = _scope_race_keys(races, scope)
-        if len(race_keys) == 1 and _refresh_baba_for_current_going(
-            category, run_date, database_url, final_dir, race_keys[0]
-        ):
-            races = _as_entry_map(_load_cached_races(final_dir))
         if weight_snapshot_generation is None:
             raise CacheValidationError("post-weight snapshot generation unavailable")
         if race_start_at_jst is None:
             raise CacheValidationError("post-weight race deadline unavailable")
+        # The baba layer reads history from the feature source (catalog), never
+        # from database_url (the Neon prediction sink).
+        if len(race_keys) == 1 and _refresh_baba_for_current_going(
+            category, run_date, source_url, final_dir, race_keys[0]
+        ):
+            races = _as_entry_map(_load_cached_races(final_dir))
         snapshots = _fetch_fresh_snapshots(
             category_str, run_date, race_keys, weight_snapshot_generation
         )

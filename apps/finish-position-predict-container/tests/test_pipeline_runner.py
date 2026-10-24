@@ -5209,3 +5209,39 @@ def test_fetch_current_going_delegates_to_fetcher_with_work_dir(
         tmp_path / "going.parquet"
     )
     assert calls == [("nar", "20261025", tmp_path, [("46", "01")])]
+
+
+def test_legacy_full_build_forwards_race_day_going_to_build_pipeline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import realtime_odds_fetcher
+    import weather_fetcher
+
+    monkeypatch.setattr(pipeline_runner, "WORK_DIR", tmp_path)
+    going = tmp_path / "going.parquet"
+    fetched: list[tuple[str, str, list[tuple[str, str]]]] = []
+    captured: list[Path | None] = []
+
+    def fake_fetch(category: str, target_date: str, race_keys: list[tuple[str, str]]) -> Path:
+        fetched.append((category, target_date, race_keys))
+        return going
+
+    def fake_build_pipeline(*_args: object, current_going_path: Path | None = None) -> bool:
+        captured.append(current_going_path)
+        return False
+
+    monkeypatch.setattr(pipeline_runner, "_query_source_rows", lambda *_args: [("08", "11")])
+    monkeypatch.setattr(
+        realtime_odds_fetcher, "fetch_realtime_odds_parquet", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(weather_fetcher, "fetch_venue_weather_dir", lambda *_args: None)
+    monkeypatch.setattr(pipeline_runner, "fetch_current_going", fake_fetch)
+    monkeypatch.setattr(pipeline_runner, "build_pipeline", fake_build_pipeline)
+
+    rows = pipeline_runner.build_upcoming_feature_rows(
+        "jra", "20261025", 0, "r2-catalog://pc-keiba", target_race="08:11"
+    )
+
+    assert rows == {}
+    assert fetched == [("jra", "20261025", [("08", "11")])]
+    assert captured == [going]

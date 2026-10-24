@@ -29,13 +29,13 @@ def test_rescore_refresh_forwards_the_single_race_scope(
 
     monkeypatch.setattr(pipeline_runner, "refresh_baba_for_current_going", fake_refresh)
 
-    assert _refresh("jra", "20261025", "r2-catalog://pc-keiba", tmp_path, ("08", "11")) is True
+    assert _refresh("jra", "20261025", "r2-catalog://source", tmp_path, ("08", "11")) is True
     assert calls == [
         {
             "category": "jra",
             "target_date": "20261025",
             "target_race": "08:11",
-            "database_url": "r2-catalog://pc-keiba",
+            "database_url": "r2-catalog://source",
             "final_dir": tmp_path,
         }
     ]
