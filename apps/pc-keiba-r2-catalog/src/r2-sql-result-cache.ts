@@ -9,6 +9,8 @@ import type { Fetcher, KvStore } from "./types";
 // scratches, runner lists) are never reused for longer than this.
 export const R2_SQL_RESULT_TTL_SECONDS: number = 20 * 60;
 const KEY_PREFIX = "r2sql-result:v1:";
+// Marks a replayed answer so scan metrics are not counted twice.
+export const R2_SQL_RESULT_CACHE_HEADER: string = "x-r2-sql-result-cache";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -65,7 +67,9 @@ export const cachedR2SqlFetcher =
     const key = resultKey(body);
     const cached = await kv.get(key).catch(() => null);
     if (cached !== null && isCacheableAnswer(cached))
-      return new Response(cached, { headers: { "Content-Type": "application/json" } });
+      return new Response(cached, {
+        headers: { "Content-Type": "application/json", [R2_SQL_RESULT_CACHE_HEADER]: "hit" },
+      });
     const stored = fetchAndStore(fetchImpl, kv, key, input, init!);
     waitUntil?.(stored.catch(() => undefined));
     return stored;

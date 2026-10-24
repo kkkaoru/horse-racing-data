@@ -26,6 +26,8 @@ it("serves a repeated query from KV without calling R2 SQL again", async () => {
   const first = await cached("https://r2sql.test/", init("SELECT 1"));
   expect(await first.json()).toStrictEqual({ result: { rows: [{ n: 1 }] }, success: true });
   const second = await cached("https://r2sql.test/", init("SELECT 1"));
+  expect(first.headers.get("x-r2-sql-result-cache")).toBeNull();
+  expect(second.headers.get("x-r2-sql-result-cache")).toBe("hit");
   expect(await second.json()).toStrictEqual({ result: { rows: [{ n: 1 }] }, success: true });
   expect(fetchImpl).toHaveBeenCalledOnce();
   expect(put).toHaveBeenCalledWith(

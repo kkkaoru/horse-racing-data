@@ -14,7 +14,7 @@ import {
   readIngestionMonitorStatus,
 } from "./ingestion-monitor";
 import { boundedAuditFetch, D1AuditInputError, parseD1AuditInput, queryD1Audit } from "./d1-audit";
-import { executeR2Sql } from "./r2-sql";
+import { executeR2Sql, r2SqlRoute } from "./r2-sql";
 import { handleRaceDetailRead } from "./race-detail-service";
 import { handleRaceCalendarRead } from "./race-calendar-service";
 import { handleRaceYearsRead } from "./race-years-service";
@@ -260,6 +260,27 @@ const ingestionStatusResponse = async (request: Request, env: GatewayEnv): Promi
   }
 };
 
+const routeFetch = async (
+  request: Request,
+  env: GatewayEnv,
+  ctx?: ExecutionContext,
+): Promise<Response> => {
+  const path: string = new URL(request.url).pathname;
+  if (path === INGESTION_STATUS_PATH) return await ingestionStatusResponse(request, env);
+  if (path === D1_AUDIT_PATH) return await auditResponse(request, env);
+  if (
+    path === RACE_DETAIL_AUDIT_PATH ||
+    path === RACE_CALENDAR_AUDIT_PATH ||
+    path === RACE_YEARS_AUDIT_PATH ||
+    path === RACE_DAY_LIST_AUDIT_PATH ||
+    path === RACE_DAY_JOCKEYS_AUDIT_PATH
+  )
+    return await raceReadAuditResponse(request, env);
+  if (path !== QUERY_PATH && path !== UPSERT_PATH)
+    return await catalogWorker.fetch(request, env, ctx);
+  return await vectorResponse(request, env, path);
+};
+
 export const gateway = {
   queue: handleIngestionDeadLetters,
   async scheduled(
@@ -281,21 +302,8 @@ export const gateway = {
       } satisfies MonitorTickLog),
     );
   },
-  async fetch(request: Request, env: GatewayEnv, ctx?: ExecutionContext): Promise<Response> {
-    const path: string = new URL(request.url).pathname;
-    if (path === INGESTION_STATUS_PATH) return await ingestionStatusResponse(request, env);
-    if (path === D1_AUDIT_PATH) return await auditResponse(request, env);
-    if (
-      path === RACE_DETAIL_AUDIT_PATH ||
-      path === RACE_CALENDAR_AUDIT_PATH ||
-      path === RACE_YEARS_AUDIT_PATH ||
-      path === RACE_DAY_LIST_AUDIT_PATH ||
-      path === RACE_DAY_JOCKEYS_AUDIT_PATH
-    )
-      return await raceReadAuditResponse(request, env);
-    if (path !== QUERY_PATH && path !== UPSERT_PATH)
-      return await catalogWorker.fetch(request, env, ctx);
-    return await vectorResponse(request, env, path);
+  fetch(request: Request, env: GatewayEnv, ctx?: ExecutionContext): Promise<Response> {
+    return r2SqlRoute.run(new URL(request.url).pathname, () => routeFetch(request, env, ctx));
   },
 };
 
@@ -317,10 +325,12 @@ export default class CatalogWorker extends WorkerEntrypoint<
     return gateway.scheduled(controller, this.env);
   }
   async getGateMappingRevision(input: unknown): Promise<string | undefined> {
-    return await loadGateMappingRevision({
-      env: this.env,
-      filters: parseGateMappingRevisionInput(input),
-      fetchImpl: fetch,
-    });
+    return await r2SqlRoute.run("rpc:getGateMappingRevision", () =>
+      loadGateMappingRevision({
+        env: this.env,
+        filters: parseGateMappingRevisionInput(input),
+        fetchImpl: fetch,
+      }),
+    );
   }
 }

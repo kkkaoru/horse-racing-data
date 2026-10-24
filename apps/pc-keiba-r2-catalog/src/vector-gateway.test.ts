@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mockDeep } from "vitest-mock-extended";
 import CatalogWorker, { gateway } from "./vector-gateway";
 import { D1AuditInputError } from "./d1-audit";
+import { r2SqlRoute } from "./r2-sql";
 
 const mocks = vi.hoisted(() => ({
   query: vi.fn(),
@@ -18,7 +19,10 @@ vi.mock("./d1-audit", async () => ({
   ...(await vi.importActual<typeof import("./d1-audit")>("./d1-audit")),
   queryD1Audit: mocks.audit,
 }));
-vi.mock("./r2-sql", () => ({ executeR2Sql: mocks.sql }));
+vi.mock("./r2-sql", async () => ({
+  ...(await vi.importActual<typeof import("./r2-sql")>("./r2-sql")),
+  executeR2Sql: mocks.sql,
+}));
 vi.mock("./vector-search", () => ({
   queryHistoricalVectors: mocks.query,
   upsertHistoricalVectors: mocks.upsert,
@@ -200,6 +204,21 @@ test("auditors can read genuine empty day lists", async () => {
   expect(await response.json()).toStrictEqual({ races: [] });
   expect(mocks.sql).toHaveBeenCalledTimes(1);
   expect(mocks.catalog).not.toHaveBeenCalled();
+});
+test("labels R2 SQL scans with the served route", async () => {
+  const routes: Array<string | undefined> = [];
+  mocks.sql.mockImplementationOnce(async () => {
+    routes.push(r2SqlRoute.getStore());
+    return [];
+  });
+  await gateway.fetch(
+    new Request("https://example.test/v1/internal/race-day-list?date=20240229", {
+      headers: { Authorization: "Bearer audit-secret" },
+    }),
+    env,
+  );
+  expect(routes).toStrictEqual(["/v1/internal/race-day-list"]);
+  expect(r2SqlRoute.getStore()).toBeUndefined();
 });
 test("day-list auditors cannot mutate data", async () => {
   const response: Response = await gateway.fetch(
@@ -833,10 +852,15 @@ test("default RPC reads cheap revision and preserves domestic no-op", async () =
     mockDeep<ExecutionContext>(),
     mockDeep<ConstructorParameters<typeof CatalogWorker>[1]>(),
   );
-  mocks.sql.mockResolvedValue([]);
+  const routes: Array<string | undefined> = [];
+  mocks.sql.mockImplementation(async () => {
+    routes.push(r2SqlRoute.getStore());
+    return [];
+  });
   expect(await worker.getGateMappingRevision({ date: "20261004", keibajoCode: "A8" })).toBe(
     "gate-v1-e47c0fa0e22cdf31706db0c9568edaa6155ca86914e545d1950e88f8d2aa5229",
   );
+  expect(routes[0]).toBe("rpc:getGateMappingRevision");
   mocks.sql.mockClear();
   expect(
     await worker.getGateMappingRevision({ date: "20261004", keibajoCode: "77" }),

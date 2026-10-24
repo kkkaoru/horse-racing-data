@@ -9,6 +9,7 @@ import {
   normaliseBulkFreshRaceEntries,
   normaliseFreshRaceEntries,
   R2SqlQueryError,
+  r2SqlRoute,
 } from "./r2-sql";
 import type { Env, Fetcher } from "./types";
 
@@ -419,6 +420,68 @@ it("posts a query to the R2 SQL REST API and returns object rows", async () => {
     method: "POST",
   });
   expect(signal instanceof AbortSignal).toBe(true);
+});
+
+it("logs one scan-metrics line per answered query with its route and tables", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const fetchMock = vi.fn<Fetcher>(async () =>
+    Response.json({
+      result: {
+        metrics: { bytes_scanned: 1234, cache_hits: 2, files_scanned: 3, r2_requests_count: 4 },
+        rows: [],
+      },
+      success: true,
+    }),
+  );
+  await r2SqlRoute.run("/v1/race-features", () =>
+    executeR2Sql(
+      env(),
+      "SELECT 1 FROM pc_keiba.nvd_se se JOIN pc_keiba.nvd_ra ra ON 1 = 1 JOIN pc_keiba.nvd_se x ON 1 = 1",
+      fetchMock,
+    ),
+  );
+  const line = JSON.parse(String(log.mock.calls[0]?.[0]));
+  expect(log).toHaveBeenCalledOnce();
+  expect({ ...line, durationMs: 0 }).toStrictEqual({
+    attempts: 1,
+    bytesScanned: 1234,
+    cacheHits: 2,
+    durationMs: 0,
+    event: "r2_sql_metrics",
+    filesScanned: 3,
+    r2Requests: 4,
+    resultCache: false,
+    route: "/v1/race-features",
+    sqlHash: "41d0c46fb87e56b2",
+    tables: ["nvd_se", "nvd_ra"],
+  });
+  log.mockRestore();
+});
+
+it("logs unknown routes, missing metrics and result-cache replays", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+  const fetchMock = vi.fn<Fetcher>(
+    async () =>
+      new Response('{"result":{"rows":[]},"success":true}', {
+        headers: { "x-r2-sql-result-cache": "hit" },
+      }),
+  );
+  await executeR2Sql(env(), "SELECT 1", fetchMock);
+  const line = JSON.parse(String(log.mock.calls[0]?.[0]));
+  expect({ ...line, durationMs: 0, sqlHash: "" }).toStrictEqual({
+    attempts: 1,
+    bytesScanned: null,
+    cacheHits: null,
+    durationMs: 0,
+    event: "r2_sql_metrics",
+    filesScanned: null,
+    r2Requests: null,
+    resultCache: true,
+    route: "unknown",
+    sqlHash: "",
+    tables: [],
+  });
+  log.mockRestore();
 });
 
 it("bounds the first R2 SQL attempt with a 20 second abort timeout", async () => {

@@ -11,7 +11,11 @@ import type {
   SourceScope,
 } from "./types";
 
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
+
 import { dedupeIdenticalRows } from "./normalise";
+import { R2_SQL_RESULT_CACHE_HEADER } from "./r2-sql-result-cache";
 
 const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE_PATTERN = /^\d{8}$/u;
@@ -27,6 +31,10 @@ const MAX_UMABAN: number = 18;
 // silent attempt is abandoned early and retried (16/16 answered in tests).
 // The total stays within the former 120s bound.
 const R2_SQL_ATTEMPT_TIMEOUTS_MS: ReadonlyArray<number> = [20_000, 20_000, 40_000];
+const SQL_HASH_LENGTH: number = 16;
+// The route being served, so scan metrics are attributed per endpoint without
+// threading a label through every query call site.
+export const r2SqlRoute: AsyncLocalStorage<string> = new AsyncLocalStorage<string>();
 const FRESH_VENUE_PREDICATES: Readonly<Record<FreshRaceEntryFilters["source"], string>> = {
   "ban-ei": "keibajo_code = '83'",
   jra: "try_cast(btrim(keibajo_code) AS INT) BETWEEN 1 AND 10",
@@ -85,6 +93,18 @@ interface RawSourceConfig {
   raceTable: "jvd_ra" | "nvd_ra";
   runnerTable: "jvd_se" | "nvd_se";
   source: "jra" | "nar";
+}
+
+interface R2SqlAttemptResult {
+  attempts: number;
+  response: Response;
+}
+
+interface R2SqlMetricsInput extends R2SqlAttemptResult {
+  env: R2SqlCatalogConfig;
+  payload: unknown;
+  query: string;
+  startedAt: number;
 }
 
 interface RawFeatureSourceSql {
@@ -588,20 +608,60 @@ const fetchR2SqlAttempt = async (params: {
   endpoint: string;
   fetchImpl: Fetcher;
   init: RequestInit;
-}): Promise<Response> => {
+}): Promise<R2SqlAttemptResult> => {
   const timeoutMs = R2_SQL_ATTEMPT_TIMEOUTS_MS[params.attempt];
   if (timeoutMs === undefined) throw new Error("R2 SQL did not answer any attempt");
   const attemptSignal = AbortSignal.timeout(timeoutMs);
   // Call the fetcher unbound: workerd rejects fetch invoked as an object method.
   const { fetchImpl } = params;
   try {
-    return await fetchImpl(params.endpoint, { ...params.init, signal: attemptSignal });
+    const response = await fetchImpl(params.endpoint, { ...params.init, signal: attemptSignal });
+    return { attempts: params.attempt + 1, response };
   } catch (error) {
     // Only this attempt's own silence is retried; a caller abort or a
     // network failure propagates unchanged.
     if (!attemptSignal.aborted) throw error;
     return fetchR2SqlAttempt({ ...params, attempt: params.attempt + 1 });
   }
+};
+
+const metricNumber = (metrics: unknown, name: string): number | null => {
+  const value = isRecord(metrics) ? metrics[name] : undefined;
+  return typeof value === "number" ? value : null;
+};
+
+const referencedTables = (env: R2SqlCatalogConfig, query: string): string[] => [
+  ...new Set(
+    Array.from(
+      query.matchAll(new RegExp(`\\b${namespaceName(env)}\\.([A-Za-z0-9_]+)`, "gu")),
+      (match) => String(match[1]),
+    ),
+  ),
+];
+
+// One JSON line per answered query. R2 SQL bills bytes_scanned, so this line
+// attributes the bill to routes and exposes repeated identical scans (same
+// sqlHash); resultCache marks answers replayed from the KV result cache.
+const logR2SqlMetrics = (input: R2SqlMetricsInput): void => {
+  const metrics =
+    isRecord(input.payload) && isRecord(input.payload.result)
+      ? input.payload.result.metrics
+      : undefined;
+  console.log(
+    JSON.stringify({
+      event: "r2_sql_metrics",
+      route: r2SqlRoute.getStore() ?? "unknown",
+      tables: referencedTables(input.env, input.query),
+      sqlHash: createHash("sha256").update(input.query).digest("hex").slice(0, SQL_HASH_LENGTH),
+      resultCache: input.response.headers.get(R2_SQL_RESULT_CACHE_HEADER) === "hit",
+      attempts: input.attempts,
+      durationMs: Date.now() - input.startedAt,
+      bytesScanned: metricNumber(metrics, "bytes_scanned"),
+      filesScanned: metricNumber(metrics, "files_scanned"),
+      cacheHits: metricNumber(metrics, "cache_hits"),
+      r2Requests: metricNumber(metrics, "r2_requests_count"),
+    }),
+  );
 };
 
 export const executeR2Sql = async (
@@ -611,7 +671,8 @@ export const executeR2Sql = async (
 ): Promise<Record<string, unknown>[]> => {
   const warehouse = `${env.R2_SQL_ACCOUNT_ID}_${env.R2_SQL_BUCKET_NAME}`;
   const endpoint = `https://api.sql.cloudflarestorage.com/api/v1/accounts/${encodeURIComponent(env.R2_SQL_ACCOUNT_ID)}/r2-sql/query/${encodeURIComponent(env.R2_SQL_BUCKET_NAME)}`;
-  const response = await fetchR2SqlAttempt({
+  const startedAt = Date.now();
+  const { attempts, response } = await fetchR2SqlAttempt({
     attempt: 0,
     endpoint,
     fetchImpl,
@@ -635,5 +696,8 @@ export const executeR2Sql = async (
       response.status,
     );
   }
-  return parseRows(parseJson(text));
+  const payload = parseJson(text);
+  const rows = parseRows(payload);
+  logR2SqlMetrics({ attempts, env, payload, query, response, startedAt });
+  return rows;
 };
