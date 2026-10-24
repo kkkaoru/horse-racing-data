@@ -4,14 +4,21 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import { ClefBetSection } from "./clef-bet-section";
 
-const realtime = vi.hoisted(() => ({ fetchedAt: "T1" }));
+type LatestOdds = Partial<Record<string, unknown[]>> | undefined;
+
+const realtime = vi.hoisted(() => ({ fetchedAt: "T1", latest: undefined as LatestOdds }));
 
 vi.mock("./realtime-client", () => ({
   useRealtimeRaceSelector: <T,>(
-    selector: (state: { payload: { odds: { fetchedAt: string } | null } | null }) => T,
+    selector: (state: {
+      payload: { odds: { fetchedAt: string; latest: LatestOdds } | null } | null;
+    }) => T,
   ): T =>
     selector({
-      payload: realtime.fetchedAt === "" ? null : { odds: { fetchedAt: realtime.fetchedAt } },
+      payload:
+        realtime.fetchedAt === ""
+          ? null
+          : { odds: { fetchedAt: realtime.fetchedAt, latest: realtime.latest } },
     }),
 }));
 
@@ -77,6 +84,7 @@ const race = { year: "2026", month: "10", day: "18", keibajoCode: "08", raceNumb
 
 afterEach(() => {
   realtime.fetchedAt = "T1";
+  realtime.latest = undefined;
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -303,7 +311,7 @@ it("keeps frame numbers for frame bets with a multi-horse structure", async () =
   render(<ClefBetSection {...race} />);
   await screen.findByText("馬主フォー", {}, { timeout: 2000 });
   expect(screen.getAllByRole("row")[1]?.textContent).toBe(
-    "wakuren軸流し軸 11 → 相手 4・9軸8相手3-軸11相手4-軸イレブン相手フォー-軸騎手イレブン相手騎手フォー-軸調教師イレブン相手調教師フォー-軸馬主イレブン相手馬主フォー-2.4〜3.6各600円 × 2点 = 1,200円1,440円〜2,160円",
+    "枠連軸流し軸 11 → 相手 4・9軸8相手3-軸11相手4-軸イレブン相手フォー-軸騎手イレブン相手騎手フォー-軸調教師イレブン相手調教師フォー-軸馬主イレブン相手馬主フォー-2.4〜3.6各600円 × 2点 = 1,200円1,440円〜2,160円",
   );
 });
 
@@ -323,4 +331,96 @@ it("shows frame and horse numbers in the shared colored badges", async () => {
     "horse-number-badge plain:4:",
     "horse-number-badge plain:11:",
   ]);
+});
+
+const memoryStorage = (initial: Record<string, string>): Map<string, string> => {
+  const store = new Map(Object.entries(initial));
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => store.set(key, value),
+  });
+  return store;
+};
+
+it("disables bet types without odds and requests only checked types with odds", async () => {
+  realtime.latest = { tansho: [{}], wide: [{}], umaren: [{}], wakuren: [] };
+  const store = memoryStorage({});
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload));
+  vi.stubGlobal("fetch", fetcher);
+  render(<ClefBetSection {...race} />);
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  const types = screen.getByRole("group", { name: "馬券の種類" });
+  expect(
+    [...types.querySelectorAll("input")].map(
+      (input) =>
+        `${input.getAttribute("aria-label") ?? ""}:${String(input.checked)}:${String(input.disabled)}`,
+    ),
+  ).toStrictEqual([
+    "単勝:true:false",
+    "複勝（オッズなし）:false:true",
+    "ワイド:true:false",
+    "枠連（オッズなし）:false:true",
+    "馬連:true:false",
+    "馬単（オッズなし）:false:true",
+    "3連複（オッズなし）:false:true",
+    "3連単（オッズなし）:false:true",
+  ]);
+  expect(fetcher).toHaveBeenLastCalledWith(
+    "/api/clef-rerank/bets/20261018/08/03?budget=2000&odds=T1",
+    expect.objectContaining({ cache: "no-store" }),
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "ワイド" }));
+  expect(store.get("pc-keiba:bet-types")).toBe(
+    '["tansho","fukusho","wakuren","umaren","umatan","3renpuku","3rentan"]',
+  );
+  await waitFor(
+    () =>
+      expect(fetcher).toHaveBeenLastCalledWith(
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&types=tansho,umaren&odds=T1",
+        expect.objectContaining({ cache: "no-store" }),
+      ),
+    { timeout: 2000 },
+  );
+  fireEvent.click(screen.getByRole("checkbox", { name: "ワイド" }));
+  expect(store.get("pc-keiba:bet-types")).toBe(
+    '["tansho","fukusho","wakuren","umaren","umatan","3renpuku","3rentan","wide"]',
+  );
+});
+
+it("asks for a bet type with odds instead of fetching when none is checked", async () => {
+  realtime.latest = { tansho: [{}] };
+  memoryStorage({ "pc-keiba:bet-types": '["wide"]' });
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload));
+  vi.stubGlobal("fetch", fetcher);
+  render(<ClefBetSection {...race} />);
+  expect(
+    await screen.findByText("オッズが発表されている馬券の種類を1つ以上選んでください。"),
+  ).toBeTruthy();
+  await act(async () => {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 500);
+    });
+  });
+  expect(fetcher).toHaveBeenCalledTimes(0);
+  fireEvent.click(screen.getByRole("checkbox", { name: "単勝" }));
+  expect(await screen.findByText("馬主フォー", {}, { timeout: 2000 })).toBeTruthy();
+  expect(fetcher).toHaveBeenLastCalledWith(
+    "/api/clef-rerank/bets/20261018/08/03?budget=2000&odds=T1",
+    expect.objectContaining({ cache: "no-store" }),
+  );
+});
+
+it("requests the remembered types before any odds are published", async () => {
+  memoryStorage({ "pc-keiba:bet-types": '["umaren","tansho"]' });
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload));
+  vi.stubGlobal("fetch", fetcher);
+  render(<ClefBetSection {...race} />);
+  await waitFor(
+    () =>
+      expect(fetcher).toHaveBeenCalledWith(
+        "/api/clef-rerank/bets/20261018/08/03?budget=2000&types=tansho,umaren&odds=T1",
+        expect.objectContaining({ cache: "no-store" }),
+      ),
+    { timeout: 2000 },
+  );
 });

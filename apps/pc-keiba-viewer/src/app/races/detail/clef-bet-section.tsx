@@ -13,6 +13,8 @@ import {
 import {
   BET_BUDGET_STEP,
   BET_COLUMNS_STORAGE_KEY,
+  BET_TYPES,
+  BET_TYPES_STORAGE_KEY,
   OPTIONAL_BET_COLUMNS,
   DEFAULT_BET_BUDGET,
   MAX_BET_BUDGET,
@@ -29,6 +31,8 @@ import {
   planGroups,
   readClefBets,
   readHiddenBetColumns,
+  readSelectedBetTypes,
+  requestedBetTypes,
   summarizePlanSet,
   trimName,
   type ClefBetCard,
@@ -52,6 +56,12 @@ interface BetBodyProps {
 interface ColumnTogglesProps {
   hidden: readonly string[];
   onToggle: (label: string, visible: boolean) => void;
+}
+
+interface BetTypeTogglesProps {
+  selected: readonly string[];
+  available: readonly string[];
+  onToggle: (type: string, checked: boolean) => void;
 }
 
 interface GroupCellProps {
@@ -142,17 +152,47 @@ function ColumnToggles({ hidden, onToggle }: ColumnTogglesProps) {
   );
 }
 
-const readStoredColumns = (): string | null => {
+// Types without odds for this race stay visible but cannot be chosen.
+function BetTypeToggles({ selected, available, onToggle }: BetTypeTogglesProps) {
+  return (
+    <fieldset className="clef-bet-columns">
+      <legend>馬券の種類</legend>
+      {BET_TYPES.map((type) => {
+        const enabled = available.includes(type);
+        const label = betTypeLabel(type);
+        return (
+          <label className="race-results-checkbox-label" key={type}>
+            <span>
+              {label}
+              {enabled ? null : "（オッズなし）"}
+            </span>
+            <span className="race-results-checkbox-control">
+              <input
+                aria-label={enabled ? label : `${label}（オッズなし）`}
+                checked={enabled && selected.includes(type)}
+                disabled={!enabled}
+                onChange={(event) => onToggle(type, event.currentTarget.checked)}
+                type="checkbox"
+              />
+            </span>
+          </label>
+        );
+      })}
+    </fieldset>
+  );
+}
+
+const readStored = (key: string): string | null => {
   try {
-    return window.localStorage.getItem(BET_COLUMNS_STORAGE_KEY);
+    return window.localStorage.getItem(key);
   } catch {
     return null;
   }
 };
 
-const writeStoredColumns = (hidden: readonly string[]): void => {
+const writeStored = (key: string, values: readonly string[]): void => {
   try {
-    window.localStorage.setItem(BET_COLUMNS_STORAGE_KEY, JSON.stringify(hidden));
+    window.localStorage.setItem(key, JSON.stringify(values));
   } catch {
     // Private mode or blocked storage only loses the remembered choice.
   }
@@ -309,19 +349,34 @@ export function ClefBetSection(race: ClefRerankRaceAddress) {
   const [budget, setBudget] = useState<number>(DEFAULT_BET_BUDGET);
   const [state, setState] = useState<ClefBetState | null>(null);
   const [hidden, setHidden] = useState<string[]>([]);
+  const [types, setTypes] = useState<string[]>([...BET_TYPES]);
   useEffect(() => {
     const mobile =
       typeof window.matchMedia === "function" && window.matchMedia(MOBILE_QUERY).matches;
-    setHidden(readHiddenBetColumns(readStoredColumns(), mobile));
+    setHidden(readHiddenBetColumns(readStored(BET_COLUMNS_STORAGE_KEY), mobile));
+    setTypes(readSelectedBetTypes(readStored(BET_TYPES_STORAGE_KEY)));
   }, []);
   const onToggle = (label: string, visible: boolean): void => {
     const next = visible ? hidden.filter((item) => item !== label) : [...hidden, label];
     setHidden(next);
-    writeStoredColumns(next);
+    writeStored(BET_COLUMNS_STORAGE_KEY, next);
+  };
+  const onToggleType = (type: string, checked: boolean): void => {
+    const next = checked ? [...types, type] : types.filter((item) => item !== type);
+    setTypes(next);
+    writeStored(BET_TYPES_STORAGE_KEY, next);
   };
   const oddsFetchedAt = useRealtimeRaceSelector((store) => store.payload?.odds?.fetchedAt ?? "");
-  const url = `${buildClefBetsUrl(race, budget)}&odds=${encodeURIComponent(oddsFetchedAt)}`;
+  const latest: Partial<Record<string, readonly unknown[]>> =
+    useRealtimeRaceSelector((store) => store.payload?.odds?.latest) ?? {};
+  const available = BET_TYPES.filter((type) => (latest[type]?.length ?? 0) > 0);
+  const requested = requestedBetTypes(types, available);
+  const url =
+    available.length > 0 && requested.length === 0
+      ? null
+      : `${buildClefBetsUrl(race, budget, requested)}&odds=${encodeURIComponent(oddsFetchedAt)}`;
   useEffect(() => {
+    if (url === null) return undefined;
     const controller = new AbortController();
     const timer = setTimeout(() => {
       const load = async (): Promise<void> => {
@@ -339,8 +394,13 @@ export function ClefBetSection(race: ClefRerankRaceAddress) {
     <section aria-label="推奨馬券" className="clef-bet-section">
       <h3>推奨馬券</h3>
       <BudgetControl budget={budget} onChange={setBudget} />
+      <BetTypeToggles available={available} onToggle={onToggleType} selected={types} />
       <ColumnToggles hidden={hidden} onToggle={onToggle} />
-      <BetBody hidden={hidden} state={state} />
+      {url === null ? (
+        <p>オッズが発表されている馬券の種類を1つ以上選んでください。</p>
+      ) : (
+        <BetBody hidden={hidden} state={state} />
+      )}
     </section>
   );
 }

@@ -55,6 +55,7 @@ const BET_TYPE_LABELS: Record<string, string> = {
   fukusho: "複勝",
   umaren: "馬連",
   wide: "ワイド",
+  wakuren: "枠連",
   umatan: "馬単",
   "3renpuku": "3連複",
   "3rentan": "3連単",
@@ -111,7 +112,7 @@ const isSuggestion = (value: unknown): value is ClefBetSuggestion =>
   value.tickets.length > 0 &&
   value.tickets.every(isTicket);
 
-const MIN_PLANS: number = 2;
+const MIN_PLANS: number = 1;
 const ORDERED_BET_TYPES: ReadonlySet<string> = new Set(["umatan", "3rentan"]);
 
 const isPlanSet = (value: unknown): value is ClefBetPlanSet =>
@@ -125,8 +126,53 @@ const isPlanSet = (value: unknown): value is ClefBetPlanSet =>
 
 const pad = (value: string): string => value.padStart(TWO_DIGITS, "0");
 
-export const buildClefBetsUrl = (race: ClefRerankRaceAddress, budget: number): string =>
-  `${CLEF_BETS_ENDPOINT}/${race.year}${pad(race.month)}${pad(race.day)}/${race.keibajoCode}/${pad(race.raceNumber)}?budget=${String(budget)}`;
+// Bet types in display order; the ids match the realtime odds and the Worker `types` parameter.
+export const BET_TYPES: readonly string[] = [
+  "tansho",
+  "fukusho",
+  "wide",
+  "wakuren",
+  "umaren",
+  "umatan",
+  "3renpuku",
+  "3rentan",
+];
+export const BET_TYPES_STORAGE_KEY: string = "pc-keiba:bet-types";
+
+const orderBetTypes = (types: readonly unknown[]): string[] =>
+  BET_TYPES.filter((type) => types.includes(type));
+
+// The last choice on this device wins for every race; anything unreadable means all types.
+export const readSelectedBetTypes = (stored: string | null): string[] => {
+  try {
+    const parsed: unknown = stored === null ? null : JSON.parse(stored);
+    if (Array.isArray(parsed)) return orderBetTypes(parsed);
+  } catch {
+    // Unreadable storage falls back to every bet type below.
+  }
+  return [...BET_TYPES];
+};
+
+// Before any odds arrive every remembered type is requested. Selecting every type with odds is
+// the default view the cron warm already caches, so it is requested as all types.
+export const requestedBetTypes = (
+  selected: readonly string[],
+  available: readonly string[],
+): readonly string[] => {
+  if (available.length === 0) return selected;
+  if (available.every((type) => selected.includes(type))) return BET_TYPES;
+  return selected.filter((type) => available.includes(type));
+};
+
+export const buildClefBetsUrl = (
+  race: ClefRerankRaceAddress,
+  budget: number,
+  types: readonly string[] = BET_TYPES,
+): string => {
+  const selected = orderBetTypes(types);
+  const filter = selected.length === BET_TYPES.length ? "" : `&types=${selected.join(",")}`;
+  return `${CLEF_BETS_ENDPOINT}/${race.year}${pad(race.month)}${pad(race.day)}/${race.keibajoCode}/${pad(race.raceNumber)}?budget=${String(budget)}${filter}`;
+};
 
 export const readClefBets = (value: unknown): ClefBetCard | null =>
   isRecord(value) &&

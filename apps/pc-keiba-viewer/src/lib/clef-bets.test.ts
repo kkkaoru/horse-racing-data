@@ -14,6 +14,8 @@ import {
   planGroups,
   readClefBets,
   readHiddenBetColumns,
+  readSelectedBetTypes,
+  requestedBetTypes,
   summarizePlanSet,
   trimName,
 } from "./clef-bets";
@@ -69,6 +71,38 @@ it("builds the Worker URL with padded parts and the budget", () => {
   ).toBe("/api/clef-rerank/bets/20260108/08/03?budget=2500");
 });
 
+it("adds the selected bet types in display order unless every type is chosen", () => {
+  const race = { year: "2026", month: "10", day: "18", keibajoCode: "08", raceNumber: "11" };
+  expect(buildClefBetsUrl(race, 2000, ["3rentan", "wakuren", "tansho", "x"])).toBe(
+    "/api/clef-rerank/bets/20261018/08/11?budget=2000&types=tansho,wakuren,3rentan",
+  );
+  expect(
+    buildClefBetsUrl(race, 2000, [
+      "3rentan",
+      "3renpuku",
+      "umatan",
+      "umaren",
+      "wakuren",
+      "wide",
+      "fukusho",
+      "tansho",
+    ]),
+  ).toBe("/api/clef-rerank/bets/20261018/08/11?budget=2000");
+});
+
+it("restores the selected bet types or falls back to every type", () => {
+  const all = ["tansho", "fukusho", "wide", "wakuren", "umaren", "umatan", "3renpuku", "3rentan"];
+  expect(readSelectedBetTypes(null)).toStrictEqual(all);
+  expect(readSelectedBetTypes("{broken")).toStrictEqual(all);
+  expect(readSelectedBetTypes('{"a":1}')).toStrictEqual(all);
+  expect(readSelectedBetTypes('["umaren","x",3,"tansho"]')).toStrictEqual(["tansho", "umaren"]);
+  expect(readSelectedBetTypes("[]")).toStrictEqual([]);
+});
+
+it("labels 枠連 plans", () => {
+  expect(betTypeLabel("wakuren")).toBe("枠連");
+});
+
 it("decodes the multi-type plans and drops unused fields", () => {
   expect(readClefBets(payload)).toStrictEqual({
     oddsFetchedAt: "2026-10-18T06:55:31+09:00",
@@ -77,10 +111,15 @@ it("decodes the multi-type plans and drops unused fields", () => {
   });
 });
 
-it("rejects malformed payloads and single-type plans", () => {
+it("accepts a single plan when only one bet type is selected", () => {
+  const single = { ...payload.plans, plans: [widePlan] };
+  expect(readClefBets({ ...payload, plans: single })?.plans).toStrictEqual(single);
+});
+
+it("rejects malformed payloads and empty plans", () => {
   expect(readClefBets({ ...payload, oddsFetchedAt: 1 })).toBeNull();
   expect(readClefBets({ ...payload, runners: [{ horseNumber: 1 }] })).toBeNull();
-  expect(readClefBets({ ...payload, plans: { ...payload.plans, plans: [widePlan] } })).toBeNull();
+  expect(readClefBets({ ...payload, plans: { ...payload.plans, plans: [] } })).toBeNull();
   expect(readClefBets({ ...payload, plans: { ...payload.plans, totalStake: "x" } })).toBeNull();
   expect(
     readClefBets({
@@ -208,4 +247,25 @@ it("restores hidden bet columns or falls back to the device default", () => {
 it("trims half- and full-width spaces at both ends only", () => {
   expect(trimName("　 Ｇ１　レーシング　　 ")).toBe("Ｇ１　レーシング");
   expect(trimName("")).toBe("");
+});
+
+it("requests every remembered bet type before any odds arrive", () => {
+  expect(requestedBetTypes(["tansho", "wakuren"], [])).toStrictEqual(["tansho", "wakuren"]);
+});
+
+it("requests all bet types when every type with odds is selected", () => {
+  expect(requestedBetTypes(["tansho", "fukusho", "umaren"], ["tansho", "umaren"])).toStrictEqual([
+    "tansho",
+    "fukusho",
+    "wide",
+    "wakuren",
+    "umaren",
+    "umatan",
+    "3renpuku",
+    "3rentan",
+  ]);
+});
+
+it("requests only the selected bet types that have odds", () => {
+  expect(requestedBetTypes(["tansho", "wakuren"], ["tansho", "umaren"])).toStrictEqual(["tansho"]);
 });
