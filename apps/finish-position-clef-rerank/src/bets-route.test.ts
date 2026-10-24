@@ -4,13 +4,21 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   oddsSignature,
   parseBudget,
+  parseTarget,
   suggestRaceBets,
   viewerPath,
   warmRaceBets,
   type BetEnv,
 } from "./bets-route";
 
-const race = { ymd: "20261018", keibajoCode: "08", raceBango: "11", budget: 500, types: null };
+const race = {
+  ymd: "20261018",
+  keibajoCode: "08",
+  raceBango: "11",
+  budget: 500,
+  types: null,
+  target: null,
+};
 
 const heatmapPath = "/api/races/2026/10/18/08/11/sections/win-rate-heatmap?source=jra";
 const realtimePath = "/api/races/2026/10/18/08/11/realtime?source=jra";
@@ -121,6 +129,7 @@ it("asks clef-flash, caches the answers and returns the suggestion", async () =>
     status: 200,
     body: {
       raceKey: "20261018:08:11",
+      target: null,
       baseGeneratedAt: "",
       oddsFetchedAt: "2026-10-18T09:00:00+09:00",
       generatedAt: "2026-10-18T00:00:00.000Z",
@@ -221,7 +230,7 @@ it("asks clef-flash, caches the answers and returns the suggestion", async () =>
     { expirationTtl: 259200 },
   );
   expect(vi.mocked(env.DETAIL_SECTION_CACHE_KV.put).mock.calls[1]?.[0]).toBe(
-    "clefbet:v2:result:20261018:08:11:500",
+    "clefbet:v3:result:20261018:08:11:500:t-",
   );
 });
 
@@ -337,7 +346,7 @@ const cachedBody = {
 
 it("serves a cached suggestion for the same odds snapshot without clef or heavy sections", async () => {
   const env = makeEnv(
-    { "clefbet:v2:result:20261018:08:11:500": JSON.stringify(cachedBody) },
+    { "clefbet:v3:result:20261018:08:11:500:t-": JSON.stringify(cachedBody) },
     { [heatmapPath]: heatmap, [realtimePath]: realtime },
   );
   expect(await suggestRaceBets(env, race)).toStrictEqual({ status: 200, body: cachedBody });
@@ -348,7 +357,7 @@ it("serves a cached suggestion for the same odds snapshot without clef or heavy 
 it("regenerates when the cached suggestion is for older odds or another prediction", async () => {
   const staleOdds = makeEnv(
     {
-      "clefbet:v2:result:20261018:08:11:500": JSON.stringify({
+      "clefbet:v3:result:20261018:08:11:500:t-": JSON.stringify({
         ...cachedBody,
         oddsFetchedAt: "old",
       }),
@@ -359,7 +368,7 @@ it("regenerates when the cached suggestion is for older odds or another predicti
   expect(staleOdds.AI.run).toHaveBeenCalledTimes(1);
   const staleBase = makeEnv(
     {
-      "clefbet:v2:result:20261018:08:11:500": JSON.stringify({
+      "clefbet:v3:result:20261018:08:11:500:t-": JSON.stringify({
         ...cachedBody,
         baseGeneratedAt: "old",
       }),
@@ -368,7 +377,7 @@ it("regenerates when the cached suggestion is for older odds or another predicti
   );
   expect((await suggestRaceBets(staleBase, race)).status).toBe(200);
   const notResult = makeEnv(
-    { "clefbet:v2:result:20261018:08:11:500": JSON.stringify({ oddsFetchedAt: "x" }) },
+    { "clefbet:v3:result:20261018:08:11:500:t-": JSON.stringify({ oddsFetchedAt: "x" }) },
     { [heatmapPath]: heatmap, [realtimePath]: realtime },
   );
   expect((await suggestRaceBets(notResult, race)).status).toBe(200);
@@ -409,14 +418,14 @@ it("warms the default budget once per served prediction generation", async () =>
       "/api/races/2026/10/18/08/11/realtime?source=jra": realtime,
     },
   );
-  expect(await warmRaceBets(env, warmRace)).toBe(200);
+  expect(await warmRaceBets(env, warmRace)).toBe(404);
   expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenLastCalledWith(
-    "clefbet:v2:warmed:20261018:08:11",
+    "clefbet:v3:warmed:20261018:08:11",
     "g1",
     { expirationTtl: 259200 },
   );
   expect(vi.mocked(env.DETAIL_SECTION_CACHE_KV.put).mock.calls[1]?.[0]).toBe(
-    "clefbet:v2:result:20261018:08:11:2000",
+    "clefbet:v3:result:20261018:08:11:2000:t10000",
   );
 });
 
@@ -424,7 +433,7 @@ it("skips the warm without a prediction or when it was already warmed", async ()
   const noBase = makeEnv({}, {});
   expect(await warmRaceBets(noBase, warmRace)).toBe(304);
   const warmed = makeEnv(
-    { "pred:fp:v1:20261018:08:11": basePrediction, "clefbet:v2:warmed:20261018:08:11": "g1" },
+    { "pred:fp:v1:20261018:08:11": basePrediction, "clefbet:v3:warmed:20261018:08:11": "g1" },
     {},
   );
   expect(await warmRaceBets(warmed, warmRace)).toBe(304);
@@ -443,6 +452,60 @@ it("caches a bet-type selection under its own result key", async () => {
   const outcome = await suggestRaceBets(env, { ...race, types: new Set(["tansho"]) });
   expect(outcome.status).toBe(200);
   expect(vi.mocked(env.DETAIL_SECTION_CACHE_KV.put).mock.calls[1]?.[0]).toBe(
-    "clefbet:v2:result:20261018:08:11:500:tansho",
+    "clefbet:v3:result:20261018:08:11:500:t-:tansho",
   );
+});
+
+it("parses the target profit in whole yen and defaults to 10,000 yen", () => {
+  expect(parseTarget(null)).toBe(10000);
+  expect(parseTarget("0")).toBe(0);
+  expect(parseTarget("12345")).toBe(12345);
+  expect(parseTarget("10000000")).toBe(10000000);
+  expect(parseTarget("10000001")).toBeNull();
+  expect(parseTarget("-1")).toBeNull();
+  expect(parseTarget("1.5")).toBeNull();
+  expect(parseTarget("abc")).toBeNull();
+});
+
+it("reports and caches a target profit that no ticket can reach", async () => {
+  const env = makeEnv({}, { [heatmapPath]: heatmap, [realtimePath]: realtime });
+  expect(await suggestRaceBets(env, { ...race, target: 100000 })).toStrictEqual({
+    status: 404,
+    body: {
+      error: "no ticket reaches the target profit within the budget",
+      reason: "target-unreachable",
+    },
+  });
+  expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenLastCalledWith(
+    "clefbet:v3:result:20261018:08:11:500:t100000",
+    JSON.stringify({
+      error: "no ticket reaches the target profit within the budget",
+      reason: "target-unreachable",
+      oddsFetchedAt: "2026-10-18T09:00:00+09:00",
+      baseGeneratedAt: "",
+    }),
+    { expirationTtl: 259200 },
+  );
+});
+
+it("serves a cached unreachable target for the same odds snapshot", async () => {
+  const env = makeEnv(
+    {
+      "clefbet:v3:result:20261018:08:11:500:t100000": JSON.stringify({
+        error: "no ticket reaches the target profit within the budget",
+        reason: "target-unreachable",
+        oddsFetchedAt: "2026-10-18T09:00:00+09:00",
+        baseGeneratedAt: "",
+      }),
+    },
+    { [realtimePath]: realtime },
+  );
+  expect(await suggestRaceBets(env, { ...race, target: 100000 })).toStrictEqual({
+    status: 404,
+    body: {
+      error: "no ticket reaches the target profit within the budget",
+      reason: "target-unreachable",
+    },
+  });
+  expect(env.AI.run).toHaveBeenCalledTimes(0);
 });

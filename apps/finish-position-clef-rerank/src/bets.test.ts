@@ -523,6 +523,7 @@ it("splits units by inverse odds with ties broken by lower odds", () => {
         { horses: [1], odds: 2, maxOdds: null, probability: 0.5 },
       ],
       7,
+      () => 1,
     ).map((row) => [row.candidate.horses, row.units]),
   ).toStrictEqual([
     [[1], 3],
@@ -539,6 +540,7 @@ it("keeps only the most likely tickets when units are scarce", () => {
         { horses: [2], odds: 4, maxOdds: null, probability: 0.6 },
       ],
       1,
+      () => 1,
     ),
   ).toStrictEqual([
     { candidate: { horses: [2], odds: 4, maxOdds: null, probability: 0.6 }, units: 1 },
@@ -1124,4 +1126,67 @@ it("keeps 枠連 out of the clef-flash bet type question", () => {
     criteria: { tansho: "単勝: 1着を当てる" },
   });
   expect(built.odds.wakuren?.length).toBe(1);
+});
+
+it("gives each ticket at least the units that reach the target profit", () => {
+  expect(
+    allocateUnits(
+      [
+        { horses: [1], odds: 2, maxOdds: null, probability: 0.5 },
+        { horses: [2], odds: 10, maxOdds: null, probability: 0.4 },
+      ],
+      5,
+      (candidate) => Math.ceil(600 / (100 * candidate.odds)),
+    ).map((row) => [row.candidate.horses, row.units]),
+  ).toStrictEqual([
+    [[1], 4],
+    [[2], 1],
+  ]);
+});
+
+it("sizes every ticket so a hit clears the whole budget by the target profit", () => {
+  const result = suggestPlans({
+    race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+    answers: {
+      winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+      top3: {},
+      axis: { "1": 1 },
+      style: { nagashi: 0.7, box: 0.3 },
+      betType: { umaren: 0.6, tansho: 0.4 },
+    },
+    budget: 1000,
+    target: 500,
+  });
+  expect(result?.totalStake).toBe(500);
+  expect(
+    result?.plans.map((plan) => ({
+      betType: plan.betType,
+      tickets: plan.tickets.map((ticket) => [ticket.horses, ticket.stake, ticket.payout]),
+    })),
+  ).toStrictEqual([
+    {
+      betType: "umaren",
+      tickets: [
+        [[1, 2], 300, 1500],
+        [[1, 3], 200, 1800],
+      ],
+    },
+  ]);
+});
+
+it("returns null when no ticket can reach the target profit within the budget", () => {
+  expect(
+    suggestPlans({
+      race: { runners: runners(), odds: planOdds(), ranks: ranks() },
+      answers: {
+        winner: { "1": 0.5, "2": 0.3, "3": 0.1 },
+        top3: {},
+        axis: { "1": 1 },
+        style: { nagashi: 0.7, box: 0.3 },
+        betType: { umaren: 0.6, tansho: 0.4 },
+      },
+      budget: 1000,
+      target: 1000,
+    }),
+  ).toBeNull();
 });

@@ -376,7 +376,7 @@ it("serves bet suggestions with the requested budget", async () => {
     },
   });
   const response = await worker.fetch(
-    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=300"),
+    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=300&target=0"),
     env,
   );
   expect(response.status).toBe(200);
@@ -413,6 +413,17 @@ it("rejects a budget that is not a multiple of 100", async () => {
   expect(response.status).toBe(400);
   expect(await response.json()).toStrictEqual({
     error: "budget must be a multiple of 100 from 100 to 1000000",
+  });
+});
+
+it("rejects a target profit that is not whole yen", async () => {
+  const response = await worker.fetch(
+    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=300&target=1.5"),
+    makeEnv({}),
+  );
+  expect(response.status).toBe(400);
+  expect(await response.json()).toStrictEqual({
+    error: "target must be whole yen from 0 to 10000000",
   });
 });
 
@@ -461,7 +472,7 @@ it("suggests only the selected bet types", async () => {
     },
   });
   const response = await worker.fetch(
-    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=300&types=fukusho"),
+    new Request("https://x/api/clef-rerank/bets/20261018/08/11?budget=300&target=0&types=fukusho"),
     env,
   );
   expect(response.status).toBe(200);

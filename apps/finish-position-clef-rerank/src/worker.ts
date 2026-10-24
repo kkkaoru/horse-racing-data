@@ -2,6 +2,7 @@
 import {
   fetchViewer,
   parseBudget,
+  parseTarget,
   suggestRaceBets,
   warmRaceBets,
   type ServiceFetcher,
@@ -243,6 +244,9 @@ const safeBets = async (env: Env, url: URL, match: RegExpExecArray): Promise<Out
   const budget = parseBudget(url.searchParams.get("budget"));
   if (budget === null)
     return { status: 400, body: { error: "budget must be a multiple of 100 from 100 to 1000000" } };
+  const target = parseTarget(url.searchParams.get("target"));
+  if (target === null)
+    return { status: 400, body: { error: "target must be whole yen from 0 to 10000000" } };
   const typesParam = url.searchParams.get("types");
   const types = typesParam === null ? null : parseBetTypes(typesParam);
   if (typesParam !== null && types === null)
@@ -254,6 +258,7 @@ const safeBets = async (env: Env, url: URL, match: RegExpExecArray): Promise<Out
       raceBango: String(match[3]),
       budget,
       types,
+      target,
     });
   } catch (error) {
     console.error("clef bets failed", url.pathname, String(error));

@@ -83,6 +83,8 @@ export interface SuggestInput {
   budget: number;
   // Bet types the viewer selected; absent means every type with odds.
   types?: ReadonlySet<BetType>;
+  // Profit in yen every winning ticket must clear over the whole budget; absent means none.
+  target?: number;
 }
 
 interface Candidate {
@@ -649,11 +651,29 @@ const compareProbabilityDesc = (a: Candidate, b: Candidate): number =>
 const compareRemainderDesc = (a: Weighted, b: Weighted): number =>
   b.share - Math.floor(b.share) - (a.share - Math.floor(a.share));
 
-// Dutching split in 100-yen units: every ticket gets one unit, the rest follows 1/odds so
-// each hit pays back about the same, and leftover units go to the largest remainders.
-export const allocateUnits = (candidates: readonly Candidate[], units: number): Allocation[] => {
-  const kept = candidates.toSorted(compareProbabilityDesc).slice(0, units);
-  const spare = units - kept.length;
+interface KeptCandidates {
+  kept: Candidate[];
+  used: number;
+}
+
+// Dutching split in 100-yen units: every ticket gets its minimum (one unit, or what reaches the
+// target profit), the rest follows 1/odds so each hit pays back about the same, and leftover
+// units go to the largest remainders. The likeliest tickets are kept while their minimums fit.
+export const allocateUnits = (
+  candidates: readonly Candidate[],
+  units: number,
+  minimumUnits: (candidate: Candidate) => number,
+): Allocation[] => {
+  const { kept, used } = candidates
+    .toSorted(compareProbabilityDesc)
+    .reduce<KeptCandidates>(
+      (acc, candidate) =>
+        acc.used + minimumUnits(candidate) > units
+          ? acc
+          : { kept: [...acc.kept, candidate], used: acc.used + minimumUnits(candidate) },
+      { kept: [], used: 0 },
+    );
+  const spare = units - used;
   const totalWeight = kept.reduce((sum, candidate) => sum + 1 / candidate.odds, 0);
   const weighted = kept.map((candidate) => ({
     candidate,
@@ -668,7 +688,7 @@ export const allocateUnits = (candidates: readonly Candidate[], units: number): 
   );
   return weighted.map((row) => ({
     candidate: row.candidate,
-    units: 1 + Math.floor(row.share) + (bonus.has(row.candidate) ? 1 : 0),
+    units: minimumUnits(row.candidate) + Math.floor(row.share) + (bonus.has(row.candidate) ? 1 : 0),
   }));
 };
 
@@ -708,7 +728,7 @@ export const suggestBets = ({ race, answers, budget }: SuggestInput): BetSuggest
     .filter((candidate) => candidate !== null);
   const units = Math.floor(budget / UNIT_YEN);
   if (candidates.length === 0 || units < 1) return null;
-  const tickets = allocateUnits(candidates, units).map(({ candidate, units: count }) => ({
+  const tickets = allocateUnits(candidates, units, () => 1).map(({ candidate, units: count }) => ({
     horses: candidate.horses,
     odds: candidate.odds,
     maxOdds: candidate.maxOdds,
@@ -738,17 +758,18 @@ export interface BetPlanSet {
   plans: [BetSuggestion, ...BetSuggestion[]];
 }
 
+interface PlanSlot {
+  betType: BetType;
+  style: BetStyle;
+  units: number;
+}
+
 interface PlanContext {
   race: Pick<BetRace, "odds" | "runners">;
   p: ReadonlyMap<number, number>;
   order: readonly number[];
   axis: number;
-}
-
-interface PlanSlot {
-  betType: BetType;
-  style: BetStyle;
-  units: number;
+  minimumUnits: (candidate: Candidate) => number;
 }
 
 interface PlanAccumulator {
@@ -788,16 +809,20 @@ const rankedStyles = (answers: BetAnswers): Exclude<BetStyle, "single">[] =>
 const toSuggestion = (
   slot: PlanSlot & { axis: number; legs: number[][] },
   candidates: readonly Candidate[],
+  minimumUnits: (candidate: Candidate) => number,
 ): BetSuggestion => {
-  const tickets = allocateUnits(candidates, slot.units).map(({ candidate, units: count }) => ({
-    horses: candidate.horses,
-    odds: candidate.odds,
-    maxOdds: candidate.maxOdds,
-    probability: candidate.probability,
-    stake: count * UNIT_YEN,
-    payout: Math.floor(count * UNIT_YEN * candidate.odds),
-    payoutMax: candidate.maxOdds === null ? null : Math.floor(count * UNIT_YEN * candidate.maxOdds),
-  }));
+  const tickets = allocateUnits(candidates, slot.units, minimumUnits).map(
+    ({ candidate, units: count }) => ({
+      horses: candidate.horses,
+      odds: candidate.odds,
+      maxOdds: candidate.maxOdds,
+      probability: candidate.probability,
+      stake: count * UNIT_YEN,
+      payout: Math.floor(count * UNIT_YEN * candidate.odds),
+      payoutMax:
+        candidate.maxOdds === null ? null : Math.floor(count * UNIT_YEN * candidate.maxOdds),
+    }),
+  );
   return {
     betType: slot.betType,
     style: slot.style,
@@ -840,11 +865,16 @@ const buildPlan = (context: PlanContext, slot: PlanSlot): BetSuggestion | null =
       ({ combos, candidates }) =>
         candidates.length > 0 &&
         candidates.length === combos.length &&
-        candidates.length <= slot.units,
+        candidates.reduce((sum, candidate) => sum + context.minimumUnits(candidate), 0) <=
+          slot.units,
     );
   return fitted === undefined
     ? null
-    : toSuggestion({ ...slot, axis: context.axis, legs: fitted.plan.legs }, fitted.candidates);
+    : toSuggestion(
+        { ...slot, axis: context.axis, legs: fitted.plan.legs },
+        fitted.candidates,
+        context.minimumUnits,
+      );
 };
 
 const splitUnits = (weights: readonly number[], units: number): number[] => {
@@ -856,11 +886,32 @@ const splitUnits = (weights: readonly number[], units: number): number[] => {
   return base.map((value, index) => (index === 0 ? value + units - used : value));
 };
 
+// Units a ticket needs so that, if it wins, its payout clears the whole budget by the target.
+const targetMinimumUnits =
+  (budget: number, target: number | undefined) =>
+  (candidate: Candidate): number =>
+    target === undefined
+      ? 1
+      : Math.max(1, Math.ceil((budget + target) / (UNIT_YEN * candidate.odds)));
+
+interface RequiredPlanInput {
+  profitTarget: number | undefined;
+  selected: ReadonlySet<BetType> | undefined;
+  typeCount: number;
+}
+
+// A profit target may leave room for only one bet type, which is still a valid suggestion.
+const requiredPlanCount = ({ profitTarget, selected, typeCount }: RequiredPlanInput): number => {
+  if (profitTarget !== undefined) return 1;
+  return selected === undefined ? MIN_PLAN_TYPES : Math.min(typeCount, MIN_PLAN_TYPES);
+};
+
 export const suggestPlans = ({
   race,
   answers,
   budget,
   types: selected,
+  target: profitTarget,
 }: SuggestInput): BetPlanSet | null => {
   const p = winProbabilities(race, answers.winner);
   const order = [...p].toSorted(compareWinDesc).map(([horse]) => horse);
@@ -878,7 +929,13 @@ export const suggestPlans = ({
     types.slice(0, target).map((type) => answers.betType[type] ?? 0),
     units,
   );
-  const context: PlanContext = { race, p, order, axis };
+  const context: PlanContext = {
+    race,
+    p,
+    order,
+    axis,
+    minimumUnits: targetMinimumUnits(budget, profitTarget),
+  };
   const { plans } = types.reduce<PlanAccumulator>(
     (acc, betType, index) => {
       const slotUnits = (shares[index] ?? 0) + acc.carry;
@@ -896,7 +953,11 @@ export const suggestPlans = ({
     { plans: [], carry: 0 },
   );
   const [first, ...rest] = plans;
-  const required = selected === undefined ? MIN_PLAN_TYPES : Math.min(types.length, MIN_PLAN_TYPES);
+  const required = requiredPlanCount({
+    profitTarget,
+    selected,
+    typeCount: types.length,
+  });
   return first === undefined || plans.length < required
     ? null
     : {
