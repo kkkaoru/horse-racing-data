@@ -2,7 +2,11 @@
 import { boundedAuditFetch } from "./d1-audit";
 import { notifyReadFailure } from "./read-failure-alert";
 import { executeR2Sql } from "./r2-sql";
-import { cachedR2SqlFetcher } from "./r2-sql-result-cache";
+import {
+  cachedR2SqlFetcher,
+  isSettledRaceDay,
+  SETTLED_RACE_DAY_TTL_SECONDS,
+} from "./r2-sql-result-cache";
 import {
   buildRaceDayListReadSql,
   readRaceDayList,
@@ -30,34 +34,26 @@ const json = (value: unknown, status: number): Response =>
 const TRANSIENT_R2_SQL_STATUSES: ReadonlySet<number> = new Set([408, 425, 429, 500, 502, 503, 504]);
 const READ_ATTEMPTS: number = 2;
 const RETRY_DELAY_MS: number = 250;
-// A day list two or more JST days old no longer changes in practice, so its
-// answer is reused instead of rescanning the year partition on every viewer
-// minute bucket. Yesterday, today and future days are never cached.
-const SETTLED_DAY_LIST_TTL_SECONDS: number = 6 * 60 * 60;
-const SETTLED_AFTER_MS: number = 2 * 24 * 60 * 60 * 1000;
-const JST_OFFSET_MS: number = 9 * 60 * 60 * 1000;
-
-const isSettledRaceDay = (date: string, nowMs: number): boolean =>
-  date <=
-  new Date(nowMs + JST_OFFSET_MS - SETTLED_AFTER_MS).toISOString().slice(0, 10).replaceAll("-", "");
-
+// Settled day lists are reused instead of rescanning the year partition on
+// every viewer minute bucket; recent days are never cached.
 const dayListFetcher = (env: DayListEnv, date: string): Fetcher =>
   isSettledRaceDay(date, Date.now())
     ? cachedR2SqlFetcher(
         boundedAuditFetch(fetch),
         env.CATALOG_KV,
         undefined,
-        SETTLED_DAY_LIST_TTL_SECONDS,
+        SETTLED_RACE_DAY_TTL_SECONDS,
       )
     : boundedAuditFetch(fetch);
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Only provider-transient failures are retried; validation failures, 4xx and
-// malformed data must fail fast so real corruption is never masked.
+// malformed data must fail fast so real corruption is never masked. Timeouts
+// (AbortError/TimeoutError) are not retried here: they already went through
+// executeR2Sql's own attempts, each a possibly billed scan, and repeating the
+// whole sequence doubled them.
 const isTransientReadError = (error: unknown): boolean => {
-  if (error instanceof DOMException)
-    return error.name === "AbortError" || error.name === "TimeoutError";
   if (error instanceof TypeError) return true;
   if (typeof error !== "object" || error === null) return false;
   const status: unknown = Reflect.get(error, "status");

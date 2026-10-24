@@ -183,15 +183,15 @@ it("does not retry a non-transient provider 400", async () => {
   );
   log.mockRestore();
 });
-it("retries an aborted provider read once", async () => {
+it("does not repeat a timed-out provider read that already used its attempts", async () => {
   const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-  mocks.query.mockRejectedValue(new DOMException("aborted", "AbortError"));
+  mocks.query.mockRejectedValue(new DOMException("timed out", "TimeoutError"));
   const response: Response = await handleRaceDayListRead(
     new Request("https://catalog.internal/v1/race-day-list?date=20240229"),
     env,
   );
   expect(response.status).toBe(503);
-  expect(mocks.query).toHaveBeenCalledTimes(2);
+  expect(mocks.query).toHaveBeenCalledTimes(1);
   log.mockRestore();
 });
 it("treats malformed provider data as failure, not empty success", async () => {
