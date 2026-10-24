@@ -1,7 +1,7 @@
 // Runs with bun through Vitest; upstream I/O is mocked.
 import { beforeEach, expect, it, vi } from "vitest";
 import { handleRaceDayListRead } from "./race-day-list-service";
-import type { R2SqlCatalogConfig } from "./types";
+import type { KvStore, R2SqlCatalogConfig } from "./types";
 const mocks = vi.hoisted(() => ({
   query: vi.fn<typeof import("./r2-sql").executeR2Sql>(),
   alertSend: vi.fn<(message: unknown) => Promise<void>>(),
@@ -204,4 +204,33 @@ it("treats malformed provider data as failure, not empty success", async () => {
   expect(response.status).toBe(503);
   expect(await response.json()).toStrictEqual({ error: "Catalog race day list unavailable" });
   log.mockRestore();
+});
+it("reuses settled day lists from the KV result cache and never caches recent days", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-10-23T15:30:00Z"));
+  const fetchMock = vi.fn(async () => Response.json({ result: { rows: [] }, success: true }));
+  vi.stubGlobal("fetch", fetchMock);
+  const kv: KvStore = {
+    delete: vi.fn<KvStore["delete"]>(async () => undefined),
+    get: vi.fn<KvStore["get"]>(async () => null),
+    put: vi.fn<KvStore["put"]>(async () => undefined),
+  };
+  mocks.query.mockImplementation(async (_env, sql, fetchImpl) => {
+    await fetchImpl("https://r2sql.test/", { body: sql, method: "POST" });
+    return [];
+  });
+  await handleRaceDayListRead(
+    new Request("https://catalog.internal/v1/race-day-list?date=20261022"),
+    { ...env, CATALOG_KV: kv },
+  );
+  expect(kv.get).toHaveBeenCalledOnce();
+  expect(vi.mocked(kv.put).mock.calls[0]?.[2]).toStrictEqual({ expirationTtl: 21600 });
+  await handleRaceDayListRead(
+    new Request("https://catalog.internal/v1/race-day-list?date=20261023"),
+    { ...env, CATALOG_KV: kv },
+  );
+  expect(kv.get).toHaveBeenCalledOnce();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });

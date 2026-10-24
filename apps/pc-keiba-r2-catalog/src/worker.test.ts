@@ -132,7 +132,24 @@ it("serves a validated uncached course from R2 SQL", async () => {
   });
   expect(harness.fetchCalls).toHaveLength(1);
   expect(harness.cacheCalls.matches).toHaveLength(0);
-  expect(harness.kvCalls.gets).toHaveLength(0);
+  expect(harness.kvCalls.gets).toHaveLength(1);
+});
+
+it("reuses a course answer from the KV result cache for a day", async () => {
+  const harness = createHarness([
+    { course_kaishu_nengappi: "20240106", course_setsumei: "コース説明" },
+  ]);
+  const put = vi.spyOn(harness.env.CATALOG_KV, "put");
+  const request = (): Request =>
+    new Request("https://catalog.test/v1/race-course?keibajoCode=05&kyori=1600&trackCode=11");
+  await handleRequest(request(), harness.env, harness.dependencies);
+  const second = await handleRequest(request(), harness.env, harness.dependencies);
+  expect(second.headers.get("Cache-Control")).toBe("no-store");
+  expect(await second.json()).toStrictEqual({
+    course: { courseKaishuNengappi: "20240106", courseSetsumei: "コース説明" },
+  });
+  expect(harness.fetchCalls).toHaveLength(1);
+  expect(put.mock.calls[0]?.[2]).toStrictEqual({ expirationTtl: 86400 });
 });
 
 it("returns course null only for a successful empty R2 result", async () => {

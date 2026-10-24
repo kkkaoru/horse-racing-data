@@ -42,12 +42,13 @@ const fetchAndStore = async (
   key: string,
   input: Parameters<Fetcher>[0],
   init: RequestInit,
+  ttlSeconds: number,
 ): Promise<Response> => {
   const response = await fetchImpl(input, init);
   if (!response.ok) return response;
   const text = await response.text();
   if (isCacheableAnswer(text))
-    await kv.put(key, text, { expirationTtl: R2_SQL_RESULT_TTL_SECONDS }).catch(() => undefined);
+    await kv.put(key, text, { expirationTtl: ttlSeconds }).catch(() => undefined);
   return new Response(text, { headers: response.headers, status: response.status });
 };
 
@@ -55,11 +56,14 @@ const fetchAndStore = async (
 // Without a KV binding the fetcher is returned unchanged. With waitUntil, a
 // scan the client stopped waiting for still finishes and is stored (within
 // the runtime's grace period), so the next sweep does not pay for it again.
+// ttlSeconds overrides the default only for answers that cannot change
+// within it (master data, settled race days).
 export const cachedR2SqlFetcher =
   (
     fetchImpl: Fetcher,
     kv: KvStore | undefined,
     waitUntil?: (promise: Promise<unknown>) => void,
+    ttlSeconds: number = R2_SQL_RESULT_TTL_SECONDS,
   ): Fetcher =>
   async (input, init) => {
     const body = init?.body;
@@ -70,7 +74,7 @@ export const cachedR2SqlFetcher =
       return new Response(cached, {
         headers: { "Content-Type": "application/json", [R2_SQL_RESULT_CACHE_HEADER]: "hit" },
       });
-    const stored = fetchAndStore(fetchImpl, kv, key, input, init!);
+    const stored = fetchAndStore(fetchImpl, kv, key, input, init!, ttlSeconds);
     waitUntil?.(stored.catch(() => undefined));
     return stored;
   };

@@ -142,6 +142,9 @@ const FEATURE_SOURCES: ReadonlyArray<SourceScope> = ["all", "jra", "nar", "ban-e
 const DEFAULT_STATS_YEARS: number = 10;
 const MIN_STATS_YEARS: number = 1;
 const MAX_STATS_YEARS: number = 50;
+// jvd_cs is course master data (changes when a course is re-surveyed), so a
+// course answer is reused for a day instead of a 10 MB-minimum scan per view.
+const RACE_COURSE_RESULT_TTL_SECONDS: number = 24 * 60 * 60;
 const RACE_ENTITY_TYPES: ReadonlySet<string> = new Set(["horse", "jockey", "trainer", "owner"]);
 const RACE_ENTITY_DEFAULT_LIMITS: ReadonlyMap<RaceEntityType, number> = new Map([
   ["horse", 5],
@@ -1905,7 +1908,16 @@ export const handleRequest = async (
       return await handleBulkFreshRaceEntries(request, url, env, dependencies);
     }
     if (request.method === "GET" && url.pathname === "/v1/race-course") {
-      const rows = await executeR2Sql(env, buildRaceCourseQuery(env, url), dependencies.fetchImpl);
+      const rows = await executeR2Sql(
+        env,
+        buildRaceCourseQuery(env, url),
+        cachedR2SqlFetcher(
+          dependencies.fetchImpl,
+          env.CATALOG_KV,
+          dependencies.waitUntil,
+          RACE_COURSE_RESULT_TTL_SECONDS,
+        ),
+      );
       return jsonResponse({ course: normaliseRaceCourse(rows) });
     }
     if (request.method === "GET" && url.pathname === "/v1/race-trainings") {

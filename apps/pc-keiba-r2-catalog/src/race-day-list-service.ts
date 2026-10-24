@@ -2,6 +2,7 @@
 import { boundedAuditFetch } from "./d1-audit";
 import { notifyReadFailure } from "./read-failure-alert";
 import { executeR2Sql } from "./r2-sql";
+import { cachedR2SqlFetcher } from "./r2-sql-result-cache";
 import {
   buildRaceDayListReadSql,
   readRaceDayList,
@@ -9,12 +10,16 @@ import {
   type RaceDayListReader,
   type RaceDayListRow,
 } from "./race-day-list-read";
-import type { R2SqlCatalogConfig } from "./types";
+import type { Fetcher, KvStore, R2SqlCatalogConfig } from "./types";
 import { readRaceDayListWithJockeys } from "./race-day-jockeys-read";
+
+interface DayListEnv extends R2SqlCatalogConfig {
+  CATALOG_KV?: KvStore;
+}
 
 interface DayListRequest {
   request: Request;
-  env: R2SqlCatalogConfig;
+  env: DayListEnv;
   read: (reader: RaceDayListReader) => Promise<RaceDayListRow[]>;
   failureEvent: string;
 }
@@ -25,6 +30,26 @@ const json = (value: unknown, status: number): Response =>
 const TRANSIENT_R2_SQL_STATUSES: ReadonlySet<number> = new Set([408, 425, 429, 500, 502, 503, 504]);
 const READ_ATTEMPTS: number = 2;
 const RETRY_DELAY_MS: number = 250;
+// A day list two or more JST days old no longer changes in practice, so its
+// answer is reused instead of rescanning the year partition on every viewer
+// minute bucket. Yesterday, today and future days are never cached.
+const SETTLED_DAY_LIST_TTL_SECONDS: number = 6 * 60 * 60;
+const SETTLED_AFTER_MS: number = 2 * 24 * 60 * 60 * 1000;
+const JST_OFFSET_MS: number = 9 * 60 * 60 * 1000;
+
+const isSettledRaceDay = (date: string, nowMs: number): boolean =>
+  date <=
+  new Date(nowMs + JST_OFFSET_MS - SETTLED_AFTER_MS).toISOString().slice(0, 10).replaceAll("-", "");
+
+const dayListFetcher = (env: DayListEnv, date: string): Fetcher =>
+  isSettledRaceDay(date, Date.now())
+    ? cachedR2SqlFetcher(
+        boundedAuditFetch(fetch),
+        env.CATALOG_KV,
+        undefined,
+        SETTLED_DAY_LIST_TTL_SECONDS,
+      )
+    : boundedAuditFetch(fetch);
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -76,7 +101,7 @@ const handleDayListRequest = async ({
     try {
       const races: RaceDayListRow[] = await read({
         input,
-        query: async (sql) => executeR2Sql(env, sql, boundedAuditFetch(fetch)),
+        query: async (sql) => executeR2Sql(env, sql, dayListFetcher(env, date)),
       });
       return json({ races }, 200);
     } catch (error: unknown) {
@@ -93,10 +118,7 @@ const handleDayListRequest = async ({
   return json({ error: "Catalog race day list unavailable" }, 503);
 };
 
-export const handleRaceDayListRead = (
-  request: Request,
-  env: R2SqlCatalogConfig,
-): Promise<Response> =>
+export const handleRaceDayListRead = (request: Request, env: DayListEnv): Promise<Response> =>
   handleDayListRequest({
     request,
     env,
@@ -107,7 +129,7 @@ export const handleRaceDayListRead = (
 // The router must enforce private service access or diagnostic authentication.
 export const handleRaceDayListWithJockeysRead = (
   request: Request,
-  env: R2SqlCatalogConfig,
+  env: DayListEnv,
 ): Promise<Response> =>
   handleDayListRequest({
     request,
