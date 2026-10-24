@@ -1634,3 +1634,22 @@ test("does not query named-race model_versions for a JRA venue without a named c
 
   expect(queryMock).toHaveBeenCalledTimes(2);
 });
+
+test("recognizes the Kyoto Kikka-sho cell race written under its lock model_version as complete", async () => {
+  queryMock
+    .mockResolvedValueOnce([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 0 }])
+    .mockResolvedValueOnce([{ actual_rows: 12 }]);
+  await expect(
+    isFocusedFullPredictionComplete({
+      category: "jra",
+      env: makeEnv(),
+      keibajoCode: "08",
+      raceBango: "11",
+      runYmd: "20261025",
+    }),
+  ).resolves.toBe(true);
+
+  expect(queryMock).toHaveBeenCalledTimes(3);
+  expect(queryMock.mock.calls[2]?.[1]?.[5]).toBe("jra-named-kyoto-kikka-sho-lock-v1-noexo1");
+});

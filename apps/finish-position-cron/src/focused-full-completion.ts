@@ -128,6 +128,7 @@ const JRA_NAMED_RACE_MODEL_VERSIONS: Readonly<Record<string, readonly string[]>>
     "jra-named-chukyo-nisai-stakes-jul1600-ninki2-v4-noexo1",
     "jra-named-chukyo-nisai-stakes-largefield-v3-noexo1",
   ],
+  "08": ["jra-named-kyoto-kikka-sho-lock-v1-noexo1"],
 };
 const BANEI_DEFAULT_MODEL_VERSION = "banei-cb-v9-sim-2011-nowin2";
 const BANEI_GRADE_E_MODEL_VERSION = "banei-cb-v8-window2011-wf-15y-nowin2";
