@@ -37,6 +37,16 @@ interface StoredR2OddsPayload {
   schemaVersion: 1;
 }
 
+interface FoundStoredOddsPayload {
+  key: string;
+  payload: StoredR2OddsPayload;
+}
+
+interface StoredOddsLookup {
+  found: FoundStoredOddsPayload | null;
+  pointerKey: string | null;
+}
+
 interface OddsCatalogEvent {
   average_odds: number | null;
   combination: string;
@@ -214,10 +224,20 @@ const writePointerKey = async (env: Env, raceKey: string, key: string): Promise<
   }).catch(() => undefined);
 };
 
-export const readStoredOddsPayloadFromR2 = async (
+// Rewriting an identical pointer only burns a KV write on every odds read.
+// An expired pointer reads as null, so it is still rewritten after its TTL.
+const syncPointerKey = async (
   env: Env,
   raceKey: string,
-): Promise<StoredR2OddsPayload | null> => {
+  lookup: StoredOddsLookup,
+  key: string,
+): Promise<void> => {
+  if (lookup.pointerKey !== key) {
+    await writePointerKey(env, raceKey, key);
+  }
+};
+
+const lookupStoredOddsPayload = async (env: Env, raceKey: string): Promise<StoredOddsLookup> => {
   const pointerKey = await readPointerKey(env, raceKey);
   const candidateKeys = pointerKey
     ? [pointerKey, buildLiveOddsR2Key(raceKey)]
@@ -229,11 +249,22 @@ export const readStoredOddsPayloadFromR2 = async (
     }
     const payload = await parseStoredPayload(object);
     if (payload?.raceKey === raceKey) {
-      await writePointerKey(env, raceKey, key);
-      return payload;
+      return { found: { key, payload }, pointerKey };
     }
   }
-  return null;
+  return { found: null, pointerKey };
+};
+
+export const readStoredOddsPayloadFromR2 = async (
+  env: Env,
+  raceKey: string,
+): Promise<StoredR2OddsPayload | null> => {
+  const lookup = await lookupStoredOddsPayload(env, raceKey);
+  if (!lookup.found) {
+    return null;
+  }
+  await syncPointerKey(env, raceKey, lookup, lookup.found.key);
+  return lookup.found.payload;
 };
 
 export const readOddsPayloadFromR2 = async (
@@ -311,8 +342,8 @@ export const writeOddsPayloadToR2 = async (
   fetchedAt: string,
   latest: Partial<Record<OddsType, OddsData[]>>,
 ): Promise<R2OddsPayload> => {
-  const existing = await readStoredOddsPayloadFromR2(env, raceKey);
-  const stored = buildNextStoredPayload(raceKey, fetchedAt, latest, existing);
+  const lookup = await lookupStoredOddsPayload(env, raceKey);
+  const stored = buildNextStoredPayload(raceKey, fetchedAt, latest, lookup.found?.payload ?? null);
   const liveKey = buildLiveOddsR2Key(raceKey);
   await putJson(env, liveKey, stored);
   await putJson(env, buildSnapshotOddsR2Key(raceKey, fetchedAt), {
@@ -322,7 +353,7 @@ export const writeOddsPayloadToR2 = async (
     schemaVersion: 1,
   });
   await putCatalogStagingEvents(env, raceKey, fetchedAt, latest);
-  await writePointerKey(env, raceKey, liveKey);
+  await syncPointerKey(env, raceKey, lookup, liveKey);
   return toPublicPayload(stored);
 };
 

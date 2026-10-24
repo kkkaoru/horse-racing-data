@@ -108,6 +108,64 @@ it("readOddsPayloadFromR2 uses the KV pointer and rejects mismatched race payloa
   expect(await readOddsPayloadFromR2(env, "nar:2026:0708:45:12")).toBeNull();
 });
 
+it("readOddsPayloadFromR2 skips the KV pointer put when the pointer already names the found key", async () => {
+  const kv = buildKv();
+  const getMock = kv.get as unknown as ReturnType<typeof vi.fn>;
+  getMock.mockResolvedValueOnce("odds-live/v1/nar/20260708/nar:2026:0708:45:12/payload.json");
+  const env = buildEnv({
+    ODDS_ARCHIVE: buildR2({
+      fetchedAt: "2026-07-08T18:01:28+09:00",
+      historyByType: {},
+      latest: {},
+      raceKey: "nar:2026:0708:45:12",
+      schemaVersion: 1,
+    }),
+    ODDS_HOT_KV: kv,
+  });
+  const payload = await readOddsPayloadFromR2(env, "nar:2026:0708:45:12");
+  expect(payload?.fetchedAt).toBe("2026-07-08T18:01:28+09:00");
+  expect(kv.put).not.toHaveBeenCalled();
+});
+
+it("readOddsPayloadFromR2 writes the KV pointer when it is missing", async () => {
+  const env = buildEnv({
+    ODDS_ARCHIVE: buildR2({
+      fetchedAt: "2026-07-08T18:01:28+09:00",
+      historyByType: {},
+      latest: {},
+      raceKey: "nar:2026:0708:45:12",
+      schemaVersion: 1,
+    }),
+  });
+  await readOddsPayloadFromR2(env, "nar:2026:0708:45:12");
+  expect(env.ODDS_HOT_KV.put).toHaveBeenCalledTimes(1);
+  expect(env.ODDS_HOT_KV.put).toHaveBeenCalledWith(
+    "odds:r2:payload:nar:2026:0708:45:12",
+    "odds-live/v1/nar/20260708/nar:2026:0708:45:12/payload.json",
+    { expirationTtl: 172800 },
+  );
+});
+
+it("writeOddsPayloadToR2 skips the KV pointer put when the pointer already names the live key", async () => {
+  const kv = buildKv();
+  const getMock = kv.get as unknown as ReturnType<typeof vi.fn>;
+  getMock.mockResolvedValueOnce("odds-live/v1/nar/20260708/nar:2026:0708:45:12/payload.json");
+  const env = buildEnv({
+    ODDS_ARCHIVE: buildR2({
+      fetchedAt: "2026-07-08T18:00:00+09:00",
+      historyByType: {},
+      latest: {},
+      raceKey: "nar:2026:0708:45:12",
+      schemaVersion: 1,
+    }),
+    ODDS_HOT_KV: kv,
+  });
+  await writeOddsPayloadToR2(env, "nar:2026:0708:45:12", "2026-07-08T18:01:28+09:00", {
+    tansho: [{ combination: "01", odds: 2.5, rank: 1 }],
+  });
+  expect(kv.put).not.toHaveBeenCalled();
+});
+
 it("readOddsPayloadFromR2 returns null when R2 get fails", async () => {
   const env = buildEnv({
     ODDS_ARCHIVE: {
