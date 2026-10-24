@@ -84,7 +84,9 @@ export interface FetchBytesOptions {
 
 export type NvFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-const MAX_LICENSE_BYTES: number = 64;
+// Still a hard bound; license-verify (private core) rejects anything that is not a
+// license. 64 B rejected the 10/22+ upstream 200 response (~1.2 KB) before verify ran.
+const MAX_LICENSE_BYTES: number = 4096;
 const MAX_FILE_LIST_BYTES: number = 1024 * 1024;
 const MAX_ARCHIVE_BYTES: number = 16 * 1024 * 1024;
 const CR: number = 13;
