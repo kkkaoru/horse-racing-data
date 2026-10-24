@@ -1,7 +1,7 @@
 // Runs with bun; this named entrypoint exposes only race-detail/calendar reads to trusted binding holders.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { boundedAuditFetch } from "./d1-audit";
-import { executeR2Sql } from "./r2-sql";
+import { executeR2Sql, r2SqlRoute } from "./r2-sql";
 import { handleRaceCalendarRead } from "./race-calendar-service";
 import { handleRaceYearsRead } from "./race-years-service";
 import { handleRaceDayListRead, handleRaceDayListWithJockeysRead } from "./race-day-list-service";
@@ -63,20 +63,28 @@ export const handleRaceDetailRead = async (
   }
 };
 
+const routeRaceDetailRead = async (
+  request: Request,
+  env: R2SqlCatalogConfig,
+  path: string,
+): Promise<Response> => {
+  if (path === "/v1/race-day-list-with-jockeys")
+    return await handleRaceDayListWithJockeysRead(request, env);
+  if (path === "/v1/race-day-list") return await handleRaceDayListRead(request, env);
+  if (path === "/v1/race-runners") return await handleRaceRunnersRead(request, env);
+  if (path === "/v1/race-history") return await handleRaceHistoryRead(request, env);
+  if (path === "/v1/race-matched-profile") return await handleRaceMatchedProfileRead(request, env);
+  if (path === "/v1/race-years") return await handleRaceYearsRead(request, env);
+  if (path === "/v1/race-calendar") return await handleRaceCalendarRead(request, env);
+  if (path !== SERVICE_PATH) return json({ error: "Not found" }, 404);
+  return await handleRaceDetailRead(request, env);
+};
+
 /** No public route or SQL input. Existing default HTTP/Queue/Cron handlers remain separate. */
 export class RaceDetailReadService extends WorkerEntrypoint<R2SqlCatalogConfig> {
   override async fetch(request: Request): Promise<Response> {
     const path: string = new URL(request.url).pathname;
-    if (path === "/v1/race-day-list-with-jockeys")
-      return await handleRaceDayListWithJockeysRead(request, this.env);
-    if (path === "/v1/race-day-list") return await handleRaceDayListRead(request, this.env);
-    if (path === "/v1/race-runners") return await handleRaceRunnersRead(request, this.env);
-    if (path === "/v1/race-history") return await handleRaceHistoryRead(request, this.env);
-    if (path === "/v1/race-matched-profile")
-      return await handleRaceMatchedProfileRead(request, this.env);
-    if (path === "/v1/race-years") return await handleRaceYearsRead(request, this.env);
-    if (path === "/v1/race-calendar") return await handleRaceCalendarRead(request, this.env);
-    if (path !== SERVICE_PATH) return json({ error: "Not found" }, 404);
-    return await handleRaceDetailRead(request, this.env);
+    // Binding calls bypass the gateway fetch, so the scan metrics need the route set here.
+    return await r2SqlRoute.run(path, () => routeRaceDetailRead(request, this.env, path));
   }
 }

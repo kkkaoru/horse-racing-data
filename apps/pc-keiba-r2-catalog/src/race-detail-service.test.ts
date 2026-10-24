@@ -1,10 +1,14 @@
 // Runs with bun through Vitest; all provider I/O is mocked.
 import { beforeEach, expect, it, vi } from "vitest";
 import { mockDeep } from "vitest-mock-extended";
+import { r2SqlRoute } from "./r2-sql";
 import { RaceDetailReadService } from "./race-detail-service";
 import type { R2SqlCatalogConfig } from "./types";
 const mocks = vi.hoisted(() => ({ query: vi.fn<typeof import("./r2-sql").executeR2Sql>() }));
-vi.mock("./r2-sql", () => ({ executeR2Sql: mocks.query }));
+vi.mock("./r2-sql", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./r2-sql")>()),
+  executeR2Sql: mocks.query,
+}));
 const env: R2SqlCatalogConfig = {
   R2_SQL_ACCOUNT_ID: "account",
   R2_SQL_BUCKET_NAME: "catalog",
@@ -153,4 +157,20 @@ it("sanitizes provider failures without confusing failure with absence", async (
   expect(await response.json()).toStrictEqual({ error: "Catalog race detail unavailable" });
   expect(mocks.query).toHaveBeenCalledTimes(1);
   errorLog.mockRestore();
+});
+it.each([
+  "/v1/race-history?horseIds=2020100001&beforeDate=20261024&source=nar",
+  "/v1/race-detail?source=jra&date=20260816&keibajoCode=05&raceBango=04",
+])("attributes binding reads to their route in the scan metrics: %s", async (target) => {
+  const routes: (string | undefined)[] = [];
+  mocks.query.mockImplementation(async () => {
+    routes.push(r2SqlRoute.getStore());
+    return [];
+  });
+  const service: RaceDetailReadService = new RaceDetailReadService(
+    mockDeep<ExecutionContext>(),
+    env,
+  );
+  await service.fetch(new Request(`https://catalog.internal${target}`));
+  expect(routes).toStrictEqual([new URL(target, "https://catalog.internal").pathname]);
 });
