@@ -94,6 +94,29 @@ it("ignores a corrupt cached entry and stays usable when KV fails", async () => 
   expect(await response.json()).toStrictEqual({ result: { rows: [{ n: 2 }] }, success: true });
 });
 
+it("keeps the fetch and store alive through waitUntil", async () => {
+  const { kv, put } = makeKv();
+  const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+  const failing = cachedR2SqlFetcher(
+    vi.fn<Fetcher>(async () => {
+      throw new Error("offline");
+    }),
+    kv,
+    waitUntil,
+  );
+  await expect(failing("https://r2sql.test/", init("SELECT 5"))).rejects.toThrow("offline");
+  const cached = cachedR2SqlFetcher(
+    vi.fn<Fetcher>(async () => new Response(answer([{ n: 5 }]))),
+    kv,
+    waitUntil,
+  );
+  const response = await cached("https://r2sql.test/", init("SELECT 5"));
+  expect(await response.json()).toStrictEqual({ result: { rows: [{ n: 5 }] }, success: true });
+  expect(waitUntil).toHaveBeenCalledTimes(2);
+  await Promise.all(waitUntil.mock.calls.map(([promise]) => promise));
+  expect(put).toHaveBeenCalledOnce();
+});
+
 it("passes requests through without KV or without a string body", async () => {
   const fetchImpl = vi.fn<Fetcher>(async () => new Response(answer([{ n: 3 }])));
   await cachedR2SqlFetcher(fetchImpl, undefined)("https://r2sql.test/", init("SELECT 3"));

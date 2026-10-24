@@ -192,6 +192,17 @@ it("exports a Cloudflare Worker entrypoint", async () => {
   vi.stubGlobal("fetch", harness.dependencies.fetchImpl);
   const response = await worker.fetch(new Request("https://catalog.test/health"), harness.env);
   expect(response.status).toBe(200);
+  const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+  const ctx = { passThroughOnException: vi.fn(), props: {}, waitUntil } as ExecutionContext;
+  const heatmap = await worker.fetch(
+    new Request(
+      "https://catalog.test/v1/win-rate-heatmap-stats?year=2026&month=10&day=4&keibajoCode=08&raceNumber=01&source=jra&years=10",
+    ),
+    harness.env,
+    ctx,
+  );
+  expect(heatmap.status).toBe(200);
+  expect(waitUntil).toHaveBeenCalled();
 });
 
 it("queries JRA and NAR race keys independently and writes both cache tiers", async () => {

@@ -281,7 +281,7 @@ export const gateway = {
       } satisfies MonitorTickLog),
     );
   },
-  async fetch(request: Request, env: GatewayEnv): Promise<Response> {
+  async fetch(request: Request, env: GatewayEnv, ctx?: ExecutionContext): Promise<Response> {
     const path: string = new URL(request.url).pathname;
     if (path === INGESTION_STATUS_PATH) return await ingestionStatusResponse(request, env);
     if (path === D1_AUDIT_PATH) return await auditResponse(request, env);
@@ -293,7 +293,8 @@ export const gateway = {
       path === RACE_DAY_JOCKEYS_AUDIT_PATH
     )
       return await raceReadAuditResponse(request, env);
-    if (path !== QUERY_PATH && path !== UPSERT_PATH) return await catalogWorker.fetch(request, env);
+    if (path !== QUERY_PATH && path !== UPSERT_PATH)
+      return await catalogWorker.fetch(request, env, ctx);
     return await vectorResponse(request, env, path);
   },
 };
@@ -307,7 +308,7 @@ export default class CatalogWorker extends WorkerEntrypoint<
     >
 > {
   override fetch(request: Request): Promise<Response> {
-    return gateway.fetch(request, this.env);
+    return gateway.fetch(request, this.env, this.ctx);
   }
   override queue(batch: MessageBatch<unknown>): Promise<void> {
     return gateway.queue(batch, this.env);

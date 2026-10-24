@@ -34,10 +34,31 @@ const isCacheableAnswer = (text: string): boolean => {
 const resultKey = (body: string): string =>
   `${KEY_PREFIX}${createHash("sha256").update(body).digest("hex")}`;
 
+const fetchAndStore = async (
+  fetchImpl: Fetcher,
+  kv: KvStore,
+  key: string,
+  input: Parameters<Fetcher>[0],
+  init: RequestInit,
+): Promise<Response> => {
+  const response = await fetchImpl(input, init);
+  if (!response.ok) return response;
+  const text = await response.text();
+  if (isCacheableAnswer(text))
+    await kv.put(key, text, { expirationTtl: R2_SQL_RESULT_TTL_SECONDS }).catch(() => undefined);
+  return new Response(text, { headers: response.headers, status: response.status });
+};
+
 // Wraps the R2 SQL fetcher; the request body (warehouse + SQL) is the key.
-// Without a KV binding the fetcher is returned unchanged.
+// Without a KV binding the fetcher is returned unchanged. With waitUntil, a
+// scan the client stopped waiting for still finishes and is stored (within
+// the runtime's grace period), so the next sweep does not pay for it again.
 export const cachedR2SqlFetcher =
-  (fetchImpl: Fetcher, kv: KvStore | undefined): Fetcher =>
+  (
+    fetchImpl: Fetcher,
+    kv: KvStore | undefined,
+    waitUntil?: (promise: Promise<unknown>) => void,
+  ): Fetcher =>
   async (input, init) => {
     const body = init?.body;
     if (kv === undefined || typeof body !== "string") return fetchImpl(input, init);
@@ -45,10 +66,7 @@ export const cachedR2SqlFetcher =
     const cached = await kv.get(key).catch(() => null);
     if (cached !== null && isCacheableAnswer(cached))
       return new Response(cached, { headers: { "Content-Type": "application/json" } });
-    const response = await fetchImpl(input, init);
-    if (!response.ok) return response;
-    const text = await response.text();
-    if (isCacheableAnswer(text))
-      await kv.put(key, text, { expirationTtl: R2_SQL_RESULT_TTL_SECONDS }).catch(() => undefined);
-    return new Response(text, { headers: response.headers, status: response.status });
+    const stored = fetchAndStore(fetchImpl, kv, key, input, init!);
+    waitUntil?.(stored.catch(() => undefined));
+    return stored;
   };

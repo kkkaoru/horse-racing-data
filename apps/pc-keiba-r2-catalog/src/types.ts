@@ -115,6 +115,8 @@ export interface Env extends R2SqlCatalogConfig {
 export interface WorkerDependencies {
   cache: CacheStore;
   fetchImpl: Fetcher;
+  // ExecutionContext.waitUntil: keeps work alive after the client disconnects.
+  waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 export interface RaceFeatureFilters {

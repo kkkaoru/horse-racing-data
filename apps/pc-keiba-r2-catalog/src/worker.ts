@@ -1791,7 +1791,7 @@ const heavyR2SqlDependencies = (
     // Cache hits are served before the gate, so they never wait for a slot.
     fetchImpl: OVERSEAS_KEIBAJO_PATTERN.test(url.searchParams.get("keibajoCode") ?? "")
       ? gated
-      : cachedR2SqlFetcher(gated, env.CATALOG_KV),
+      : cachedR2SqlFetcher(gated, env.CATALOG_KV, dependencies.waitUntil),
   };
 };
 
@@ -1936,8 +1936,12 @@ export const handleRequest = async (
 };
 
 const worker = {
-  fetch(request: Request, env: Env): Promise<Response> {
-    return handleRequest(request, env, { cache: caches.default, fetchImpl: fetch });
+  fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    return handleRequest(request, env, {
+      cache: caches.default,
+      fetchImpl: fetch,
+      ...(ctx === undefined ? {} : { waitUntil: (promise) => ctx.waitUntil(promise) }),
+    });
   },
 };
 

@@ -818,7 +818,7 @@ test("default entrypoint delegates all existing event handlers", async () => {
   const response = new Response("ok");
   const fetchSpy = vi.spyOn(gateway, "fetch").mockResolvedValueOnce(response);
   expect(await worker.fetch(request)).toBe(response);
-  expect(fetchSpy).toHaveBeenCalledWith(request, bindings);
+  expect(fetchSpy).toHaveBeenCalledWith(request, bindings, expect.anything());
   const batch = mockDeep<MessageBatch<unknown>>();
   const queueSpy = vi.spyOn(gateway, "queue").mockResolvedValueOnce();
   await worker.queue(batch);
