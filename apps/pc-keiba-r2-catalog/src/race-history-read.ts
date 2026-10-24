@@ -107,6 +107,12 @@ const DATE: RegExp = /^\d{8}$/u;
 const HORSE_ID: RegExp = /^(?!0{10}$)\d{10}$/u;
 const PROVIDER_HORSE_ID: RegExp = /^(?!0+$)[A-Za-z0-9]+$/u;
 const MAX_HORSE_IDS: number = 40;
+// A JV/NAR ketto_toroku_bango starts with the foal year and a horse first
+// runs at age two (0 violations over the whole jvd_se/nvd_se mirror). Other
+// prefixes (ban-ei 21xxxxxxxx) fall outside this range and disable the bound.
+const BIRTH_YEAR_PREFIX: RegExp = /^\d{4}/u;
+const MIN_BIRTH_YEAR: number = 1900;
+const FIRST_START_AGE: number = 2;
 const MAX_LIMIT: number = 4000;
 const COLUMN_COUNT: number = COLUMNS.length;
 const OVERSEAS_COLUMN_COUNT: number = 3;
@@ -116,6 +122,35 @@ const validDate = (date: string): boolean => {
   const iso: string = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
   const parsed: Date = new Date(`${iso}T00:00:00.000Z`);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === iso;
+};
+
+// The earliest kaisai_nen any of the horses can have run in, or null when an
+// identifier does not carry a plausible foal year (then nothing is pruned).
+export const earliestRaceYear = (horseIds: readonly string[], date: string): number | null => {
+  const years: number[] = horseIds.map((id) =>
+    BIRTH_YEAR_PREFIX.test(id) ? Number(id.slice(0, 4)) : Number.NaN,
+  );
+  return horseIds.length > 0 &&
+    years.every((year) => year >= MIN_BIRTH_YEAR && year <= Number(date.slice(0, 4)))
+    ? Math.min(...years) + FIRST_START_AGE
+    : null;
+};
+
+// Bare kaisai_nen bounds implied by the date window and the horses' foal
+// years: R2 SQL prunes year partitions only on the plain column.
+const historyYearBoundsSql = (input: RaceHistoryReadInput): string => {
+  const lower: number[] = [
+    earliestRaceYear(input.horseIds, input.beforeDate),
+    input.minDate === null ? null : Number(input.minDate.slice(0, 4)),
+  ].filter((year) => year !== null);
+  return ["se", "ra"]
+    .map((alias) =>
+      [
+        ...(lower.length === 0 ? [] : [`${alias}.kaisai_nen >= '${String(Math.max(...lower))}'`]),
+        `${alias}.kaisai_nen <= '${input.beforeDate.slice(0, 4)}'`,
+      ].join(" AND "),
+    )
+    .join("\n  AND ");
 };
 
 export const buildRaceHistoryReadSql = (input: RaceHistoryReadInput): string => {
@@ -155,6 +190,7 @@ INNER JOIN ${input.namespace}.${raceTable} ra
   AND ra.race_bango = se.race_bango
 WHERE se.ketto_toroku_bango IN (${ids})
   AND ${window}
+  AND ${historyYearBoundsSql(input)}
 ORDER BY se.ketto_toroku_bango ASC, concat(ra.kaisai_nen, ra.kaisai_tsukihi) DESC, se.umaban ASC
 LIMIT ${input.limit + 1}`;
 };

@@ -2,6 +2,7 @@
 import { expect, it } from "vitest";
 import {
   buildRaceHistoryReadSql,
+  earliestRaceYear,
   readRaceHistory,
   type RaceHistoryReadInput,
 } from "./race-history-read";
@@ -47,10 +48,45 @@ it("builds a bounded JRA history read over the requested horses", () => {
   expect(sql).not.toMatch("se.kyori");
 });
 
-it("omits the lower bound when no year window is requested", () => {
-  const sql: string = buildRaceHistoryReadSql({ ...input, minDate: null });
+it("omits the lower bound when no year window is requested and a ban-ei ID has no foal year", () => {
+  const sql: string = buildRaceHistoryReadSql({
+    ...input,
+    source: "nar",
+    horseIds: ["2021106753", "2120190323"],
+    minDate: null,
+  });
   expect(sql).not.toMatch(">= '");
-  expect(sql).toMatch("< '20260920'");
+  expect(sql).toMatch(
+    "< '20260920'\n  AND se.kaisai_nen <= '2026'\n  AND ra.kaisai_nen <= '2026'\nORDER BY",
+  );
+});
+
+it("prunes year partitions from the oldest horse's foal year when no window is requested", () => {
+  const sql: string = buildRaceHistoryReadSql({ ...input, minDate: null });
+  expect(sql).toMatch(
+    "AND se.kaisai_nen >= '2023' AND se.kaisai_nen <= '2026'\n  AND ra.kaisai_nen >= '2023' AND ra.kaisai_nen <= '2026'",
+  );
+});
+
+it("keeps the later of the window start and the foal-year bound", () => {
+  expect(buildRaceHistoryReadSql({ ...input, horseIds: ["2015100001"] })).toMatch(
+    "se.kaisai_nen >= '2023' AND se.kaisai_nen <= '2026'",
+  );
+  expect(buildRaceHistoryReadSql({ ...input, minDate: "20200101" })).toMatch(
+    "ra.kaisai_nen >= '2023' AND ra.kaisai_nen <= '2026'",
+  );
+  expect(
+    buildRaceHistoryReadSql({ ...input, horseIds: ["2120190323"], minDate: "20200101" }),
+  ).toMatch("ra.kaisai_nen >= '2020' AND ra.kaisai_nen <= '2026'");
+});
+
+it("derives the earliest race year only from plausible foal-year prefixes", () => {
+  expect(earliestRaceYear(["2021106753", "2019100001"], "20261024")).toBe(2021);
+  expect(earliestRaceYear(["2026100001"], "20261024")).toBe(2028);
+  expect(earliestRaceYear(["2021106753", "2120190323"], "20261024")).toBeNull();
+  expect(earliestRaceYear(["1899100001"], "20261024")).toBeNull();
+  expect(earliestRaceYear([" 021106753"], "20261024")).toBeNull();
+  expect(earliestRaceYear([], "20261024")).toBeNull();
 });
 
 it("builds a NAR history read over the nvd pair", () => {
