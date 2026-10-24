@@ -1287,9 +1287,9 @@ it("fails closed when missing D1 entries cannot be loaded from Catalog", async (
     },
   } as unknown as Env;
 
-  await expect(getPredictionReadiness({ env, now: NOW, runYmd: "20260815" })).rejects.toThrow(
-    "Catalog binding and attestation token are required for readiness entries",
-  );
+  await expect(
+    getPredictionReadiness({ category: "ban-ei", env, now: NOW, runYmd: "20260815" }),
+  ).rejects.toThrow("Catalog binding and attestation token are required for readiness entries");
 });
 
 it("uses D1 for NAR and calls Catalog only for a missing ban-ei race", async () => {
@@ -1449,10 +1449,17 @@ it("keeps NAR readiness independent of missing JRA runners without weakening the
   expect(nar.races).toHaveLength(1);
   expect(nar.races[0]).toMatchObject({ expectedCount: 1, expectedSource: "d1", source: "nar" });
   expect(catalogFetchMock).not.toHaveBeenCalled();
-  await expect(getPredictionReadiness({ env, now: NOW, runYmd: "20260815" })).rejects.toThrow(
-    "Catalog bulk readiness entries failed with HTTP 502",
-  );
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const all = await getPredictionReadiness({ env, now: NOW, runYmd: "20260815" });
+  expect(
+    all.races.map((race) => [race.source, race.expectedSource, race.expectedCount, race.complete]),
+  ).toStrictEqual([
+    ["jra", "none", 0, false],
+    ["nar", "d1", 1, false],
+  ]);
   expect(catalogFetchMock).toHaveBeenCalledTimes(1);
+  expect(errorSpy).toHaveBeenCalledTimes(1);
+  errorSpy.mockRestore();
 });
 
 it("fails closed on a non-success Catalog bulk response", async () => {
@@ -1480,9 +1487,9 @@ it("fails closed on a non-success Catalog bulk response", async () => {
     },
   } as unknown as Env;
 
-  await expect(getPredictionReadiness({ env, now: NOW, runYmd: "20260815" })).rejects.toThrow(
-    "Catalog bulk readiness entries failed with HTTP 502",
-  );
+  await expect(
+    getPredictionReadiness({ category: "nar", env, now: NOW, runYmd: "20260815" }),
+  ).rejects.toThrow("Catalog bulk readiness entries failed with HTTP 502");
 });
 
 it("fails closed on an invalid Catalog bulk envelope", async () => {
@@ -1512,9 +1519,9 @@ it("fails closed on an invalid Catalog bulk envelope", async () => {
     },
   } as unknown as Env;
 
-  await expect(getPredictionReadiness({ env, now: NOW, runYmd: "20260815" })).rejects.toThrow(
-    "Catalog bulk readiness entries returned an invalid envelope",
-  );
+  await expect(
+    getPredictionReadiness({ category: "nar", env, now: NOW, runYmd: "20260815" }),
+  ).rejects.toThrow("Catalog bulk readiness entries returned an invalid envelope");
 });
 
 it("rejects a ban-ei bulk entry outside venue 83", async () => {
@@ -1558,9 +1565,9 @@ it("rejects a ban-ei bulk entry outside venue 83", async () => {
     },
   } as unknown as Env;
 
-  await expect(getPredictionReadiness({ env, now: NOW, runYmd: "20260815" })).rejects.toThrow(
-    "Catalog bulk readiness entries returned an invalid entry",
-  );
+  await expect(
+    getPredictionReadiness({ category: "ban-ei", env, now: NOW, runYmd: "20260815" }),
+  ).rejects.toThrow("Catalog bulk readiness entries returned an invalid entry");
 });
 
 it("fails closed when Catalog omits a missing race", async () => {
@@ -1604,7 +1611,65 @@ it("fails closed when Catalog omits a missing race", async () => {
     },
   } as unknown as Env;
 
-  await expect(getPredictionReadiness({ env, now: NOW, runYmd: "20260815" })).rejects.toThrow(
-    "Catalog bulk readiness entries did not cover race categories: nar",
+  await expect(
+    getPredictionReadiness({ category: "nar", env, now: NOW, runYmd: "20260815" }),
+  ).rejects.toThrow("Catalog bulk readiness entries did not cover race categories: nar");
+});
+
+it("keeps JRA readiness when the NAR Catalog entries are unavailable", async () => {
+  const allMock = vi
+    .fn()
+    .mockResolvedValueOnce({
+      results: [
+        {
+          keibajo_code: "08",
+          race_bango: "11",
+          race_start_at_jst: "2026-08-15T10:00:00+09:00",
+          source: "jra",
+        },
+        {
+          keibajo_code: "35",
+          race_bango: "01",
+          race_start_at_jst: "2026-08-15T10:00:00+09:00",
+          source: "nar",
+        },
+      ],
+    })
+    .mockResolvedValueOnce({
+      results: [
+        {
+          ketto_toroku_bango: "J1",
+          keibajo_code: "08",
+          race_bango: "11",
+          source: "jra",
+          umaban: "1",
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ results: [] });
+  queryMock.mockResolvedValue([]);
+  const catalogFetchMock = vi.fn(async () => new Response(null, { status: 404 }));
+  const env = {
+    FINISH_POSITION_ATTESTATION_TOKEN: "attestation-secret",
+    NEON_DATABASE_URL: "postgres://example",
+    PC_KEIBA_R2_CATALOG: { fetch: catalogFetchMock },
+    REALTIME_DB: {
+      prepare: vi.fn(() => ({ bind: vi.fn(() => ({ all: allMock })) })),
+    },
+  } as unknown as Env;
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  const readiness = await getPredictionReadiness({ env, now: NOW, runYmd: "20260815" });
+
+  expect(
+    readiness.races.map((race) => [race.raceKey, race.expectedSource, race.expectedCount]),
+  ).toStrictEqual([
+    ["jra:08:11", "d1", 1],
+    ["nar:35:01", "none", 0],
+  ]);
+  expect(catalogFetchMock).toHaveBeenCalledTimes(1);
+  expect(errorSpy.mock.calls[0]?.[0]).toBe(
+    "[prediction-readiness] Catalog bulk readiness entries did not cover race categories: nar",
   );
+  errorSpy.mockRestore();
 });

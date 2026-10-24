@@ -59,6 +59,11 @@ interface BulkCatalogEntry {
   umaban: number;
 }
 
+interface CatalogEntriesResult {
+  entries: EntryRow[];
+  failures: unknown[];
+}
+
 export type PredictionExpectedSource = "catalog" | "d1" | "none";
 
 export interface PredictionPhaseReadiness {
@@ -433,12 +438,21 @@ const missingEntryCategories = (
   return CATALOG_SOURCES.filter((source) => missing.has(source));
 };
 
+// Settle each source on its own so one provider's outage (e.g. UmaConn for
+// nar/ban-ei) cannot hide the other categories' readiness.
 const listCatalogEntries = async (
   env: Env,
   runYmd: string,
   sources: readonly PredictCategory[],
-): Promise<EntryRow[]> =>
-  (await Promise.all(sources.map((source) => fetchBulkCatalogEntries(env, runYmd, source)))).flat();
+): Promise<CatalogEntriesResult> => {
+  const settled = await Promise.allSettled(
+    sources.map((source) => fetchBulkCatalogEntries(env, runYmd, source)),
+  );
+  return {
+    entries: settled.flatMap((result) => (result.status === "fulfilled" ? result.value : [])),
+    failures: settled.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
+  };
+};
 
 const parsePredictionKvRow = (value: unknown): PredictionKvRow | null => {
   if (!isRecord(value)) return null;
@@ -710,15 +724,20 @@ export const getPredictionReadiness = async (
       ? allRaces
       : allRaces.filter((race) => categoryForRace(race) === input.category);
   const catalogSources = missingEntryCategories(entries, races);
-  const [catalogEntries, kvPayloads] = await Promise.all([
+  const [{ entries: catalogEntries, failures }, kvPayloads] = await Promise.all([
     listCatalogEntries(input.env, input.runYmd, catalogSources),
     listPredictionKvPayloads(input.env, races, input.runYmd),
   ]);
+  if (input.category !== undefined && failures.length > 0) throw failures[0];
   const unresolvedSources = missingEntryCategories([...entries, ...catalogEntries], races);
+  const unresolvedError = new Error(
+    `Catalog bulk readiness entries did not cover race categories: ${unresolvedSources.join(",")}`,
+  );
+  if (input.category !== undefined && unresolvedSources.length > 0) throw unresolvedError;
+  // The all-category view keeps failing closed per race: a race without entry
+  // evidence reports expectedSource "none" and is never complete.
   if (unresolvedSources.length > 0) {
-    throw new Error(
-      `Catalog bulk readiness entries did not cover race categories: ${unresolvedSources.join(",")}`,
-    );
+    console.error(`[prediction-readiness] ${unresolvedError.message}`, ...failures);
   }
   return buildPredictionReadiness({
     ...input,
