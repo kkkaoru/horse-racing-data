@@ -1286,6 +1286,19 @@ it("listPremiumRaceDataFetchCandidatesByDate binds the auth retry_after placehol
     "2026-05-12T03:00:00+09:00",
     "2026-05-12T03:00:00+09:00",
     "2026-05-12T03:00:00+09:00",
+    "2026-05-12T03:00:00+09:00",
+  );
+});
+
+it("listPremiumRaceDataFetchCandidatesByDate re-checks missing JRA comments at most hourly", async () => {
+  const all = vi.fn(async () => ({ results: [] }));
+  const bind = vi.fn((..._args: unknown[]) => ({ all }));
+  const prepare = vi.fn((..._args: unknown[]) => ({ bind }));
+  const db = { prepare } as unknown as D1Database;
+  await listPremiumRaceDataFetchCandidatesByDate(db, "20261024", "2026-10-24T12:00:00+09:00");
+  const sql = String(prepare.mock.calls[0]![0]);
+  expect(sql).toMatch(
+    /training_reviews_comment\.comment_text != ''\s*\)\s*\)\s*(?:--[^\n]*\n\s*)*and datetime\(coalesce\(state\.last_fetch_at, '1970-01-01T00:00:00\+09:00'\)\)\s*<= datetime\(\?, '-60 minutes'\)/u,
   );
 });
 
@@ -1411,6 +1424,7 @@ it("listPremiumRaceDataFetchCandidatesByDate keeps the same bind placeholder cou
   expect(bind).toHaveBeenCalledWith(
     "2026",
     "0704",
+    "2026-07-04T21:00:00+09:00",
     "2026-07-04T21:00:00+09:00",
     "2026-07-04T21:00:00+09:00",
     "2026-07-04T21:00:00+09:00",

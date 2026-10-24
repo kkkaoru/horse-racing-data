@@ -892,12 +892,11 @@ describe("worker scheduling with Miniflare", () => {
   // gate only checked premium_data_top_horses for emptiness, so a race whose
   // data-top scrape landed but whose training-review / stable-comment scrape
   // failed (or was never run) looked "complete" and was never retried again.
-  // last_fetch_at is deliberately recent + close to race start here (the
-  // same shape as the "does not requeue ... close to race start" fixture
-  // above) so the only thing that can explain a requeue is the per-table
-  // completeness gate, not the race-start-freshness branch.
+  // The race started 20 min ago (inside the JRA 4-hour window but past the
+  // race-start-freshness branch) and last_fetch_at is 65 min old, so the only
+  // thing that can explain a requeue is the hourly per-table completeness gate.
   it("requeues premium race data when data_top has rows but training_reviews and stable_comments are still empty", async () => {
-    await seedRace("jra:2026:0512:08:01", "2026-05-12T12:20:00+09:00", { source: "jra" });
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T11:40:00+09:00", { source: "jra" });
     await db
       .prepare(
         `
@@ -915,7 +914,7 @@ describe("worker scheduling with Miniflare", () => {
           insert into premium_race_data_fetch_state (
             race_key, status, last_fetch_at, updated_at
           )
-          values (?, 'ok', '2026-05-12T11:55:00+09:00', '2026-05-12T11:55:00+09:00')
+          values (?, 'ok', '2026-05-12T10:55:00+09:00', '2026-05-12T10:55:00+09:00')
         `,
       )
       .bind("jra:2026:0512:08:01")
@@ -956,6 +955,65 @@ describe("worker scheduling with Miniflare", () => {
       last_queued_at: "2026-05-12T12:00:00+09:00",
       status: "queued",
     });
+  });
+
+  it("does not re-check missing training_reviews and stable_comments within an hour of the last fetch", async () => {
+    await seedRace("jra:2026:0512:08:01", "2026-05-12T11:40:00+09:00", { source: "jra" });
+    await db
+      .prepare(
+        `
+          insert into premium_race_links (
+            race_key, source_race_id, entry_url, discovered_at, updated_at
+          )
+          values (?, '202605120801', 'https://example.test/race', ?, ?)
+        `,
+      )
+      .bind("jra:2026:0512:08:01", TEST_NOW, TEST_NOW)
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_race_data_fetch_state (
+            race_key, status, last_fetch_at, updated_at
+          )
+          values (?, 'ok', '2026-05-12T11:30:00+09:00', '2026-05-12T11:30:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    await db
+      .prepare(
+        `
+          insert into premium_data_top_horses (
+            race_key, source_race_id, fetched_at, rank, horse_number, horse_name, reasons_json, created_at
+          )
+          values (?, '202605120801', '2026-05-12T11:55:00+09:00', 1, '1', 'sample', '[]', '2026-05-12T11:55:00+09:00')
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .run();
+    // Intentionally no premium_training_reviews / premium_stable_comments rows.
+
+    await worker.queue(TEST_QUEUE, [
+      {
+        attempts: 1,
+        body: { date: TEST_DATE, type: "plan-realtime-fetches" },
+        id: "plan-premium-race-data-partial-completeness-hourly",
+        timestamp: new Date(TEST_NOW),
+      },
+    ]);
+
+    const state = await db
+      .prepare(
+        `
+          select status, last_queued_at
+          from premium_race_data_fetch_state
+          where race_key = ?
+        `,
+      )
+      .bind("jra:2026:0512:08:01")
+      .first<{ last_queued_at: string | null; status: string }>();
+    expect(state).toStrictEqual({ last_queued_at: null, status: "ok" });
   });
 
   // 2026-07-04: NAR races never receive premium_training_reviews /
