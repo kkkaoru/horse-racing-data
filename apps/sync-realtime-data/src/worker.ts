@@ -69,6 +69,7 @@ import {
   mergeNetkeibaTrainingWorkouts,
   summarizePremiumStableCommentHtml,
   type PremiumDataTopHorse,
+  type PremiumFetchAttempt,
   type PremiumPaddockBulletin,
   type PremiumStableComment,
   type PremiumTrainingReview,
@@ -293,6 +294,13 @@ interface NeonWritePoolHealthUnconfiguredBody {
   status: "unconfigured";
 }
 
+interface PremiumPaddockHtmlAttemptsInput {
+  config: ReturnType<typeof getPremiumRaceConfig>;
+  fallbackUrl: string | undefined;
+  hasBulletins: (html: string) => boolean;
+  primaryUrl: string;
+}
+
 interface RealtimePlanRecoveryOptions {
   delaySeconds: number;
   failureClass: "connection_pressure" | "other";
@@ -457,7 +465,8 @@ const PREMIUM_PADDOCK_RETRY_DELAY_WARM_SECONDS = 30;
 const PREMIUM_PADDOCK_HOT_WINDOW_MINUTES = 20;
 const PREMIUM_PADDOCK_WARM_WINDOW_MINUTES = 40;
 const PREMIUM_PADDOCK_RECHECK_MINUTES = 1;
-const PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES = 120;
+// Earliest stored bulletin (687 races, 2026-07..10) appeared 18 min before post; 45 keeps margin.
+const PREMIUM_PADDOCK_WINDOW_BEFORE_MINUTES = 45;
 const PREMIUM_PADDOCK_WINDOW_AFTER_MINUTES = 2;
 const REALTIME_PLAN_SELF_SCHEDULE_DELAY_SECONDS = 60;
 const REALTIME_PLAN_SELF_SCHEDULE_STALE_SECONDS = 90;
@@ -5300,29 +5309,35 @@ export const buildPremiumPaddockUrls = (
     buildPremiumUrl(config, config.paddockFallbackPathTemplate, { sourceRaceId }),
   ].filter(isPresentString);
 
-const fetchPremiumPaddockHtmlAttempts = async (
+const fetchPremiumPaddockUrlAttempts = async (
   config: ReturnType<typeof getPremiumRaceConfig>,
-  urls: readonly string[],
-  sourceRaceId: string,
-): Promise<Awaited<ReturnType<typeof fetchPremiumHtmlAttempts>>> => {
-  if (urls.length === 0) {
-    throw new Error(`premium paddock url not found: ${sourceRaceId}`);
-  }
-  const results = await Promise.allSettled(
-    urls.map(async (url) => {
-      await purgePremiumPaddockProxyCache(config, url);
-      return fetchPremiumHtmlAttempts(config, url);
-    }),
+  url: string,
+): Promise<PremiumFetchAttempt[]> => {
+  await purgePremiumPaddockProxyCache(config, url);
+  return fetchPremiumHtmlAttempts(config, url);
+};
+
+// Each paddock URL costs a purged (uncached) browser session, so the fallback
+// URL is fetched only when the primary fails or yields no bulletins.
+const fetchPremiumPaddockHtmlAttempts = async ({
+  config,
+  fallbackUrl,
+  hasBulletins,
+  primaryUrl,
+}: PremiumPaddockHtmlAttemptsInput): Promise<PremiumFetchAttempt[]> => {
+  const primary = await fetchPremiumPaddockUrlAttempts(config, primaryUrl).then(
+    (attempts) => ({ attempts, error: null }),
+    (error: unknown) => ({ attempts: [], error }),
   );
-  const fulfilledAttempts = results.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : [],
-  );
-  const allAttempts = fulfilledAttempts.flat();
+  const fallbackAttempts =
+    fallbackUrl && !primary.attempts.some((attempt) => hasBulletins(attempt.html))
+      ? await fetchPremiumPaddockUrlAttempts(config, fallbackUrl).catch(() => [])
+      : [];
+  const allAttempts = [...primary.attempts, ...fallbackAttempts];
   if (allAttempts.length > 0) {
     return allAttempts;
   }
-  const failure = results.find((result) => result.status === "rejected");
-  throw failure?.reason ?? new Error(`premium paddock fetch returned no attempts: ${sourceRaceId}`);
+  throw primary.error;
 };
 
 const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<void> => {
@@ -5372,8 +5387,8 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
   if (!link) {
     throw new Error(`premium race link not found: ${raceKey}`);
   }
-  const paddockUrls = buildPremiumPaddockUrls(config, link.sourceRaceId);
-  if (paddockUrls.length === 0) {
+  const [primaryUrl, fallbackUrl] = buildPremiumPaddockUrls(config, link.sourceRaceId);
+  if (!primaryUrl) {
     await logFetch(
       env.REALTIME_DB,
       "fetch-premium-paddock",
@@ -5383,11 +5398,12 @@ const fetchAndStorePremiumPaddock = async (env: Env, raceKey: string): Promise<v
     );
     return;
   }
-  const attempts = await fetchPremiumPaddockHtmlAttempts(
+  const attempts = await fetchPremiumPaddockHtmlAttempts({
     config,
-    paddockUrls,
-    link.sourceRaceId,
-  ).catch(async (error: unknown) => {
+    fallbackUrl,
+    hasBulletins: (html) => parsePremiumPaddockBulletins(html, env).bulletins.length > 0,
+    primaryUrl,
+  }).catch(async (error: unknown) => {
     const existingPayload = await getPremiumRacePayload(env.REALTIME_DB, raceKey).catch(() => null);
     if (existingPayload && existingPayload.paddockBulletins.length > 0) {
       const latestFetchedAt = existingPayload.paddockBulletins.reduce<string | null>(

@@ -493,6 +493,183 @@ it("fetch-premium-paddock uses fallback path template when the primary page has 
   });
 });
 
+it("fetch-premium-paddock skips the fallback url when the primary page has bulletins", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    getRaceSource,
+    getPremiumRaceLink,
+    getPremiumRacePayload,
+    updatePremiumPaddockFetchState,
+  } = await import("./storage");
+  const { fetchPremiumHtmlAttempts, parsePremiumPaddockBulletins } = await import("./premium-race");
+  const bulletin = {
+    commentText: "好調",
+    evaluationText: "A",
+    frameNumber: "1",
+    groupKey: "favorite",
+    horseName: "馬1",
+    horseNumber: "1",
+  } satisfies PremiumPaddockBulletin;
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  });
+  vi.mocked(fetchPremiumHtmlAttempts).mockResolvedValueOnce([
+    { html: "<table><tr>primary</tr></table>", mode: "proxy" },
+  ]);
+  vi.mocked(parsePremiumPaddockBulletins)
+    .mockReturnValueOnce({
+      authRequired: false,
+      bulletins: [bulletin],
+      pending: false,
+      unavailable: false,
+    })
+    .mockReturnValueOnce({
+      authRequired: false,
+      bulletins: [bulletin],
+      pending: false,
+      unavailable: false,
+    });
+  vi.mocked(getPremiumRacePayload).mockResolvedValueOnce({
+    dataTopHorses: [],
+    paddockBulletins: [{ ...bulletin, fetchedAt: "2026-05-12T11:00:00+09:00" }],
+    stableComments: [],
+    trainingReviews: [],
+  });
+  await handleJob(
+    buildPaddockEnv({
+      PREMIUM_RACE_PADDOCK_FALLBACK_PATH_TEMPLATE: "/fallback/{sourceRaceId}",
+    }),
+    {
+      raceKey: "jra:2026:0512:08:01",
+      type: "fetch-premium-paddock",
+    },
+  );
+  expect(fetchPremiumHtmlAttempts).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(fetchPremiumHtmlAttempts).mock.calls[0]?.[1]).toBe(
+    "https://x.test/paddock/202605120801",
+  );
+  expect(vi.mocked(updatePremiumPaddockFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
+    status: "ok",
+  });
+});
+
+it("fetch-premium-paddock fetches the fallback url when the primary fetch rejects", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+    await import("./storage");
+  const { fetchPremiumHtmlAttempts, parsePremiumPaddockBulletins } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  });
+  vi.mocked(fetchPremiumHtmlAttempts)
+    .mockRejectedValueOnce(new Error("primary down"))
+    .mockResolvedValueOnce([{ html: "<div>pending</div>", mode: "proxy" }]);
+  vi.mocked(parsePremiumPaddockBulletins).mockReturnValueOnce({
+    authRequired: false,
+    bulletins: [],
+    pending: true,
+    unavailable: false,
+  });
+  await handleJob(
+    buildPaddockEnv({
+      PREMIUM_RACE_PADDOCK_FALLBACK_PATH_TEMPLATE: "/fallback/{sourceRaceId}",
+    }),
+    {
+      raceKey: "jra:2026:0512:08:01",
+      type: "fetch-premium-paddock",
+    },
+  );
+  expect(fetchPremiumHtmlAttempts).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(fetchPremiumHtmlAttempts).mock.calls[1]?.[1]).toBe(
+    "https://x.test/fallback/202605120801",
+  );
+  expect(vi.mocked(updatePremiumPaddockFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
+    message: "pending:proxy",
+    status: "pending",
+  });
+});
+
+it("fetch-premium-paddock keeps the primary attempts when the fallback fetch rejects", async () => {
+  const { handleJob } = await import("./worker");
+  const { getRaceSource, getPremiumRaceLink, updatePremiumPaddockFetchState } =
+    await import("./storage");
+  const { fetchPremiumHtmlAttempts, parsePremiumPaddockBulletins } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  });
+  vi.mocked(fetchPremiumHtmlAttempts)
+    .mockResolvedValueOnce([{ html: "<div>pending</div>", mode: "cookie" }])
+    .mockRejectedValueOnce(new Error("fallback down"));
+  vi.mocked(parsePremiumPaddockBulletins)
+    .mockReturnValueOnce({
+      authRequired: false,
+      bulletins: [],
+      pending: true,
+      unavailable: false,
+    })
+    .mockReturnValueOnce({
+      authRequired: false,
+      bulletins: [],
+      pending: true,
+      unavailable: false,
+    });
+  await handleJob(
+    buildPaddockEnv({
+      PREMIUM_RACE_PADDOCK_FALLBACK_PATH_TEMPLATE: "/fallback/{sourceRaceId}",
+    }),
+    {
+      raceKey: "jra:2026:0512:08:01",
+      type: "fetch-premium-paddock",
+    },
+  );
+  expect(fetchPremiumHtmlAttempts).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(updatePremiumPaddockFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
+    message: "pending:cookie",
+    status: "pending",
+  });
+});
+
+it("fetch-premium-paddock throws the primary error when primary and fallback both reject", async () => {
+  const { handleJob } = await import("./worker");
+  const {
+    getRaceSource,
+    getPremiumRaceLink,
+    getPremiumRacePayload,
+    updatePremiumPaddockFetchState,
+  } = await import("./storage");
+  const { fetchPremiumHtmlAttempts } = await import("./premium-race");
+  vi.mocked(getRaceSource).mockResolvedValueOnce(buildPremiumPaddockRaceSource());
+  vi.mocked(getPremiumRaceLink).mockResolvedValueOnce({
+    entryUrl: "https://x.test/race?race_id=202605120801",
+    sourceRaceId: "202605120801",
+  });
+  vi.mocked(getPremiumRacePayload).mockRejectedValueOnce(new Error("payload missing"));
+  vi.mocked(fetchPremiumHtmlAttempts)
+    .mockRejectedValueOnce(new Error("primary down"))
+    .mockRejectedValueOnce(new Error("fallback down"));
+  await expect(
+    handleJob(
+      buildPaddockEnv({
+        PREMIUM_RACE_PADDOCK_FALLBACK_PATH_TEMPLATE: "/fallback/{sourceRaceId}",
+      }),
+      {
+        raceKey: "jra:2026:0512:08:01",
+        type: "fetch-premium-paddock",
+      },
+    ),
+  ).rejects.toThrow("primary down");
+  expect(vi.mocked(updatePremiumPaddockFetchState).mock.calls.at(-1)?.[1]).toMatchObject({
+    message: "primary down",
+    status: "failed",
+  });
+});
+
 it("fetch-premium-paddock attempts throw + existing payload with bulletins writes ok and returns", async () => {
   const { handleJob } = await import("./worker");
   const {

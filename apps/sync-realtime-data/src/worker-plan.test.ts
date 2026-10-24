@@ -556,7 +556,7 @@ it("planPremiumPaddockFetchesForDate skips when recent lastQueuedAt exists", asy
   expect(result).toStrictEqual([]);
 });
 
-it("planPremiumPaddockFetchesForDate enqueues races 110 minutes before start (inside expanded 120-min window)", async () => {
+it("planPremiumPaddockFetchesForDate enqueues races 40 minutes before start (inside 45-min window)", async () => {
   const { planPremiumPaddockFetchesForDate } = await import("./worker");
   const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } =
     await import("./storage");
@@ -594,12 +594,12 @@ it("planPremiumPaddockFetchesForDate enqueues races 110 minutes before start (in
   const result = await planPremiumPaddockFetchesForDate(
     env,
     "20260512",
-    new Date("2026-05-12T02:10:00.000Z"),
+    new Date("2026-05-12T03:20:00.000Z"),
   );
   expect(result).toStrictEqual([{ raceKey: "jra:2026:0512:08:01", type: "fetch-premium-paddock" }]);
 });
 
-it("planPremiumPaddockFetchesForDate skips races 130 minutes before start (outside 120-min window)", async () => {
+it("planPremiumPaddockFetchesForDate skips races 50 minutes before start (outside 45-min window)", async () => {
   const { planPremiumPaddockFetchesForDate } = await import("./worker");
   const { listSchedulableRaceSourcesByDate, getPremiumPaddockFetchState } =
     await import("./storage");
@@ -637,7 +637,7 @@ it("planPremiumPaddockFetchesForDate skips races 130 minutes before start (outsi
   const result = await planPremiumPaddockFetchesForDate(
     env,
     "20260512",
-    new Date("2026-05-12T01:50:00.000Z"),
+    new Date("2026-05-12T03:10:00.000Z"),
   );
   expect(result).toStrictEqual([]);
 });
