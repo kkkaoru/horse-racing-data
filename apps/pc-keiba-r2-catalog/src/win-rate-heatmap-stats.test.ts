@@ -5,8 +5,10 @@ import { DuckDBInstance } from "@duckdb/node-api";
 
 import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters } from "./types";
 import {
+  aggregateLiteralBloodlineRows,
   buildWinRateHeatmapBloodlineQuery,
   buildWinRateHeatmapDayKnownBloodlineQuery,
+  buildWinRateHeatmapLiteralBloodlineQuery,
   buildWinRateHeatmapKnownBloodlineCountQuery,
   dayKnownBloodlineKey,
   encodeDayBloodlineEntry,
@@ -758,52 +760,138 @@ it("maps day snapshot rows to entries and back, counting only known names", () =
   expect(knownBloodlineNameCount([])).toBe(0);
 });
 
-it("inlines the day snapshot's runners instead of re-reading the pedigree masters", async () => {
-  const sql = buildWinRateHeatmapBloodlineQuery(config, jraFilters, [dayEntry]);
-  expect(sql).toMatch("(VALUES\n    (3, '2020100001', 'Sire''s Son', '不明', 'Dam Sire'");
-  expect(sql).toMatch(
-    ") AS v(umaban, ketto_toroku_bango, sire, sireSire, damSire, sireSireSire, sireDamSire, damSireSire, damDamSire)",
-  );
-  expect(sql).toMatch("NOT EXISTS");
-  // Only the history arm still joins the pedigree masters.
+it("passes the day snapshot's names as IN-lists without current_entries, VALUES or table-less SELECTs", () => {
+  const sql = buildWinRateHeatmapLiteralBloodlineQuery(config, jraFilters, [dayEntry]);
+  expect(sql).not.toMatch("current_entries");
+  expect(sql).not.toMatch("VALUES");
+  expect(sql).toMatch("IN ('Sire''s Son')");
+  expect(sql).toMatch("IN ('Dam Sire')");
+  expect(sql).toMatch("se.ketto_toroku_bango NOT IN ('2020100001')");
+  expect(sql).toMatch("END AS b0");
+  expect(sql).toMatch("END AS b2");
+  expect(sql).not.toMatch("END AS b1");
+  expect(sql).toMatch("GROUP BY b0, b2");
+  // Only the history arm joins the pedigree masters, once.
   expect(sql.match(/LEFT JOIN pc_keiba\.jvd_um primary_um/gu)?.length).toBe(1);
-  expect(buildWinRateHeatmapBloodlineQuery(config, jraFilters).match(/primary_um\n/gu)).not.toBe(
-    null,
-  );
-  const ctes = sql.match(
-    /current_entries AS \([\s\S]*?\n\),\ncurrent_bloodlines AS \([\s\S]*?\n\)/u,
-  )?.[0];
-  expect(ctes).toBeDefined();
-  const db = await DuckDBInstance.create(":memory:");
-  const connection = await db.connect();
-  try {
-    const result = await connection.runAndReadAll(
-      `WITH ${ctes} SELECT umaban, category, name FROM current_bloodlines ORDER BY category`,
-    );
-    expect(result.getRowObjects()).toStrictEqual([
-      { umaban: 3, category: "damSire", name: "Dam Sire" },
-      { umaban: 3, category: "sire", name: "Sire's Son" },
-    ]);
-  } finally {
-    connection.closeSync();
-    db.closeSync();
-  }
 });
 
-it("rejects day snapshot runners it cannot inline", () => {
+it("rejects day snapshot runners the literal query cannot use", () => {
   expect(() =>
-    buildWinRateHeatmapBloodlineQuery(config, jraFilters, [{ ...dayEntry, umaban: 1.5 }]),
-  ).toThrow("Day bloodline umaban is not an integer");
+    buildWinRateHeatmapLiteralBloodlineQuery(config, jraFilters, [
+      { ...dayEntry, names: dayEntry.names.map(() => "不明") },
+    ]),
+  ).toThrow("Day bloodline entries have no known names");
   expect(() =>
-    buildWinRateHeatmapBloodlineQuery(config, jraFilters, [{ ...dayEntry, names: ["x"] }]),
-  ).toThrow("Day bloodline entry has the wrong name count");
-  expect(() =>
-    buildWinRateHeatmapBloodlineQuery(
+    buildWinRateHeatmapLiteralBloodlineQuery(
       config,
       { ...jraFilters, date: "20261004", keibajoCode: "A8", raceBango: "05" },
       [dayEntry],
     ),
-  ).toThrow("Current-profile races cannot inline day bloodlines");
+  ).toThrow("Current-profile races need current_entries");
+  expect(() =>
+    buildWinRateHeatmapLiteralBloodlineQuery(config, jraFilters, [
+      { ...dayEntry, kettoTorokuBango: "20201\n00001" },
+    ]),
+  ).toThrow("SQL literal has a control character");
+});
+
+it("expands grouped literal matches back into per-runner bloodline rows", () => {
+  expect(
+    aggregateLiteralBloodlineRows(
+      [dayEntry, { ...dayEntry, kettoTorokuBango: "2020100002", umaban: 1 }],
+      [
+        { b0: "Sire's Son", b2: null, places: "1", shows: "2", starts: "3", wins: "0" },
+        { b0: "Sire's Son", b2: "Dam Sire", places: 1, shows: 1, starts: 1, wins: 1 },
+        { b0: null, b2: "Other", places: 9, shows: 9, starts: 9, wins: 9 },
+      ],
+    ),
+  ).toStrictEqual([
+    { category: "damSire", name: "Dam Sire", places: 1, shows: 1, starts: 1, umaban: 1, wins: 1 },
+    { category: "sire", name: "Sire's Son", places: 2, shows: 3, starts: 4, umaban: 1, wins: 1 },
+    { category: "damSire", name: "Dam Sire", places: 1, shows: 1, starts: 1, umaban: 3, wins: 1 },
+    { category: "sire", name: "Sire's Son", places: 2, shows: 3, starts: 4, umaban: 3, wins: 1 },
+  ]);
+  expect(aggregateLiteralBloodlineRows([dayEntry], [])).toStrictEqual([
+    { category: "damSire", name: "Dam Sire", places: 0, shows: 0, starts: 0, umaban: 3, wins: 0 },
+    { category: "sire", name: "Sire's Son", places: 0, shows: 0, starts: 0, umaban: 3, wins: 0 },
+  ]);
+});
+
+it("reproduces the current_entries bloodline answer from the literal IN-list query in DuckDB", async () => {
+  const filters: WinRateHeatmapStatsFilters = {
+    ...jraFilters,
+    includeDistance: false,
+    includeSurface: false,
+    includeTurn: false,
+  };
+  const db = await DuckDBInstance.create(":memory:");
+  const connection = await db.connect();
+  const pedigreeColumns: string = ["01", "02", "03", "05", "07", "09", "11", "13"]
+    .map((n) => `ketto_joho_${n}b VARCHAR`)
+    .join(", ");
+  try {
+    await connection.run(`CREATE SCHEMA pc_keiba;
+      CREATE MACRO btrim(v) AS trim(v);
+      CREATE MACRO regexp_match(v,p) AS CASE WHEN regexp_matches(v,p) THEN [v] ELSE NULL END;
+      CREATE TABLE pc_keiba.jvd_ra AS SELECT y AS kaisai_nen, '0715' AS kaisai_tsukihi,
+        '05' AS keibajo_code, '01' AS race_bango, 'Race' AS kyosomei_hondai,
+        '11' AS track_code, ' ' AS grade_code, '13' AS kyoso_shubetsu_code,
+        '005' AS kyoso_joken_code, '' AS kyoso_joken_meisho, '1600' AS kyori, '8' AS shusso_tosu
+        FROM (VALUES ('2024'), ('2025'), ('2026')) t(y);
+      CREATE TABLE pc_keiba.jvd_se AS SELECT y AS kaisai_nen, '0715' AS kaisai_tsukihi,
+        '05' AS keibajo_code, '01' AS race_bango, num AS umaban,
+        ketto AS ketto_toroku_bango, rank AS kakutei_chakujun, code AS ijo_kubun_code,
+        'Jockey' AS kishumei_ryakusho, 'Trainer' AS chokyoshimei_ryakusho,
+        '500' AS bataiju, '560' AS futan_juryo, '01' AS wakuban, '01' AS tansho_ninkijun,
+        '+' AS zogen_fugo, '002' AS zogen_sa, 'Horse' AS bamei, 'Owner' AS banushimei,
+        '345' AS kohan_3f, '1340' AS soha_time, '50' AS tansho_odds
+        FROM (VALUES
+          ('2026','01','K1','00','0'), ('2026','02','K2','00','0'), ('2026','03','K3','00','0'),
+          ('2025','01','H1','01','0'), ('2025','02','H2','03','0'), ('2025','03','H3','02','0'),
+          ('2025','04','H4','00','4'), ('2025','05','K1','01','0'), ('2024','01','H5','02','0')
+        ) t(y,num,ketto,rank,code);
+      CREATE TABLE pc_keiba.jvd_um (ketto_toroku_bango VARCHAR, ${pedigreeColumns});
+      CREATE TABLE pc_keiba.nvd_um (ketto_toroku_bango VARCHAR, ${pedigreeColumns});
+      CREATE TABLE pc_keiba.nvd_nu (ketto_toroku_bango VARCHAR, ${pedigreeColumns});
+      INSERT INTO pc_keiba.jvd_um (ketto_toroku_bango, ketto_joho_01b, ketto_joho_05b) VALUES
+        ('K1', 'Sire''s Son', 'Dam Sire'), ('K2', 'Other Sire', NULL), ('K3', 'Sire''s Son', NULL),
+        ('H1', 'Sire''s Son', NULL), ('H2', 'Other Sire', NULL), ('H3', 'Nobody', 'Dam Sire'),
+        ('H4', 'Sire''s Son', NULL), ('H5', 'Sire''s Son', 'Dam Sire');`);
+    const original = (
+      await connection.runAndReadAll(buildWinRateHeatmapBloodlineQuery(config, filters))
+    ).getRowObjectsJson();
+    const entries = (
+      await connection.runAndReadAll(buildWinRateHeatmapDayKnownBloodlineQuery(config, filters))
+    )
+      .getRowObjectsJson()
+      .map(normaliseDayBloodlineRow);
+    const literal = aggregateLiteralBloodlineRows(
+      entries,
+      (
+        await connection.runAndReadAll(
+          buildWinRateHeatmapLiteralBloodlineQuery(config, filters, entries),
+        )
+      ).getRowObjectsJson(),
+    );
+    expect(
+      literal.map((r) => [r.umaban, r.category, r.name, r.starts, r.wins, r.places, r.shows]),
+    ).toStrictEqual(
+      original.map((r) => [
+        Number(r.umaban),
+        r.category,
+        r.name,
+        Number(r.starts),
+        Number(r.wins),
+        Number(r.places),
+        Number(r.shows),
+      ]),
+    );
+    expect(literal.length).toBe(4);
+    expect(literal.some((r) => Number(r.starts) > 0)).toBe(true);
+  } finally {
+    connection.closeSync();
+    db.closeSync();
+  }
 });
 
 it("keeps current-profile (Arc) races on the per-race pedigree count", () => {

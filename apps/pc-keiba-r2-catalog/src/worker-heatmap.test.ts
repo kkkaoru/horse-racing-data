@@ -83,7 +83,16 @@ const createHeatmapHarness = () => {
       return Response.json({ result: { rows: [{ known: 1 }] }, success: true });
     }
     queryBodies.push(query);
-    fetchCalls.push(query.includes("'sire' AS category") ? "bloodline" : "similar");
+    const literalBloodline: boolean = query.includes("END AS b0");
+    fetchCalls.push(
+      query.includes("'sire' AS category") || literalBloodline ? "bloodline" : "similar",
+    );
+    if (literalBloodline) {
+      return Response.json({
+        result: { rows: [{ b0: "Sire's Son", places: 2, shows: 2, starts: 3, wins: 1 }] },
+        success: true,
+      });
+    }
     if (query.includes("'sire' AS category")) {
       return Response.json({ result: { rows: [bloodlineSqlRow] }, success: true });
     }
@@ -871,15 +880,21 @@ const dayRunner = (umaban: number, sire: string): Record<string, unknown> => ({
   umaban,
 });
 
-it("inlines the cached day's named runners and skips the per-race pedigree count", async () => {
+it("queries the cached day's named runners as IN-lists and skips the per-race pedigree count", async () => {
   const harness = createHeatmapHarness();
   harness.kvEntries.set(DAY_KNOWN_KEY, JSON.stringify({ "07:08": [dayRunner(7, "Sire's Son")] }));
   const response = await handleRequest(new Request(heatmapUrl), harness.env, harness.dependencies);
   expect(response.status).toBe(200);
   expect(harness.knownCountQueries).toStrictEqual([]);
   expect(harness.fetchCalls.toSorted()).toStrictEqual(["bloodline", "similar"]);
-  const bloodline = harness.queryBodies.find((query) => query.includes("'sire' AS category"));
-  expect(bloodline).toMatch("(7, '2020000007', 'Sire''s Son', '不明'");
+  const bloodline = harness.queryBodies.find((query) => query.includes("END AS b0"));
+  expect(bloodline).toMatch("IN ('Sire''s Son')");
+  expect(bloodline).toMatch("se.ketto_toroku_bango NOT IN ('2020000007')");
+  expect(bloodline).not.toMatch("current_entries");
+  const body = (await response.json()) as { bloodlineRows: Record<string, unknown>[] };
+  expect(body.bloodlineRows.map((row) => [row.umaban, row.category, row.starts])).toStrictEqual([
+    [7, "sire", 3],
+  ]);
   expect(bloodline).not.toMatch(
     "WHERE se.kaisai_nen = '2026'\n    AND se.kaisai_tsukihi = '0822'\n    AND se.keibajo_code = '07'",
   );

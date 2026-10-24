@@ -99,8 +99,10 @@ import {
   normaliseConditionHistoryStatsPayload,
 } from "./condition-history-stats";
 import {
+  aggregateLiteralBloodlineRows,
   buildWinRateHeatmapBloodlineQuery,
   buildWinRateHeatmapDayKnownBloodlineQuery,
+  buildWinRateHeatmapLiteralBloodlineQuery,
   buildWinRateHeatmapKnownBloodlineCountQuery,
   dayKnownBloodlineKey,
   encodeDayBloodlineEntry,
@@ -677,8 +679,8 @@ const loadDayBloodlineEntries = async (
   return decodeDayBloodlines(body).get(raceKey) ?? [];
 };
 
-// Runners with known names come from the day snapshot and are inlined into
-// the bloodline query, so no per-race count is needed. No names, a missing
+// Runners with known names come from the day snapshot and go into the
+// bloodline query as literal IN-lists, so no per-race count is needed. No names, a missing
 // race or a failed day read keeps the live current_entries query and races it
 // against the per-race count, so only a fresh count can short-circuit the
 // bloodline answer to [].
@@ -704,13 +706,20 @@ const loadHeatmapBloodlineRows = async (
   filters: WinRateHeatmapStatsFilters,
 ): Promise<Record<string, unknown>[]> => {
   const entries = await dayBloodlineEntries(env, dependencies, filters);
+  if (entries !== undefined) {
+    const groups = await executeR2Sql(
+      env,
+      buildWinRateHeatmapLiteralBloodlineQuery(env, filters, entries),
+      withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+    );
+    return aggregateLiteralBloodlineRows(entries, groups);
+  }
   const cancel = new AbortController();
   const bloodline = executeR2Sql(
     env,
-    buildWinRateHeatmapBloodlineQuery(env, filters, entries),
+    buildWinRateHeatmapBloodlineQuery(env, filters),
     withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS, cancel.signal),
   );
-  if (entries !== undefined) return bloodline;
   const noKnownNames = executeR2Sql(
     env,
     buildWinRateHeatmapKnownBloodlineCountQuery(env, filters),
