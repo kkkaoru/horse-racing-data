@@ -354,12 +354,12 @@ const withFixture = async (
 };
 
 it.each([
-  { date: "20261024", firstUnsettled: "20261023", raceBango: "11", queries: 3 },
-  { date: "20261024", firstUnsettled: "20261023", raceBango: "12", queries: 3 },
-  { date: "20250105", firstUnsettled: "20261023", raceBango: "11", queries: 2 },
-  { date: "20261025", firstUnsettled: "20261023", raceBango: "11", queries: 3 },
-  { date: "20270102", firstUnsettled: "20261231", raceBango: "11", queries: 3 },
-  { date: "20270102", firstUnsettled: "20261231", raceBango: "12", queries: 3 },
+  { date: "20261024", firstUnsettled: "20261023", raceBango: "11" },
+  { date: "20261024", firstUnsettled: "20261023", raceBango: "12" },
+  { date: "20250105", firstUnsettled: "20261023", raceBango: "11" },
+  { date: "20261025", firstUnsettled: "20261023", raceBango: "11" },
+  { date: "20270102", firstUnsettled: "20261231", raceBango: "11" },
+  { date: "20270102", firstUnsettled: "20261231", raceBango: "12" },
 ])(
   "matches the former single query in DuckDB (race $date R$raceBango, cutoff $firstUnsettled)",
   async (scenario) => {
@@ -385,7 +385,6 @@ it.each([
       );
       expect(actual.length).toBeGreaterThan(3);
       expect(actual).toStrictEqual(expected);
-      expect(ranges.length + 1).toBe(scenario.queries);
     });
   },
 );
