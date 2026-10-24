@@ -257,8 +257,9 @@ export const handleUpsertOddsFetchState = async (env: Env, request: Request): Pr
     return jsonResponse({ error: "unauthorized" }, { status: 401 });
   }
   const body = (await request.json()) as OddsFetchStateUpsertInput;
-  await upsertOddsFetchState(env.REALTIME_HOT_DB, body);
-  await invalidateRaceListInKv(env, body.source, `${body.kaisaiNen}${body.kaisaiTsukihi}`);
+  if (await upsertOddsFetchState(env.REALTIME_HOT_DB, body)) {
+    await invalidateRaceListInKv(env, body.source, `${body.kaisaiNen}${body.kaisaiTsukihi}`);
+  }
   return jsonResponse({ ok: true });
 };
 

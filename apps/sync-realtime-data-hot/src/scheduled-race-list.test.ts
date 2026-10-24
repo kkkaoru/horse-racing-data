@@ -951,6 +951,46 @@ it("populateTodayOddsFetchState upserts each row into D1 and invalidates race-li
   expect(vi.mocked(env.ODDS_HOT_KV.delete)).toHaveBeenCalledWith("odds:race-list:v1:jra:20260529");
 });
 
+it("populateTodayOddsFetchState only invalidates race lists whose rows changed", async () => {
+  const query = vi.fn().mockResolvedValue({
+    rows: [
+      {
+        hasso_jikoku: "1015",
+        kaisai_kai: null,
+        kaisai_nen: "2026",
+        kaisai_nichime: null,
+        kaisai_tsukihi: "0529",
+        keibajo_code: "30",
+        race_bango: "08",
+        source: "nar",
+      },
+      {
+        hasso_jikoku: "1430",
+        kaisai_kai: "3",
+        kaisai_nen: "2026",
+        kaisai_nichime: "8",
+        kaisai_tsukihi: "0529",
+        keibajo_code: "08",
+        race_bango: "01",
+        source: "jra",
+      },
+    ],
+  });
+  const upsertRun = vi
+    .fn()
+    .mockResolvedValueOnce({ meta: { changes: 0 } })
+    .mockResolvedValueOnce({ meta: { changes: 1 } });
+  const env = { ...buildEnv(), REALTIME_HOT_DB: buildDb(upsertRun) } as unknown as Env;
+  const result = await populateTodayOddsFetchState(env, new Date("2026-05-28T20:55:00Z"), {
+    pool: { query } as never,
+    resolveNarDebaUrl: async () =>
+      "https://www.keiba.go.jp/KeibaWeb/TodayRaceInfo/DebaTable?k_raceDate=2026%2F05%2F29&k_raceNo=8&k_babaCode=30",
+  });
+  expect(result).toStrictEqual({ inserted: 2, total: 2 });
+  expect(vi.mocked(env.ODDS_HOT_KV.delete)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(env.ODDS_HOT_KV.delete)).toHaveBeenCalledWith("odds:race-list:v1:jra:20260529");
+});
+
 it("populateTodayOddsFetchState returns zero when Hyperdrive yields no rows", async () => {
   const query = vi.fn().mockResolvedValue({ rows: [] });
   const env = buildEnv();

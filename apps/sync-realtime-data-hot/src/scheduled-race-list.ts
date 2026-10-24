@@ -572,7 +572,7 @@ const populateOddsFetchStateForDate = async (
     resolveJraOverseasRace: context.resolveJraOverseasRace,
     resolveNarDebaUrl: context.resolveNarDebaUrl,
   });
-  await Promise.all(
+  const changed = await Promise.all(
     rows.map((row) =>
       upsertOddsFetchState(env.REALTIME_HOT_DB, {
         debaUrl: row.debaUrl,
@@ -588,7 +588,7 @@ const populateOddsFetchStateForDate = async (
     ),
   );
   await Promise.all(
-    collectInvalidationTargets(rows).map((target) =>
+    collectInvalidationTargets(rows.filter((_, index) => changed[index])).map((target) =>
       invalidateRaceListInKv(env, target.source, target.yyyymmdd),
     ),
   );

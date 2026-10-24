@@ -136,11 +136,13 @@ export const toOddsTrendsByType = (
 export const upsertOddsFetchState = async (
   db: D1Database,
   input: OddsFetchStateUpsertInput,
-): Promise<void> => {
+): Promise<boolean> => {
   const now = toJstIsoString();
-  await db
+  // The `where` makes an identical re-forward a no-op (changes = 0) so callers
+  // can skip invalidating the race-list KV cache when nothing changed.
+  const result = await db
     .prepare(
-      `insert into odds_fetch_state (race_key, source, race_start_at_jst, deba_url, odds_links_json, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(race_key) do update set source = excluded.source, race_start_at_jst = excluded.race_start_at_jst, deba_url = excluded.deba_url, odds_links_json = excluded.odds_links_json, kaisai_nen = excluded.kaisai_nen, kaisai_tsukihi = excluded.kaisai_tsukihi, keibajo_code = excluded.keibajo_code, race_bango = excluded.race_bango, updated_at = excluded.updated_at`,
+      `insert into odds_fetch_state (race_key, source, race_start_at_jst, deba_url, odds_links_json, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) on conflict(race_key) do update set source = excluded.source, race_start_at_jst = excluded.race_start_at_jst, deba_url = excluded.deba_url, odds_links_json = excluded.odds_links_json, kaisai_nen = excluded.kaisai_nen, kaisai_tsukihi = excluded.kaisai_tsukihi, keibajo_code = excluded.keibajo_code, race_bango = excluded.race_bango, updated_at = excluded.updated_at where odds_fetch_state.source is not excluded.source or odds_fetch_state.race_start_at_jst is not excluded.race_start_at_jst or odds_fetch_state.deba_url is not excluded.deba_url or odds_fetch_state.odds_links_json is not excluded.odds_links_json or odds_fetch_state.kaisai_nen is not excluded.kaisai_nen or odds_fetch_state.kaisai_tsukihi is not excluded.kaisai_tsukihi or odds_fetch_state.keibajo_code is not excluded.keibajo_code or odds_fetch_state.race_bango is not excluded.race_bango`,
     )
     .bind(
       input.raceKey,
@@ -155,6 +157,7 @@ export const upsertOddsFetchState = async (
       now,
     )
     .run();
+  return result.meta.changes > 0;
 };
 
 export const getOddsFetchState = async (

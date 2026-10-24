@@ -1,5 +1,6 @@
 // Run with bun.
 import { afterEach, expect, it, vi } from "vitest";
+import type { OddsFetchStateUpsertInput } from "./types";
 
 import {
   claimOddsFetch,
@@ -161,6 +162,27 @@ it("upsertOddsFetchState binds all columns", async () => {
   });
   expect(prepare).toHaveBeenCalledTimes(1);
   expect(run).toHaveBeenCalledTimes(1);
+});
+
+it("upsertOddsFetchState reports whether D1 changed the row", async () => {
+  const run = vi
+    .fn()
+    .mockResolvedValueOnce({ meta: { changes: 1 } })
+    .mockResolvedValueOnce({ meta: { changes: 0 } });
+  const db = { prepare: vi.fn(() => ({ bind: vi.fn(() => ({ run })) })) } as unknown as D1Database;
+  const input: OddsFetchStateUpsertInput = {
+    debaUrl: "https://example.com",
+    kaisaiNen: "2026",
+    kaisaiTsukihi: "0528",
+    keibajoCode: "42",
+    oddsLinksJson: "{}",
+    raceBango: "01",
+    raceKey: "nar:20260528:42:01",
+    raceStartAtJst: "2026-05-28T10:00:00+09:00",
+    source: "nar",
+  };
+  expect(await upsertOddsFetchState(db, input)).toBe(true);
+  expect(await upsertOddsFetchState(db, input)).toBe(false);
 });
 
 it("getOddsFetchState returns null when row missing", async () => {

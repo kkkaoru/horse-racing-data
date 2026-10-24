@@ -630,6 +630,32 @@ it("handleUpsertOddsFetchState writes state and invalidates KV list", async () =
   expect(vi.mocked(env.ODDS_HOT_KV.delete)).toHaveBeenCalledWith("odds:race-list:v1:nar:20260528");
 });
 
+it("handleUpsertOddsFetchState keeps the KV race list when the row is unchanged", async () => {
+  const env = buildEnv({
+    REALTIME_HOT_DB: buildDb({ upsertRun: vi.fn(async () => ({ meta: { changes: 0 } })) }),
+  });
+  const response = await handleUpsertOddsFetchState(
+    env,
+    new Request("https://x/api/internal/odds-fetch-state", {
+      body: JSON.stringify({
+        debaUrl: "https://example.com",
+        kaisaiNen: "2026",
+        kaisaiTsukihi: "0528",
+        keibajoCode: "42",
+        oddsLinksJson: "{}",
+        raceBango: "01",
+        raceKey: "nar:20260528:42:01",
+        raceStartAtJst: "2026-05-28T10:00:00+09:00",
+        source: "nar",
+      }),
+      headers: { "x-pc-keiba-internal-token": "secret" },
+      method: "POST",
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(vi.mocked(env.ODDS_HOT_KV.delete)).not.toHaveBeenCalled();
+});
+
 it("handleImportOddsChunk returns 401 when unauthorized", async () => {
   const response = await handleImportOddsChunk(
     buildEnv(),
