@@ -60,7 +60,6 @@ import {
 import { pickUpFocusedFullCache } from "./focused-full-cache-pickup";
 import {
   buildFocusedFullStatusUrl as buildWatchStatusUrl,
-  FOCUSED_FULL_WATCH_BACKUP_SECONDS,
   FOCUSED_FULL_WATCH_POLL_SECONDS,
   FOCUSED_FULL_WATCH_PROGRESS_STALE_MS,
   pollFocusedFullWatchTick,
@@ -3492,14 +3491,10 @@ export const consumeFocusedFullCompletion = async (
     staleAfterMs: FOCUSED_FULL_TERMINAL_CLAIM_STALE_MS,
     watchId: message.body.watchId,
   });
+  // Re-delivery of a non-terminal watch belongs to the coordinator alarm alone
+  // (it revives the stored watch once its chain goes silent). Re-sending from
+  // here as well forked a new perpetual chain per alarm tick and per retry.
   if (!claim.proceed) {
-    if (claim.state !== "terminal") {
-      await sendFocusedFullWatchMessageDurably(
-        env,
-        message.body,
-        FOCUSED_FULL_WATCH_BACKUP_SECONDS,
-      );
-    }
     message.ack();
     return;
   }
@@ -3512,15 +3507,6 @@ export const consumeFocusedFullCompletion = async (
     });
     message.ack();
     return;
-  }
-  try {
-    await sendFocusedFullWatchMessageDurably(env, message.body, FOCUSED_FULL_WATCH_BACKUP_SECONDS);
-  } catch (error) {
-    console.error(
-      `[predict-queue] focused-full terminal watchdog enqueue failed watchId=${message.body.watchId}:`,
-      String(error),
-    );
-    throw error;
   }
   const decision: DeferredMessageDecision = { acknowledged: false, retried: false };
   const predictMessage = makeDeferredPredictMessage(message, decision);

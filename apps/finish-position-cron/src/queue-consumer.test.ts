@@ -5094,16 +5094,15 @@ test("leaves a running tick lease-touch failure unacked and does not create a su
   expect(retryMock).not.toHaveBeenCalled();
 });
 
-test("durably schedules a terminal watchdog before a persistent finalizer failure", async () => {
+test("leaves a persistent finalizer failure to Queue retry without forking a watchdog", async () => {
   completeFocusedFullRaceMock.mockRejectedValueOnce(new Error("coordinator unavailable"));
 
   await expect(
     handleQueue(makeFocusedFullCompletionBatch([makeFocusedFullCompletionMessage()]), makeEnv()),
   ).rejects.toThrow("coordinator unavailable");
 
-  expect(watchSendMock).toHaveBeenCalledWith(expect.objectContaining({ watchId: "watch-1" }), {
-    delaySeconds: 150,
-  });
+  expect(watchSendMock).not.toHaveBeenCalled();
+  expect(registerFocusedFullWatchOutboxMock).not.toHaveBeenCalled();
   expect(completeFocusedFullTerminalWatchMock).not.toHaveBeenCalled();
   expect(ackMock).not.toHaveBeenCalled();
   expect(retryMock).not.toHaveBeenCalled();
@@ -5233,7 +5232,7 @@ test("stops a watched success before repairing its missing cache", async () => {
   expect(ackMock).toHaveBeenCalledTimes(1);
 });
 
-test("keeps the watchdog alive when synchronous stop or slot clear fails", async () => {
+test("leaves the watch non-terminal when synchronous stop or slot clear fails", async () => {
   stubFetchMock.mockResolvedValueOnce(Response.json({ found: true }));
   consumeContainerStopMock.mockRejectedValueOnce(new Error("stop unavailable"));
 
@@ -5241,9 +5240,7 @@ test("keeps the watchdog alive when synchronous stop or slot clear fails", async
     handleQueue(makeFocusedFullCompletionBatch([makeFocusedFullCompletionMessage()]), makeEnv()),
   ).rejects.toThrow("stop unavailable");
 
-  expect(watchSendMock).toHaveBeenCalledWith(expect.objectContaining({ watchId: "watch-1" }), {
-    delaySeconds: 150,
-  });
+  expect(watchSendMock).not.toHaveBeenCalled();
   expect(completeFocusedFullTerminalWatchMock).not.toHaveBeenCalled();
   expect(ackMock).not.toHaveBeenCalled();
 });
@@ -5303,15 +5300,14 @@ test("acks a duplicate terminal watch that the coordinator already completed", a
   expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
 });
 
-test("continues the watchdog chain for a concurrent terminal delivery without Queue retry", async () => {
+test("acks a concurrent terminal delivery without re-sending it", async () => {
   claimFocusedFullTerminalWatchMock.mockResolvedValueOnce({ proceed: false, state: "processing" });
   await handleQueue(
     makeFocusedFullCompletionBatch([makeFocusedFullCompletionMessage()]),
     makeEnv(),
   );
-  expect(watchSendMock).toHaveBeenCalledWith(expect.objectContaining({ watchId: "watch-1" }), {
-    delaySeconds: 150,
-  });
+  expect(watchSendMock).not.toHaveBeenCalled();
+  expect(registerFocusedFullWatchOutboxMock).not.toHaveBeenCalled();
   expect(retryMock).not.toHaveBeenCalled();
   expect(ackMock).toHaveBeenCalledOnce();
   expect(completeFocusedFullRaceMock).not.toHaveBeenCalled();
