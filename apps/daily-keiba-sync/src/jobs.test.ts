@@ -595,6 +595,7 @@ describe("sync queue jobs", () => {
               headers: {
                 "X-NV-Link-Failure-Stage": "file-list",
                 "X-NV-Link-Upstream-Status": "503",
+                "X-NV-Link-Socket-Parse": "limit:200",
               },
             },
           ),
@@ -615,7 +616,7 @@ describe("sync queue jobs", () => {
         now,
       ),
     ).rejects.toThrow(
-      "Source acquisition failed status=502 X-NV-Link-Failure-Stage=file-list X-NV-Link-Upstream-Status=503",
+      "Source acquisition failed status=502 X-NV-Link-Failure-Stage=file-list X-NV-Link-Upstream-Status=503 X-NV-Link-Socket-Parse=limit:200",
     );
     const emptyBody: Env = {
       ...baseEnv,

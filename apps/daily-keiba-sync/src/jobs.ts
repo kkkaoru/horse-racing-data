@@ -69,6 +69,7 @@ const SOURCE_FAILURE_HEADERS: readonly string[] = [
   "X-NV-Link-Upstream-Status",
   "X-NV-Link-Socket-Stage",
   "X-NV-Link-Socket-Bytes",
+  "X-NV-Link-Socket-Parse",
 ];
 // pipeline-health-monitor alerts when a provider's scheduled sync stops succeeding.
 export const providerSyncHealthKey = (provider: Provider): string =>

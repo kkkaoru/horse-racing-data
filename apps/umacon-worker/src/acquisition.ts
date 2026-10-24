@@ -9,7 +9,12 @@ import {
   type CoreFileListEntry,
   type CoreHttpRequest,
 } from "./rust-core";
-import { socketFetch, SocketFallbackError, type SocketFailureStage } from "./socket-fetch";
+import {
+  socketFetch,
+  SocketFallbackError,
+  type SocketFailureStage,
+  type SocketParseError,
+} from "./socket-fetch";
 
 export interface AcquisitionQuery {
   dataSpec: string;
@@ -40,6 +45,7 @@ export type AcquisitionStage =
 
 export class AcquisitionError extends Error {
   readonly socketBytes?: number;
+  readonly socketParse?: SocketParseError;
   readonly socketStage?: SocketFailureStage;
   readonly stage: AcquisitionStage;
   readonly upstreamStatus?: number;
@@ -49,10 +55,12 @@ export class AcquisitionError extends Error {
     upstreamStatus?: number,
     socketStage?: SocketFailureStage,
     socketBytes?: number,
+    socketParse?: SocketParseError,
   ) {
     super("NV-Link acquisition stage failed");
     this.name = "AcquisitionError";
     this.socketBytes = socketBytes;
+    this.socketParse = socketParse;
     this.socketStage = socketStage;
     this.stage = stage;
     this.upstreamStatus = upstreamStatus;
@@ -91,6 +99,7 @@ const atStage = async <T>(stage: AcquisitionStage, operation: () => T | Promise<
       error instanceof UpstreamHttpError ? error.status : undefined,
       error instanceof SocketFallbackError ? error.stage : undefined,
       error instanceof SocketFallbackError ? error.bytesRead : undefined,
+      error instanceof SocketFallbackError ? error.parse : undefined,
     );
   }
 };

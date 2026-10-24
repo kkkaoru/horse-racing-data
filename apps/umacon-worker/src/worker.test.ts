@@ -1,6 +1,7 @@
 // Run with bun.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AcquisitionError } from "./acquisition";
+import { SocketParseError } from "./socket-fetch";
 import type { ArtifactBucket, CompatibilityAttestation } from "./compatibility-attestation";
 import type { Env } from "./worker";
 
@@ -143,6 +144,37 @@ describe("UmaConn Worker router", () => {
     expect(response.headers.get("X-NV-Link-Upstream-Status")).toBe("403");
     expect(response.headers.get("X-NV-Link-Socket-Stage")).toBe("connect");
     expect(response.headers.get("X-NV-Link-Socket-Bytes")).toBe("123");
+  });
+
+  it("reports the socket parse failure class with and without a status", async () => {
+    mocks.stream.mockRejectedValueOnce(
+      new AcquisitionError(
+        "license-fetch",
+        undefined,
+        "parse",
+        1409,
+        new SocketParseError("limit", 200),
+      ),
+    );
+    const limited = await worker.fetch(
+      authorized("/acquire/stream", {
+        body: JSON.stringify({ dataSpec: "RACE", fromTime: "20260902000000", option: 1 }),
+        method: "POST",
+      }),
+      env,
+    );
+    expect(limited.headers.get("X-NV-Link-Socket-Parse")).toBe("limit:200");
+    mocks.stream.mockRejectedValueOnce(
+      new AcquisitionError("license-fetch", undefined, "parse", 3, new SocketParseError("framing")),
+    );
+    const framing = await worker.fetch(
+      authorized("/acquire/stream", {
+        body: JSON.stringify({ dataSpec: "RACE", fromTime: "20260902000000", option: 1 }),
+        method: "POST",
+      }),
+      env,
+    );
+    expect(framing.headers.get("X-NV-Link-Socket-Parse")).toBe("framing");
   });
 
   it("omits unavailable upstream diagnostics", async () => {

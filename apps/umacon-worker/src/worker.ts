@@ -87,6 +87,11 @@ export default {
           headers.set("X-NV-Link-Socket-Stage", error.socketStage);
         if (error.socketBytes !== undefined)
           headers.set("X-NV-Link-Socket-Bytes", String(error.socketBytes));
+        if (error.socketParse !== undefined)
+          headers.set(
+            "X-NV-Link-Socket-Parse",
+            `${error.socketParse.reason}${error.socketParse.status === undefined ? "" : `:${error.socketParse.status}`}`,
+          );
       }
       return Response.json({ error: "NV-Link acquisition failed" }, { headers, status: 502 });
     }

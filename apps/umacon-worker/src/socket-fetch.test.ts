@@ -31,6 +31,39 @@ describe("legacy origin socket HTTP", () => {
     expect(() => parseSocketHttpResponse(value, 8)).toThrow();
   });
 
+  it("classifies parse failures without exposing the body", () => {
+    expect(() => parseSocketHttpResponse(wire("Content-Length: 9", "123456789"), 8)).toThrow(
+      expect.objectContaining({ reason: "limit", status: 200 }),
+    );
+    expect(() => parseSocketHttpResponse(wire("Content-Length: 3", "OK"), 8)).toThrow(
+      expect.objectContaining({ reason: "content-length", status: 200 }),
+    );
+    expect(() => parseSocketHttpResponse(bytes("bad"), 8)).toThrow(
+      expect.objectContaining({ reason: "framing" }),
+    );
+    expect(() => parseSocketHttpResponse(wire("Transfer-Encoding: chunked", "x\r\n"), 8)).toThrow(
+      expect.objectContaining({ reason: "chunked" }),
+    );
+  });
+
+  it("carries the parse failure class on a socket fallback error", async () => {
+    const connector: SocketConnector = () => ({
+      close: async (): Promise<void> => undefined,
+      readable: new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            bytes("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 9\r\n\r\n123456789"),
+          );
+          controller.close();
+        },
+      }),
+      writable: new WritableStream<Uint8Array>(),
+    });
+    await expect(
+      socketFetch({ url: "https://example.test/x", userAgent: "test" }, 8, connector),
+    ).rejects.toMatchObject({ stage: "parse", parse: { reason: "limit", status: 503 } });
+  });
+
   it("sends a credential-contained target only through the socket", async () => {
     let requestBytes: Uint8Array = new Uint8Array();
     const close = vi.fn(async (): Promise<void> => undefined);

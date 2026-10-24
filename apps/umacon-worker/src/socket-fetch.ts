@@ -11,14 +11,31 @@ interface SocketLike {
 
 export type SocketFailureStage = "connect" | "write" | "read" | "parse";
 
+export type SocketParseReason = "framing" | "chunked" | "limit" | "content-length";
+
+// Carries only the failure class and status code, never response bytes (README).
+export class SocketParseError extends Error {
+  readonly reason: SocketParseReason;
+  readonly status?: number;
+
+  constructor(reason: SocketParseReason, status?: number) {
+    super("Socket HTTP response could not be parsed");
+    this.name = "SocketParseError";
+    this.reason = reason;
+    this.status = status;
+  }
+}
+
 export class SocketFallbackError extends Error {
   readonly bytesRead?: number;
+  readonly parse?: SocketParseError;
   readonly stage: SocketFailureStage;
 
-  constructor(stage: SocketFailureStage, bytesRead?: number) {
+  constructor(stage: SocketFailureStage, bytesRead?: number, parse?: SocketParseError) {
     super("Socket HTTP fallback failed");
     this.name = "SocketFallbackError";
     this.bytesRead = bytesRead;
+    this.parse = parse;
     this.stage = stage;
   }
 }
@@ -55,20 +72,19 @@ const decodeChunked = (bytes: Uint8Array, maxBytes: number): Uint8Array<ArrayBuf
   let offset: number = 0;
   while (true) {
     const lineEnd: number = indexOf(bytes, new Uint8Array([13, 10]), offset);
-    if (lineEnd < 0) throw new Error("Invalid chunked HTTP response");
+    if (lineEnd < 0) throw new SocketParseError("chunked");
     const sizeText: string =
       new TextDecoder().decode(bytes.slice(offset, lineEnd)).split(";", 1)[0] ?? "";
-    if (!/^[0-9a-fA-F]+$/.test(sizeText)) throw new Error("Invalid chunked HTTP response");
+    if (!/^[0-9a-fA-F]+$/.test(sizeText)) throw new SocketParseError("chunked");
     const size: number = Number.parseInt(sizeText, 16);
     offset = lineEnd + 2;
     if (size === 0) break;
     if (outputSize + size > maxBytes || offset + size + 2 > bytes.length)
-      throw new Error("Socket HTTP response exceeded its limit");
+      throw new SocketParseError("limit");
     chunks.push(bytes.slice(offset, offset + size));
     outputSize += size;
     offset += size;
-    if (bytes[offset] !== 13 || bytes[offset + 1] !== 10)
-      throw new Error("Invalid chunked HTTP response");
+    if (bytes[offset] !== 13 || bytes[offset + 1] !== 10) throw new SocketParseError("chunked");
     offset += 2;
   }
   return concatenate(chunks, outputSize);
@@ -76,17 +92,17 @@ const decodeChunked = (bytes: Uint8Array, maxBytes: number): Uint8Array<ArrayBuf
 
 export const parseSocketHttpResponse = (wire: Uint8Array, maxBytes: number): Response => {
   const headerEnd: number = indexOf(wire, HEADER_END);
-  if (headerEnd < 0 || headerEnd > MAX_HEADER_BYTES)
-    throw new Error("Invalid socket HTTP response");
+  if (headerEnd < 0 || headerEnd > MAX_HEADER_BYTES) throw new SocketParseError("framing");
   const headerText: string = new TextDecoder().decode(wire.slice(0, headerEnd));
   const lines: string[] = headerText.split(CRLF);
   const statusMatch: RegExpMatchArray | null =
     lines.shift()?.match(/^HTTP\/1\.[01] ([1-5][0-9]{2})(?: |$)/) ?? null;
-  if (statusMatch === null) throw new Error("Invalid socket HTTP response");
+  if (statusMatch === null) throw new SocketParseError("framing");
+  const status: number = Number(statusMatch[1]);
   const headers: Headers = new Headers();
   for (const line of lines) {
     const separator: number = line.indexOf(":");
-    if (separator < 1) throw new Error("Invalid socket HTTP response");
+    if (separator < 1) throw new SocketParseError("framing", status);
     headers.append(line.slice(0, separator).trim(), line.slice(separator + 1).trim());
   }
   const encodedBody: Uint8Array = wire.slice(headerEnd + HEADER_END.length);
@@ -94,11 +110,11 @@ export const parseSocketHttpResponse = (wire: Uint8Array, maxBytes: number): Res
     headers.get("Transfer-Encoding")?.toLowerCase() === "chunked"
       ? decodeChunked(encodedBody, maxBytes)
       : concatenate([encodedBody], encodedBody.length);
-  if (body.length > maxBytes) throw new Error("Socket HTTP response exceeded its limit");
+  if (body.length > maxBytes) throw new SocketParseError("limit", status);
   const declared: string | null = headers.get("Content-Length");
   if (declared !== null && Number(declared) !== body.length)
-    throw new Error("Invalid socket HTTP content length");
-  return new Response(body.buffer, { headers, status: Number(statusMatch[1]) });
+    throw new SocketParseError("content-length", status);
+  return new Response(body.buffer, { headers, status });
 };
 
 export const socketFetch = async (
@@ -152,7 +168,11 @@ export const socketFetch = async (
   await socket.close();
   try {
     return parseSocketHttpResponse(concatenate(chunks, size), maxBytes);
-  } catch {
-    throw new SocketFallbackError("parse", size);
+  } catch (error: unknown) {
+    throw new SocketFallbackError(
+      "parse",
+      size,
+      error instanceof SocketParseError ? error : undefined,
+    );
   }
 };
