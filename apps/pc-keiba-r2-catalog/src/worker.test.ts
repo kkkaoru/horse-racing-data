@@ -106,8 +106,8 @@ const presetUnnamedDayPedigrees = (
   race: { date: string; keibajoCode: string; raceBango: string; source: "jra" | "nar" },
 ): void => {
   harness.kvEntries.set(
-    `heatmap-day-known-bloodline:v1:${race.source}:${race.date}`,
-    JSON.stringify({ [`${race.keibajoCode}:${race.raceBango}`]: 0 }),
+    `heatmap-day-known-bloodline:v2:${race.source}:${race.date}`,
+    JSON.stringify({ [`${race.keibajoCode}:${race.raceBango}`]: [] }),
   );
 };
 
@@ -1986,10 +1986,10 @@ it("queries R2 SQL for heatmap stats and maps empty details arrays", async () =>
       },
     ],
   });
-  // bloodline, similar, then the known-pedigree count after the cached day read
+  // similar, then bloodline and the known-pedigree count after the cached day read
   expect(harness.fetchCalls).toHaveLength(3);
-  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("ketto_joho_01b");
-  expect(String(harness.fetchCalls[1]?.init?.body)).toMatch("'jockey' AS kind");
+  expect(String(harness.fetchCalls[0]?.init?.body)).toMatch("'jockey' AS kind");
+  expect(String(harness.fetchCalls[1]?.init?.body)).toMatch("ketto_joho_01b");
   expect(String(harness.fetchCalls[2]?.init?.body)).toMatch("SELECT count(*) AS known");
   expect(harness.cacheCalls.puts).toHaveLength(1);
   expect(harness.kvCalls.puts.filter((key) => !key.startsWith("r2sql-result:"))).toHaveLength(1);
@@ -2146,8 +2146,8 @@ it.each(["cache-api", "kv"])(
         return isRecord(body) ? body.query : null;
       }),
     ).toStrictEqual([
-      buildWinRateHeatmapBloodlineQuery(harness.env, filters),
       buildWinRateHeatmapSimilarQuery(harness.env, filters),
+      buildWinRateHeatmapBloodlineQuery(harness.env, filters),
       buildWinRateHeatmapKnownBloodlineCountQuery(harness.env, filters),
     ]);
     expect(harness.cacheCalls.puts).toHaveLength(1);

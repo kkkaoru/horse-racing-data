@@ -34,11 +34,11 @@ const heatmapUrl =
 
 // A cached day that knows this race has no named pedigree keeps the per-race
 // count path these tests exercise; the day-level skip has its own tests.
-const DAY_KNOWN_KEY = "heatmap-day-known-bloodline:v1:jra:20260822";
+const DAY_KNOWN_KEY = "heatmap-day-known-bloodline:v2:jra:20260822";
 
 const createHeatmapHarness = () => {
   const cacheEntries = new Map<string, Response>();
-  const kvEntries = new Map<string, string>([[DAY_KNOWN_KEY, '{"07:08":0}']]);
+  const kvEntries = new Map<string, string>([[DAY_KNOWN_KEY, '{"07:08":[]}']]);
   const fetchCalls: string[] = [];
   const queryBodies: string[] = [];
   const cache: CacheStore = {
@@ -74,6 +74,9 @@ const createHeatmapHarness = () => {
     const parsed: unknown = JSON.parse(text);
     const query = isRecord(parsed) && typeof parsed.query === "string" ? parsed.query : "";
     if (query.includes("SELECT m.race_source"))
+      return Response.json({ success: true, result: { rows: [] } });
+    // The day snapshot query; an empty day keeps the per-race count path.
+    if (query.includes("se.keibajo_code,\n  se.race_bango,"))
       return Response.json({ success: true, result: { rows: [] } });
     if (query.includes("AS known")) {
       knownCountQueries.push(query);
@@ -856,16 +859,33 @@ it("holds the account-wide R2 SQL gate for heatmap queries but not for light rea
   expect(acquire).not.toHaveBeenCalled();
 });
 
-it("skips the per-race pedigree count when the cached day already knows named runners", async () => {
+const dayRunner = (umaban: number, sire: string): Record<string, unknown> => ({
+  damDamSire: "不明",
+  damSire: "不明",
+  damSireSire: "不明",
+  ketto_toroku_bango: `20200000${String(umaban).padStart(2, "0")}`,
+  sire,
+  sireDamSire: "不明",
+  sireSire: "不明",
+  sireSireSire: "不明",
+  umaban,
+});
+
+it("inlines the cached day's named runners and skips the per-race pedigree count", async () => {
   const harness = createHeatmapHarness();
-  harness.kvEntries.set(DAY_KNOWN_KEY, '{"07:08":42}');
+  harness.kvEntries.set(DAY_KNOWN_KEY, JSON.stringify({ "07:08": [dayRunner(7, "Sire's Son")] }));
   const response = await handleRequest(new Request(heatmapUrl), harness.env, harness.dependencies);
   expect(response.status).toBe(200);
   expect(harness.knownCountQueries).toStrictEqual([]);
   expect(harness.fetchCalls.toSorted()).toStrictEqual(["bloodline", "similar"]);
+  const bloodline = harness.queryBodies.find((query) => query.includes("'sire' AS category"));
+  expect(bloodline).toMatch("(7, '2020000007', 'Sire''s Son', '不明'");
+  expect(bloodline).not.toMatch(
+    "WHERE se.kaisai_nen = '2026'\n    AND se.kaisai_tsukihi = '0822'\n    AND se.keibajo_code = '07'",
+  );
 });
 
-it("computes the day's pedigree counts once on a miss and reuses them for later races", async () => {
+it("computes the day's runners once on a miss and reuses them for later races", async () => {
   const harness = createHeatmapHarness();
   harness.kvEntries.delete(DAY_KNOWN_KEY);
   const dayQueries: string[] = [];
@@ -873,13 +893,14 @@ it("computes the day's pedigree counts once on a miss and reuses them for later 
     ...harness.dependencies,
     fetchImpl: async (input, init) => {
       const text = typeof init?.body === "string" ? init.body : "";
-      if (text.includes("GROUP BY keibajo_code, race_bango")) {
+      if (text.includes("se.keibajo_code,\\n  se.race_bango,")) {
         dayQueries.push(text);
         return Response.json({
           result: {
             rows: [
-              { keibajo_code: "07", known: 30, race_bango: "08" },
-              { keibajo_code: "07", known: 0, race_bango: "01" },
+              { ...dayRunner(7, "Sire"), keibajo_code: "07", race_bango: "08" },
+              { ...dayRunner(8, "Other"), keibajo_code: "07", race_bango: "08" },
+              { ...dayRunner(1, "不明"), keibajo_code: "07", race_bango: "01" },
             ],
           },
           success: true,
@@ -893,8 +914,8 @@ it("computes the day's pedigree counts once on a miss and reuses them for later 
   expect(dayQueries.length).toBe(1);
   expect(harness.knownCountQueries).toStrictEqual([]);
   expect(JSON.parse(harness.kvEntries.get(DAY_KNOWN_KEY) ?? "{}")).toStrictEqual({
-    "07:01": 0,
-    "07:08": 30,
+    "07:01": [dayRunner(1, "不明")],
+    "07:08": [dayRunner(7, "Sire"), dayRunner(8, "Other")],
   });
   const other = await handleRequest(
     new Request(heatmapUrl.replace("raceNumber=08", "raceNumber=01")),
@@ -906,7 +927,7 @@ it("computes the day's pedigree counts once on a miss and reuses them for later 
   expect(harness.knownCountQueries.length).toBe(1);
 });
 
-it.each(["not json", "[1]", '{"07:01":3}'])(
+it.each(["not json", "[1]", '{"07:01":3}', '{"07:08":3}', '{"07:08":[{"umaban":1}]}'])(
   "falls back to the per-race count when the cached day cannot answer for this race: %s",
   async (body) => {
     const harness = createHeatmapHarness();
@@ -915,7 +936,7 @@ it.each(["not json", "[1]", '{"07:01":3}'])(
       ...harness.dependencies,
       fetchImpl: async (input, init) => {
         const text = typeof init?.body === "string" ? init.body : "";
-        if (text.includes("GROUP BY keibajo_code, race_bango")) {
+        if (text.includes("se.keibajo_code,\\n  se.race_bango,")) {
           return Response.json({ result: { rows: [] }, success: true });
         }
         return harness.dependencies.fetchImpl(input, init);
@@ -934,7 +955,7 @@ it("falls back to the per-race count when the day computation fails", async () =
     ...harness.dependencies,
     fetchImpl: async (input, init) => {
       const text = typeof init?.body === "string" ? init.body : "";
-      if (text.includes("GROUP BY keibajo_code, race_bango")) {
+      if (text.includes("se.keibajo_code,\\n  se.race_bango,")) {
         throw new Error("day query stalled");
       }
       return harness.dependencies.fetchImpl(input, init);

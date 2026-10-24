@@ -103,10 +103,14 @@ import {
   buildWinRateHeatmapDayKnownBloodlineQuery,
   buildWinRateHeatmapKnownBloodlineCountQuery,
   dayKnownBloodlineKey,
+  encodeDayBloodlineEntry,
+  knownBloodlineNameCount,
+  normaliseDayBloodlineRow,
   usesDayKnownBloodlineCount,
   buildWinRateHeatmapSimilarQuery,
   normaliseWinRateHeatmapStatsPayload,
 } from "./win-rate-heatmap-stats";
+import type { DayBloodlineEntry } from "./win-rate-heatmap-stats";
 import type {
   BulkFreshRaceEntryFilters,
   CatalogSource,
@@ -620,31 +624,37 @@ const parseKnownBloodlineCount = (rows: ReadonlyArray<Record<string, unknown>>):
   return Number.isInteger(known) && known >= 0 ? known : null;
 };
 
-const DAY_KNOWN_BLOODLINE_KV_PREFIX = "heatmap-day-known-bloodline:v1";
+// v2 holds each race's runners and pedigree names; v1 held only counts.
+const DAY_KNOWN_BLOODLINE_KV_PREFIX = "heatmap-day-known-bloodline:v2";
 
-// A missing or corrupt cached day decodes to no races, which never skips the
-// per-race count.
-const decodeDayKnownBloodlines = (body: string): ReadonlyMap<string, number> => {
+// A missing or corrupt cached day decodes to no races, which never inlines
+// the runners and keeps the per-race count.
+const decodeDayBloodlines = (body: string): ReadonlyMap<string, DayBloodlineEntry[]> => {
   try {
     const value: unknown = JSON.parse(body);
     return typeof value === "object" && value !== null && !Array.isArray(value)
-      ? new Map(Object.entries(value).map(([key, known]) => [key, Number(known)]))
+      ? new Map(
+          Object.entries(value).map(([key, entries]) => [
+            key,
+            Array.isArray(entries) ? entries.map(normaliseDayBloodlineRow) : [],
+          ]),
+        )
       : new Map();
   } catch {
     return new Map();
   }
 };
 
-// Known pedigree name counts for every race of the day: read from KV, and
+// Every race's runners and pedigree names for the day: read from KV, and
 // recomputed (once per isolate at a time) when absent or missing this race.
-const loadDayKnownBloodlineCount = async (
+const loadDayBloodlineEntries = async (
   env: Env,
   dependencies: WorkerDependencies,
   filters: WinRateHeatmapStatsFilters,
-): Promise<number> => {
+): Promise<DayBloodlineEntry[]> => {
   const key = `${DAY_KNOWN_BLOODLINE_KV_PREFIX}:${filters.source}:${filters.date}`;
   const raceKey = dayKnownBloodlineKey(filters.keibajoCode, filters.raceBango);
-  const cached = decodeDayKnownBloodlines((await env.CATALOG_KV.get(key)) ?? "");
+  const cached = decodeDayBloodlines((await env.CATALOG_KV.get(key)) ?? "");
   if (cached.has(raceKey)) return cached.get(raceKey)!;
   const body = await coalesce(key, async () => {
     const rows = await executeR2Sql(
@@ -652,31 +662,37 @@ const loadDayKnownBloodlineCount = async (
       buildWinRateHeatmapDayKnownBloodlineQuery(env, filters),
       withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
     );
-    const computed = JSON.stringify(
-      Object.fromEntries(
-        rows.map((row) => [dayKnownBloodlineKey(row.keibajo_code, row.race_bango), row.known]),
-      ),
-    );
+    const races = new Map<string, Record<string, unknown>[]>();
+    for (const row of rows) {
+      const race = dayKnownBloodlineKey(row.keibajo_code, row.race_bango);
+      races.set(race, [
+        ...(races.get(race) ?? []),
+        encodeDayBloodlineEntry(normaliseDayBloodlineRow(row)),
+      ]);
+    }
+    const computed = JSON.stringify(Object.fromEntries(races));
     await env.CATALOG_KV.put(key, computed, { expirationTtl: HEATMAP_KV_TTL_SECONDS });
     return computed;
   });
-  return decodeDayKnownBloodlines(body).get(raceKey) ?? 0;
+  return decodeDayBloodlines(body).get(raceKey) ?? [];
 };
 
-// Positive day counts skip the per-race count; zero, a missing race or a
-// failed day read falls back to it, so only a fresh per-race count can ever
-// short-circuit the bloodline answer to [].
-const dayHasKnownBloodlines = (
+// Runners with known names come from the day snapshot and are inlined into
+// the bloodline query, so no per-race count is needed. No names, a missing
+// race or a failed day read keeps the live current_entries query and races it
+// against the per-race count, so only a fresh count can short-circuit the
+// bloodline answer to [].
+const dayBloodlineEntries = (
   env: Env,
   dependencies: WorkerDependencies,
   filters: WinRateHeatmapStatsFilters,
-): Promise<boolean> =>
+): Promise<DayBloodlineEntry[] | undefined> =>
   usesDayKnownBloodlineCount(filters)
-    ? loadDayKnownBloodlineCount(env, dependencies, filters).then(
-        (known) => known > 0,
-        () => false,
+    ? loadDayBloodlineEntries(env, dependencies, filters).then(
+        (entries) => (knownBloodlineNameCount(entries) > 0 ? entries : undefined),
+        () => undefined,
       )
-    : Promise.resolve(false);
+    : Promise.resolve(undefined);
 
 // Race the bloodline query against a cheap count of the runners' known
 // pedigree names. Zero names means the answer is empty, so return [] and
@@ -687,24 +703,22 @@ const loadHeatmapBloodlineRows = async (
   dependencies: WorkerDependencies,
   filters: WinRateHeatmapStatsFilters,
 ): Promise<Record<string, unknown>[]> => {
+  const entries = await dayBloodlineEntries(env, dependencies, filters);
   const cancel = new AbortController();
   const bloodline = executeR2Sql(
     env,
-    buildWinRateHeatmapBloodlineQuery(env, filters),
+    buildWinRateHeatmapBloodlineQuery(env, filters, entries),
     withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS, cancel.signal),
   );
-  // Observed below; this only keeps a rejection during the day lookup handled.
-  bloodline.catch(() => undefined);
-  const noKnownNames = (await dayHasKnownBloodlines(env, dependencies, filters))
-    ? Promise.resolve(false)
-    : executeR2Sql(
-        env,
-        buildWinRateHeatmapKnownBloodlineCountQuery(env, filters),
-        withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
-      ).then(
-        (rows) => parseKnownBloodlineCount(rows) === 0,
-        () => false,
-      );
+  if (entries !== undefined) return bloodline;
+  const noKnownNames = executeR2Sql(
+    env,
+    buildWinRateHeatmapKnownBloodlineCountQuery(env, filters),
+    withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+  ).then(
+    (rows) => parseKnownBloodlineCount(rows) === 0,
+    () => false,
+  );
   const shortCircuit = noKnownNames.then((empty) => (empty ? [] : bloodline));
   try {
     return await Promise.race([bloodline, shortCircuit]);

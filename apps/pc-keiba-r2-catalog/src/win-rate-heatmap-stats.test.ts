@@ -9,6 +9,10 @@ import {
   buildWinRateHeatmapDayKnownBloodlineQuery,
   buildWinRateHeatmapKnownBloodlineCountQuery,
   dayKnownBloodlineKey,
+  encodeDayBloodlineEntry,
+  knownBloodlineNameCount,
+  normaliseDayBloodlineRow,
+  sqlStringLiteral,
   usesDayKnownBloodlineCount,
   buildWinRateHeatmapSimilarQuery,
   cellRouterDistanceBandFilterSql,
@@ -708,15 +712,98 @@ it("counts the runners' known pedigree names without scanning race history", () 
   expect(/matched_history|current_race AS/u.test(sql)).toBe(false);
 });
 
-it("counts known pedigree names for every race of the source on one date", () => {
+it("reads every runner's pedigree names for every race of the source on one date", () => {
   const sql = buildWinRateHeatmapDayKnownBloodlineQuery(config, { ...jraFilters, source: "nar" });
   expect(sql).toMatch("FROM pc_keiba.nvd_se se");
-  expect(sql).toMatch("WHERE se.kaisai_nen = '2026'\n    AND se.kaisai_tsukihi = '0715'");
-  expect(sql).toMatch("sum(CASE WHEN sire <> '不明' THEN 1 ELSE 0 END)");
-  expect(sql).toMatch("sum(CASE WHEN damDamSire <> '不明' THEN 1 ELSE 0 END) AS known");
-  expect(sql).toMatch("GROUP BY keibajo_code, race_bango");
-  expect(/matched_history|current_race AS|race_bango = '01'/u.test(sql)).toBe(false);
+  expect(sql).toMatch("WHERE se.kaisai_nen = '2026'\n  AND se.kaisai_tsukihi = '0715'");
+  expect(sql).toMatch("se.keibajo_code,\n  se.race_bango,");
+  expect(sql).toMatch("AS INT) AS umaban,\n  se.ketto_toroku_bango,");
+  expect(sql).toMatch("AS damDamSire");
+  expect(/matched_history|current_race AS|race_bango = '01'|GROUP BY/u.test(sql)).toBe(false);
   expect(dayKnownBloodlineKey("05", "11")).toBe("05:11");
+});
+
+const dayEntry = {
+  kettoTorokuBango: "2020100001",
+  names: ["Sire's Son", "不明", "Dam Sire", "不明", "不明", "不明", "不明"],
+  umaban: 3,
+};
+
+it("escapes SQL string literals and rejects control characters", () => {
+  expect(sqlStringLiteral("O'Brien''s")).toBe("'O''Brien''''s'");
+  expect(sqlStringLiteral("ディープインパクト")).toBe("'ディープインパクト'");
+  expect(() => sqlStringLiteral("a\nb")).toThrow("SQL literal has a control character");
+  expect(() => sqlStringLiteral("a\u0000b")).toThrow("SQL literal has a control character");
+  expect(() => sqlStringLiteral("a\u007fb")).toThrow("SQL literal has a control character");
+});
+
+it("maps day snapshot rows to entries and back, counting only known names", () => {
+  const raw = encodeDayBloodlineEntry(dayEntry);
+  expect(raw).toStrictEqual({
+    damDamSire: "不明",
+    damSire: "Dam Sire",
+    damSireSire: "不明",
+    ketto_toroku_bango: "2020100001",
+    sire: "Sire's Son",
+    sireDamSire: "不明",
+    sireSire: "不明",
+    sireSireSire: "不明",
+    umaban: 3,
+  });
+  expect(normaliseDayBloodlineRow({ ...raw, umaban: "3" })).toStrictEqual(dayEntry);
+  expect(() => normaliseDayBloodlineRow({ ...raw, sire: undefined })).toThrow(
+    "R2 SQL row is missing sire",
+  );
+  expect(knownBloodlineNameCount([dayEntry, dayEntry])).toBe(4);
+  expect(knownBloodlineNameCount([])).toBe(0);
+});
+
+it("inlines the day snapshot's runners instead of re-reading the pedigree masters", async () => {
+  const sql = buildWinRateHeatmapBloodlineQuery(config, jraFilters, [dayEntry]);
+  expect(sql).toMatch("(VALUES\n    (3, '2020100001', 'Sire''s Son', '不明', 'Dam Sire'");
+  expect(sql).toMatch(
+    ") AS v(umaban, ketto_toroku_bango, sire, sireSire, damSire, sireSireSire, sireDamSire, damSireSire, damDamSire)",
+  );
+  expect(sql).toMatch("NOT EXISTS");
+  // Only the history arm still joins the pedigree masters.
+  expect(sql.match(/LEFT JOIN pc_keiba\.jvd_um primary_um/gu)?.length).toBe(1);
+  expect(buildWinRateHeatmapBloodlineQuery(config, jraFilters).match(/primary_um\n/gu)).not.toBe(
+    null,
+  );
+  const ctes = sql.match(
+    /current_entries AS \([\s\S]*?\n\),\ncurrent_bloodlines AS \([\s\S]*?\n\)/u,
+  )?.[0];
+  expect(ctes).toBeDefined();
+  const db = await DuckDBInstance.create(":memory:");
+  const connection = await db.connect();
+  try {
+    const result = await connection.runAndReadAll(
+      `WITH ${ctes} SELECT umaban, category, name FROM current_bloodlines ORDER BY category`,
+    );
+    expect(result.getRowObjects()).toStrictEqual([
+      { umaban: 3, category: "damSire", name: "Dam Sire" },
+      { umaban: 3, category: "sire", name: "Sire's Son" },
+    ]);
+  } finally {
+    connection.closeSync();
+    db.closeSync();
+  }
+});
+
+it("rejects day snapshot runners it cannot inline", () => {
+  expect(() =>
+    buildWinRateHeatmapBloodlineQuery(config, jraFilters, [{ ...dayEntry, umaban: 1.5 }]),
+  ).toThrow("Day bloodline umaban is not an integer");
+  expect(() =>
+    buildWinRateHeatmapBloodlineQuery(config, jraFilters, [{ ...dayEntry, names: ["x"] }]),
+  ).toThrow("Day bloodline entry has the wrong name count");
+  expect(() =>
+    buildWinRateHeatmapBloodlineQuery(
+      config,
+      { ...jraFilters, date: "20261004", keibajoCode: "A8", raceBango: "05" },
+      [dayEntry],
+    ),
+  ).toThrow("Current-profile races cannot inline day bloodlines");
 });
 
 it("keeps current-profile (Arc) races on the per-race pedigree count", () => {

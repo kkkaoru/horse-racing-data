@@ -667,13 +667,45 @@ const aggregateSelectSql = (groupColumns: string): string =>
 export const unionHistorySql = (arms: ReadonlyArray<string>): string =>
   arms.join("\n  UNION ALL\n  ");
 
+// One runner of the day snapshot: pedigree names in BLOODLINE_KETTO_COLUMNS order.
+export interface DayBloodlineEntry {
+  kettoTorokuBango: string;
+  names: ReadonlyArray<string>;
+  umaban: number;
+}
+
+// Values come from our own catalog, but they are still interpolated into SQL.
+export const sqlStringLiteral = (value: string): string => {
+  const control = [...value].some((char) => char.charCodeAt(0) < 0x20 || char === "\u007f");
+  if (control) throw new Error("SQL literal has a control character");
+  return `'${value.replaceAll("'", "''")}'`;
+};
+
+// R2 SQL re-executes a CTE at every reference, and the bloodline query reads
+// current_entries 17 times. Inlining the day snapshot's runners as literals
+// avoids re-reading the pedigree master tables for each reference.
+const inlineCurrentEntriesSql = (entries: ReadonlyArray<DayBloodlineEntry>): string => {
+  const rows = entries.map((entry) => {
+    if (!Number.isInteger(entry.umaban)) throw new Error("Day bloodline umaban is not an integer");
+    if (entry.names.length !== BLOODLINE_KETTO_COLUMNS.length) {
+      throw new Error("Day bloodline entry has the wrong name count");
+    }
+    return `(${[String(entry.umaban), ...[entry.kettoTorokuBango, ...entry.names].map(sqlStringLiteral)].join(", ")})`;
+  });
+  return `SELECT * FROM (VALUES
+    ${rows.join(",\n    ")}
+  ) AS v(umaban, ketto_toroku_bango, ${BLOODLINE_KETTO_COLUMNS.map((entry) => entry.category).join(", ")})`;
+};
+
 const currentBloodlineCtesSql = (
   env: R2SqlCatalogConfig,
   checked: WinRateHeatmapStatsFilters,
+  entries?: ReadonlyArray<DayBloodlineEntry>,
 ): string => {
   const current = currentTables(checked.source);
-  return `current_entries AS (
-  SELECT${isCurrentArc(checked) ? " DISTINCT" : ""}
+  const entriesSql =
+    entries === undefined
+      ? `SELECT${isCurrentArc(checked) ? " DISTINCT" : ""}
     try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) AS umaban,
     se.ketto_toroku_bango,
     ${currentBloodlineSelectSql(usesCurrentProfile(checked))}
@@ -682,7 +714,10 @@ const currentBloodlineCtesSql = (
   ${usesCurrentProfile(checked) ? currentProfileJoinSql(env) : ""}
   WHERE ${currentRaceIdentitySql(checked, "se")}
     AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) IS NOT NULL
-    AND ${trimmedSql("se.ketto_toroku_bango")} IS NOT NULL
+    AND ${trimmedSql("se.ketto_toroku_bango")} IS NOT NULL`
+      : inlineCurrentEntriesSql(entries);
+  return `current_entries AS (
+  ${entriesSql}
 ),
 current_bloodlines AS (
   ${currentBloodlineUnpivotSql(usesCurrentProfile(checked))}
@@ -704,10 +739,10 @@ SELECT count(${usesCurrentProfile(checked) ? "name" : "*"}) AS known
 FROM current_bloodlines`;
 };
 
-// Known pedigree name counts for every race of the source on one date, keyed
-// by venue and race. Pedigrees do not change during a day, so one master
-// lookup (the costly part of the per-race count) serves every race. Only
-// races without current-profile names use it.
+// Every runner's pedigree names for every race of the source on one date,
+// keyed by venue and race. Pedigrees do not change during a day, so one
+// master lookup (the costly part of the bloodline query) serves every race.
+// Only races without current-profile names use it.
 export const buildWinRateHeatmapDayKnownBloodlineQuery = (
   env: R2SqlCatalogConfig,
   filters: WinRateHeatmapStatsFilters,
@@ -715,27 +750,42 @@ export const buildWinRateHeatmapDayKnownBloodlineQuery = (
   const checked = validateFilters(filters);
   const current = currentTables(checked.source);
   return `
-WITH current_entries AS (
-  SELECT
-    se.keibajo_code,
-    se.race_bango,
-    ${currentBloodlineSelectSql(false)}
-  FROM ${tableName(env, current.runnerTable)} se
-  ${masterJoinsSql(env, current, false)}
-  WHERE se.kaisai_nen = '${checked.date.slice(0, 4)}'
-    AND se.kaisai_tsukihi = '${checked.date.slice(4)}'
-    AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) IS NOT NULL
-    AND ${trimmedSql("se.ketto_toroku_bango")} IS NOT NULL
-)
 SELECT
-  keibajo_code,
-  race_bango,
-  ${BLOODLINE_KETTO_COLUMNS.map(
-    (entry) => `sum(CASE WHEN ${entry.category} <> '${UNKNOWN_NAME}' THEN 1 ELSE 0 END)`,
-  ).join("\n    + ")} AS known
-FROM current_entries
-GROUP BY keibajo_code, race_bango`;
+  se.keibajo_code,
+  se.race_bango,
+  try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) AS umaban,
+  se.ketto_toroku_bango,
+  ${currentBloodlineSelectSql(false)}
+FROM ${tableName(env, current.runnerTable)} se
+${masterJoinsSql(env, current, false)}
+WHERE se.kaisai_nen = '${checked.date.slice(0, 4)}'
+  AND se.kaisai_tsukihi = '${checked.date.slice(4)}'
+  AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) IS NOT NULL
+  AND ${trimmedSql("se.ketto_toroku_bango")} IS NOT NULL`;
 };
+
+export const normaliseDayBloodlineRow = (raw: Record<string, unknown>): DayBloodlineEntry => ({
+  kettoTorokuBango: requiredString(raw.ketto_toroku_bango, "ketto_toroku_bango"),
+  names: BLOODLINE_KETTO_COLUMNS.map((entry) =>
+    requiredString(raw[entry.category], entry.category),
+  ),
+  umaban: requiredInteger(raw.umaban, "umaban"),
+});
+
+// The inverse of normaliseDayBloodlineRow, for the KV day snapshot.
+export const encodeDayBloodlineEntry = (entry: DayBloodlineEntry): Record<string, unknown> => ({
+  ketto_toroku_bango: entry.kettoTorokuBango,
+  umaban: entry.umaban,
+  ...Object.fromEntries(
+    BLOODLINE_KETTO_COLUMNS.map((column, index) => [column.category, entry.names[index]]),
+  ),
+});
+
+export const knownBloodlineNameCount = (entries: ReadonlyArray<DayBloodlineEntry>): number =>
+  entries.reduce(
+    (total, entry) => total + entry.names.filter((name) => name !== UNKNOWN_NAME).length,
+    0,
+  );
 
 export const dayKnownBloodlineKey = (keibajoCode: unknown, raceBango: unknown): string =>
   `${String(keibajoCode)}:${String(raceBango)}`;
@@ -753,14 +803,19 @@ export const buildArcBloodlineLabelsQuery = (
   return `WITH ${currentBloodlineCtesSql(env, checked)} SELECT umaban, category, name FROM current_bloodlines`;
 };
 
+// With the day snapshot's runners (non-Arc only), current_entries is inlined.
 export const buildWinRateHeatmapBloodlineQuery = (
   env: R2SqlCatalogConfig,
   filters: WinRateHeatmapStatsFilters,
+  entries?: ReadonlyArray<DayBloodlineEntry>,
 ): string => {
   const checked = validateFilters(filters);
+  if (entries !== undefined && usesCurrentProfile(checked)) {
+    throw new Error("Current-profile races cannot inline day bloodlines");
+  }
   return `
 WITH ${currentRaceCteSql(env, checked)},
-${currentBloodlineCtesSql(env, checked)},
+${currentBloodlineCtesSql(env, checked, entries)},
 target_names AS (
   SELECT DISTINCT category, name
   FROM current_bloodlines
