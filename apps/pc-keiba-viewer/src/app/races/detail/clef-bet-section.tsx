@@ -229,6 +229,10 @@ function BetTypeToggles({
   );
 }
 
+// A new odds snapshot refreshes the answer in the background; only a changed budget, target or
+// bet type selection replaces the table with the skeleton.
+const withoutOdds = (url: string): string => url.replace(/&odds=[^&]*$/u, "");
+
 const readStored = (key: string): string | null => {
   try {
     return window.localStorage.getItem(key);
@@ -245,21 +249,28 @@ const writeStored = (key: string, values: readonly string[] | number | boolean):
   }
 };
 
-// Keeps the last answer on screen, dimmed, while a changed request is pending.
-function BetBody({ state, hidden, busy }: BetBodyProps) {
-  if (state === null) return <p>推奨馬券を計算しています…</p>;
+// The first load and every changed request show a skeleton of the section until the answer
+// arrives, with a polite status for screen readers.
+function BetSkeleton({ status }: { status: string }) {
   return (
-    <>
-      {busy ? (
-        <output aria-live="polite" className="clef-bet-updating">
-          更新中…
-        </output>
-      ) : null}
-      <div aria-busy={busy} className={busy ? "clef-bet-loading" : undefined}>
-        <BetCard hidden={hidden} state={state} />
+    <div aria-busy="true" className="clef-bet-skeleton">
+      <output aria-live="polite" className="clef-bet-updating">
+        {status}
+      </output>
+      <div className="detail-section-skeleton">
+        <span />
+        <span />
+        <span />
+        <span />
+        <span />
       </div>
-    </>
+    </div>
   );
+}
+
+function BetBody({ state, hidden, busy }: BetBodyProps) {
+  if (state === null) return <BetSkeleton status="推奨馬券を計算しています…" />;
+  return busy ? <BetSkeleton status="更新中…" /> : <BetCard hidden={hidden} state={state} />;
 }
 
 function BetCard({ state, hidden }: { state: ClefBetState; hidden: readonly string[] }) {
@@ -537,7 +548,11 @@ export function ClefBetSection(race: ClefRerankRaceAddress) {
       {url === null ? (
         <p>オッズが発表されている馬券の種類を1つ以上選んでください。</p>
       ) : (
-        <BetBody busy={state !== null && state.url !== url} hidden={hidden} state={state} />
+        <BetBody
+          busy={state !== null && withoutOdds(state.url) !== withoutOdds(url)}
+          hidden={hidden}
+          state={state}
+        />
       )}
     </section>
   );

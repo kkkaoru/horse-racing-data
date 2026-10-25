@@ -10633,10 +10633,6 @@ fieldset.race-results-chart-view-toggle {
   display: block;
 }
 
-.clef-bet-loading {
-  opacity: var(--number-0-5-10);
-}
-
 .clef-bet-number {
   font-variant-numeric: tabular-nums;
   text-align: right;

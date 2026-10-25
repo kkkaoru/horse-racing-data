@@ -560,7 +560,7 @@ it("explains when the budget and target cannot fit every checked bet type", asyn
   ).toBeTruthy();
 });
 
-it("dims the last table while a changed request is pending and clears it on the answer", async () => {
+it("shows a skeleton while a changed request is pending and clears it on the answer", async () => {
   const resolvers: ((value: Response) => void)[] = [];
   const fetcher = vi
     .fn<typeof fetch>()
@@ -574,17 +574,19 @@ it("dims the last table while a changed request is pending and clears it on the 
   vi.stubGlobal("fetch", fetcher);
   const { container } = render(<ClefBetSection {...race} />);
   expect(screen.getByText("推奨馬券を計算しています…")).toBeTruthy();
+  expect(container.querySelector(".clef-bet-skeleton")?.getAttribute("aria-busy")).toBe("true");
   await screen.findByText("馬主フォー", {}, { timeout: 2000 });
-  const wrapper = (): Element | null => container.querySelector("[aria-busy]");
   expect(screen.queryByText("更新中…")).toBeNull();
-  expect(wrapper()?.getAttribute("aria-busy")).toBe("false");
+  expect(container.querySelector(".clef-bet-skeleton")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "予算を100円増やす" }));
   const status = screen.getByText("更新中…");
   expect(status.tagName).toBe("OUTPUT");
   expect(status.getAttribute("aria-live")).toBe("polite");
-  expect(wrapper()?.getAttribute("aria-busy")).toBe("true");
-  expect(wrapper()?.className).toBe("clef-bet-loading");
-  expect(screen.getByText("馬主フォー")).toBeTruthy();
+  expect(container.querySelector(".clef-bet-skeleton")?.getAttribute("aria-busy")).toBe("true");
+  expect(
+    container.querySelectorAll(".clef-bet-skeleton .detail-section-skeleton span"),
+  ).toHaveLength(5);
+  expect(screen.queryByText("馬主フォー")).toBeNull();
   await waitFor(() => expect(resolvers).toHaveLength(1), { timeout: 2000 });
   expect(screen.getByText("更新中…")).toBeTruthy();
   await act(async () => {
@@ -593,6 +595,5 @@ it("dims the last table while a changed request is pending and clears it on the 
   });
   expect(await screen.findByText("オッズ発表後に推奨馬券を表示します。")).toBeTruthy();
   expect(screen.queryByText("更新中…")).toBeNull();
-  expect(wrapper()?.getAttribute("aria-busy")).toBe("false");
-  expect(wrapper()?.className).toBe("");
+  expect(container.querySelector(".clef-bet-skeleton")).toBeNull();
 });
