@@ -10654,6 +10654,12 @@ fieldset.race-results-chart-view-toggle {
   padding: var(--number-0-2);
 }
 
+/* The long label must not stretch its checkbox box; the box stays as narrow as the input. */
+.clef-bet-require-all .race-results-checkbox-control {
+  justify-self: start;
+  width: fit-content;
+}
+
 /* Narrow screens: keep every 推奨馬券 value on one readable line and scroll sideways,
    with the 馬券 column pinned on the left. */
 @media (max-width: 760px) {

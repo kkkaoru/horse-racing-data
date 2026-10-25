@@ -611,3 +611,22 @@ it("marks the 枠番 and 馬番 columns as badge cells", async () => {
     container.querySelectorAll(".clef-bet-table tbody td.clef-bet-badge-cell").length > 0,
   ).toBe(true);
 });
+
+it("ticks a bet type and the required-all switch before the new suggestion arrives", async () => {
+  realtime.latest = { tansho: [{}], umaren: [{}] };
+  const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload));
+  vi.stubGlobal("fetch", fetcher);
+  const { container } = render(<ClefBetSection {...race} />);
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  const calls = fetcher.mock.calls.length;
+  const tansho = screen.getByRole("checkbox", { name: "単勝" });
+  fireEvent.click(tansho);
+  expect(tansho instanceof HTMLInputElement ? tansho.checked : null).toBe(false);
+  const requireAll = screen.getByRole("checkbox", { name: "チェックした馬券の種類をすべて含める" });
+  fireEvent.click(requireAll);
+  expect(requireAll instanceof HTMLInputElement ? requireAll.checked : null).toBe(true);
+  expect(fetcher.mock.calls.length).toBe(calls);
+  expect(
+    container.querySelector(".clef-bet-require-all .race-results-checkbox-control"),
+  ).not.toBeNull();
+});

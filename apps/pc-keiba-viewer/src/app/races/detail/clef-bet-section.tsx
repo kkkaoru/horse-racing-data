@@ -2,6 +2,7 @@
 "use client";
 
 import {
+  useDeferredValue,
   useEffect,
   useId,
   useState,
@@ -223,7 +224,7 @@ function BetTypeToggles({
           </label>
         );
       })}
-      <label className="race-results-checkbox-label">
+      <label className="race-results-checkbox-label clef-bet-require-all">
         <span>{REQUIRE_ALL_LABEL}</span>
         <span className="race-results-checkbox-control">
           <input
@@ -526,11 +527,15 @@ export function ClefBetSection(race: ClefRerankRaceAddress) {
   const latest: Partial<Record<string, readonly unknown[]>> =
     useRealtimeRaceSelector((store) => store.payload?.odds?.latest) ?? {};
   const available = BET_TYPES.filter((type) => (latest[type]?.length ?? 0) > 0);
-  const requested = requestedBetTypes(types, available);
+  // The checkboxes render the new choice right away; the request and the table follow it as a
+  // deferred update, so re-rendering the table never holds back the tick.
+  const deferredTypes = useDeferredValue(types);
+  const deferredRequireAll = useDeferredValue(requireAll);
+  const requested = requestedBetTypes(deferredTypes, available);
   const url =
     available.length > 0 && requested.length === 0
       ? null
-      : `${buildClefBetsUrl(race, budget, target, requested, requireAll)}&odds=${encodeURIComponent(oddsFetchedAt)}`;
+      : `${buildClefBetsUrl(race, budget, target, requested, deferredRequireAll)}&odds=${encodeURIComponent(oddsFetchedAt)}`;
   useEffect(() => {
     if (url === null) return undefined;
     const controller = new AbortController();
