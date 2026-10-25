@@ -597,3 +597,17 @@ it("shows a skeleton while a changed request is pending and clears it on the ans
   expect(screen.queryByText("更新中…")).toBeNull();
   expect(container.querySelector(".clef-bet-skeleton")).toBeNull();
 });
+
+it("marks the 枠番 and 馬番 columns as badge cells", async () => {
+  vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(Response.json(payload)));
+  const { container } = render(<ClefBetSection {...race} />);
+  await screen.findByText("馬主フォー", {}, { timeout: 2000 });
+  expect(
+    [...container.querySelectorAll(".clef-bet-table thead th.clef-bet-badge-cell")].map(
+      (cell) => cell.textContent,
+    ),
+  ).toStrictEqual(["枠番", "馬番"]);
+  expect(
+    container.querySelectorAll(".clef-bet-table tbody td.clef-bet-badge-cell").length > 0,
+  ).toBe(true);
+});

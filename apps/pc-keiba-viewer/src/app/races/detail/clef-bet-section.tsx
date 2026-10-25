@@ -82,6 +82,7 @@ interface BetTypeTogglesProps {
 }
 
 interface GroupCellProps {
+  className: string | undefined;
   plan: ClefBetSuggestion;
   runners: ReadonlyMap<number, ClefBetRunner>;
   pick: (runner: ClefBetRunner) => ReactNode;
@@ -98,6 +99,8 @@ interface TargetControlProps {
 }
 
 interface PickColumn {
+  // Badge columns (枠番, 馬番) are centred with their own spacing so the badges do not touch.
+  className?: string;
   label: string;
   pick: (runner: ClefBetRunner) => ReactNode;
 }
@@ -114,9 +117,15 @@ const FRAME_BET_TYPES: ReadonlySet<string> = new Set(["wakuren", "wakufuku", "wa
 // Multi-horse structures (軸, マルチ, フォーメーション, ボックス) only show frames for frame bets.
 const hidesFrame = (column: PickColumn, plan: ClefBetSuggestion): boolean =>
   column.label === FRAME_COLUMN && plan.style !== "single" && !FRAME_BET_TYPES.has(plan.betType);
+const BADGE_CELL: string = "clef-bet-badge-cell";
 const PICK_COLUMNS: readonly PickColumn[] = [
-  { label: "枠番", pick: (runner) => <FrameNumberBadge value={String(runner.frameNumber)} /> },
   {
+    className: BADGE_CELL,
+    label: "枠番",
+    pick: (runner) => <FrameNumberBadge value={String(runner.frameNumber)} />,
+  },
+  {
+    className: BADGE_CELL,
     label: "馬番",
     pick: (runner) => <PlainHorseNumberBadge horseNumber={String(runner.horseNumber)} />,
   },
@@ -144,9 +153,9 @@ const loadCard = async (url: string, signal: AbortSignal): Promise<ClefBetState[
 
 // One block per leg (軸 / 相手, 1着 / 2着 / 3着, ボックス) so nagashi, multi and formation
 // tickets read as a betting slip instead of one row per combination.
-function GroupCell({ plan, runners, pick }: GroupCellProps) {
+function GroupCell({ className, plan, runners, pick }: GroupCellProps) {
   return (
-    <td>
+    <td className={className}>
       {planGroups(plan).map((group) => (
         <div className="clef-bet-leg" key={group.label}>
           {group.label === "" ? null : <span className="clef-bet-leg-label">{group.label}</span>}
@@ -300,7 +309,7 @@ function BetCard({ state, hidden }: { state: ClefBetState; hidden: readonly stri
             <tr>
               <th scope="col">馬券</th>
               {columns.map((column) => (
-                <th key={column.label} scope="col">
+                <th className={column.className} key={column.label} scope="col">
                   {column.label}
                 </th>
               ))}
@@ -319,9 +328,14 @@ function BetCard({ state, hidden }: { state: ClefBetState; hidden: readonly stri
                 </th>
                 {columns.map((column) =>
                   hidesFrame(column, plan) ? (
-                    <td aria-label="枠番は組み合わせ馬券では表示しません" key={column.label} />
+                    <td
+                      aria-label="枠番は組み合わせ馬券では表示しません"
+                      className={column.className}
+                      key={column.label}
+                    />
                   ) : (
                     <GroupCell
+                      className={column.className}
                       key={column.label}
                       pick={column.pick}
                       plan={plan}

@@ -10589,9 +10589,16 @@ fieldset.race-results-chart-view-toggle {
 .clef-bet-table th,
 .clef-bet-table td {
   border-bottom: var(--space-1px-7) solid var(--line);
-  padding: var(--space-11px-110) var(--space-10px-27);
+  padding: var(--space-12px-9) var(--space-16px-10);
   text-align: left;
   vertical-align: top;
+}
+
+/* 枠番 and 馬番 badges sit centred in their own narrow columns with room between them. */
+.clef-bet-table .clef-bet-badge-cell {
+  padding-left: var(--space-10px-27);
+  padding-right: var(--space-10px-27);
+  text-align: center;
 }
 
 .clef-bet-table thead th {
@@ -10658,8 +10665,21 @@ fieldset.race-results-chart-view-toggle {
   .clef-bet-table th,
   .clef-bet-table td {
     font-size: var(--space-13px-92);
-    padding: var(--space-8px-28) var(--space-6px-32);
+    padding: var(--space-10px-27) var(--space-12px-9);
     white-space: nowrap;
+  }
+
+  .clef-bet-table .clef-bet-badge-cell {
+    padding-left: var(--space-8px-28);
+    padding-right: var(--space-8px-28);
+  }
+
+  /* Swipe sideways inside the table without moving the page. */
+  .clef-bet-section .runner-table-wrap {
+    -webkit-overflow-scrolling: touch;
+    max-width: var(--space-100pct-12);
+    overscroll-behavior-x: contain;
+    touch-action: pan-x pan-y;
   }
 
   .clef-bet-table thead th:first-child,
