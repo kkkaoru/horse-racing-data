@@ -852,3 +852,35 @@ it("fetchJraResultHtmlWithFallback falls back to Playwright when HTTP throws", a
   expect(html).toBe("<html>recovered</html>");
   expect(browser.close).toHaveBeenCalledTimes(1);
 });
+
+it("parseJraRaceEntries numbers a scratched row whose number cell shows 取消 from its umaban slot", () => {
+  const html = `<table>
+<tr><td class="num">1</td><td class="horse"><div class="name"><a>アルファ</a></div></td></tr>
+<tr><td class="num"><span class="cap">取消</span></td><td class="horse"><div class="name"><a>ブラボー</a></div></td></tr>
+<tr><td class="num">3</td><td class="horse"><div class="name"><a>チャーリー</a></div></td></tr>
+</table>`;
+  expect(
+    parseJraRaceEntries(html).map((entry) => [entry.horseNumber, entry.status, entry.horseName]),
+  ).toStrictEqual([
+    ["1", null, "アルファ"],
+    ["2", "取消", "ブラボー"],
+    ["3", null, "チャーリー"],
+  ]);
+});
+
+it("parseJraRaceEntries drops a 取消 number cell when numbered rows are not in their umaban slots", () => {
+  const html = `<table>
+<tr><td class="num">2</td><td class="horse"><div class="name"><a>アルファ</a></div></td></tr>
+<tr><td class="num"><span class="cap">取消</span></td><td class="horse"><div class="name"><a>ブラボー</a></div></td></tr>
+<tr><td class="num">3</td><td class="horse"><div class="name"><a>チャーリー</a></div></td></tr>
+</table>`;
+  expect(parseJraRaceEntries(html).map((entry) => entry.horseNumber)).toStrictEqual(["2", "3"]);
+});
+
+it("parseJraRaceEntries drops an unnumbered row whose number cell is not a scratch label", () => {
+  const html = `<table>
+<tr><td class="num">1</td><td class="horse"><div class="name"><a>アルファ</a></div></td></tr>
+<tr><td class="num">-</td><td class="horse"><div class="name"><a>ブラボー</a></div></td></tr>
+</table>`;
+  expect(parseJraRaceEntries(html).map((entry) => entry.horseNumber)).toStrictEqual(["1"]);
+});

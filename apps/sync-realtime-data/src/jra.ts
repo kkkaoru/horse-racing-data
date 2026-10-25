@@ -35,8 +35,15 @@ const ODDS_PAGE_LABELS: ReadonlyArray<{ label: string; type: OddsType }> = [
   { label: "3連単", type: "3rentan" },
 ];
 
+interface JraEntryNumberCell {
+  cell: string | null;
+  row: string;
+}
+
 const BLOCKED_RESOURCE_TYPES = new Set(["font", "image", "media", "stylesheet"]);
 const ENTRY_SCRATCH_STATUS_LABELS = ["出場停止", "出走取消", "取消", "競走除外", "除外"] as const;
+const JRA_ENTRY_NUM_CELL_PATTERN: RegExp =
+  /<td[^>]*class=["'][^"']*\bnum\b[^"']*["'][^>]*>([\s\S]*?)<\/td>/iu;
 const RESULT_EXCLUDED_STATUS_LABELS = [
   "出走取消",
   "取消",
@@ -215,28 +222,55 @@ export const sanitizeJraRaceEntriesWithOdds = (
   );
 };
 
-export const parseJraRaceEntries = (html: string): Omit<RaceEntry, "fetchedAt">[] =>
-  extractRows(html)
+const parseNumberedJraEntry = (row: string, horseNumber: string): Omit<RaceEntry, "fetchedAt"> => {
+  const horseName = extractJraHorseName(row);
+  const jockeyName = extractJraJockeyName(row);
+  const rowStatus = extractJraEntryStatus(row);
+  const status =
+    rowStatus && isJraScratchStatus(rowStatus) && extractJraHorseWeightMatch(row)
+      ? null
+      : rowStatus;
+  return {
+    horseName: horseName ? stripHtmlTags(horseName) : null,
+    horseNumber: normalizeHorseNumber(horseNumber),
+    jockeyName: jockeyName ? normalizeJockeyName(jockeyName) : null,
+    status,
+  };
+};
+
+// A scratched runner's number cell shows 取消 instead of its umaban. Rows stay in
+// umaban order, so the row slot names it -- but only when every numbered row sits
+// at its own slot; otherwise the row stays unnumbered (and is dropped) as before.
+const jraEntryNumberCells = (html: string): JraEntryNumberCell[] =>
+  extractRows(html).map((row) => ({
+    cell: row.match(JRA_ENTRY_NUM_CELL_PATTERN)?.[1] ?? null,
+    row,
+  }));
+
+const isSlotOrdered = (rows: readonly JraEntryNumberCell[]): boolean =>
+  rows.every((entry, index) => {
+    const horseNumber = extractJraHorseNumber(entry.row);
+    return horseNumber === null || Number(horseNumber) === index + 1;
+  });
+
+export const parseJraRaceEntries = (html: string): Omit<RaceEntry, "fetchedAt">[] => {
+  const entryRows = jraEntryNumberCells(html).filter((entry) => entry.cell !== null);
+  const slotOrdered = isSlotOrdered(entryRows);
+  return extractRows(html)
     .map((row) => {
       const horseNumber = extractJraHorseNumber(row);
-      if (!horseNumber || !isValidHorseNumber(horseNumber)) {
+      if (horseNumber && isValidHorseNumber(horseNumber)) {
+        return parseNumberedJraEntry(row, horseNumber);
+      }
+      const slot = entryRows.findIndex((entry) => entry.row === row);
+      const label = stripHtmlTags(entryRows[slot]?.cell ?? "");
+      if (!slotOrdered || slot < 0 || !isJraScratchStatus(label)) {
         return null;
       }
-      const horseName = extractJraHorseName(row);
-      const jockeyName = extractJraJockeyName(row);
-      const rowStatus = extractJraEntryStatus(row);
-      const status =
-        rowStatus && isJraScratchStatus(rowStatus) && extractJraHorseWeightMatch(row)
-          ? null
-          : rowStatus;
-      return {
-        horseName: horseName ? stripHtmlTags(horseName) : null,
-        horseNumber: normalizeHorseNumber(horseNumber),
-        jockeyName: jockeyName ? normalizeJockeyName(jockeyName) : null,
-        status,
-      };
+      return { ...parseNumberedJraEntry(row, String(slot + 1)), status: label };
     })
     .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+};
 
 export const parseJraHorseWeights = (html: string): HorseWeight[] =>
   extractRows(html)
