@@ -170,7 +170,7 @@ export const oddsSignature = (realtime: unknown): string =>
 const answerKey = (race: BetRaceAddress, baseGeneratedAt: string, signature: string): string =>
   `clefbet:v2:answers:${raceSuffix(race)}:${baseGeneratedAt}:${signature}`;
 
-// The all-types key carries no type list, so the cron warm serves the default view.
+// The all-types key carries no type list, so every viewer of the default view shares it.
 const resultKey = (race: BetRaceAddress): string =>
   `clefbet:v5:result:${raceSuffix(race)}:${String(race.budget)}:t${String(race.target ?? "-")}${race.types === null ? "" : `:${[...race.types].toSorted().join(",")}`}${race.requireAll ? ":all" : ""}`;
 
@@ -257,7 +257,8 @@ const diagnoseUnfit = (input: SuggestInput): UnfitReason | null => {
 };
 
 // Every generated suggestion is cached per odds snapshot and budget, so repeat views and the
-// cron warm reuse it without touching clef-flash or the viewer's heavier sections.
+// MCP requests reuse it without touching clef-flash or the viewer's heavier sections. Nothing
+// generates suggestions ahead of time: only a page view or an MCP request does.
 export const suggestRaceBets = async (env: BetEnv, race: BetRaceAddress): Promise<BetOutcome> => {
   const [realtime, { ranks, baseGeneratedAt }] = await Promise.all([
     fetchViewer(env, viewerPath(race, "realtime")),
@@ -321,34 +322,4 @@ export const suggestRaceBets = async (env: BetEnv, race: BetRaceAddress): Promis
     expirationTtl: ANSWER_TTL_SECONDS,
   });
   return { status: 200, body };
-};
-
-const warmedKey = (
-  race: Omit<BetRaceAddress, "budget" | "types" | "target" | "requireAll">,
-): string => `clefbet:v5:warmed:${race.ymd}:${race.keibajoCode}:${race.raceBango}`;
-
-// Cron path: regenerate the default-budget suggestion only for races whose served prediction
-// was (re)generated since the last warm, including the post-horse-weight rescore.
-export const warmRaceBets = async (
-  env: BetEnv,
-  race: Omit<BetRaceAddress, "budget" | "types" | "target" | "requireAll">,
-): Promise<number> => {
-  const target = {
-    ...race,
-    budget: DEFAULT_BUDGET,
-    types: null,
-    target: DEFAULT_TARGET,
-    requireAll: false,
-  };
-  const [{ baseGeneratedAt }, warmed] = await Promise.all([
-    loadRanks(env, target),
-    env.DETAIL_SECTION_CACHE_KV.get(warmedKey(race)),
-  ]);
-  if (baseGeneratedAt === "" || warmed === baseGeneratedAt) return 304;
-  const outcome = await suggestRaceBets(env, target);
-  if (outcome.status === 200 || unfitReasonOf(outcome.body) !== null)
-    await env.DETAIL_SECTION_CACHE_KV.put(warmedKey(race), baseGeneratedAt, {
-      expirationTtl: ANSWER_TTL_SECONDS,
-    });
-  return outcome.status;
 };

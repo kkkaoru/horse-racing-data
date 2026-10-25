@@ -4,7 +4,6 @@ import {
   parseBudget,
   parseTarget,
   suggestRaceBets,
-  warmRaceBets,
   type ServiceFetcher,
 } from "./bets-route";
 import { parseBetTypes } from "./bets";
@@ -204,31 +203,6 @@ export const warmDay = async (env: Env, ymd: string): Promise<number[]> => {
   return statuses;
 };
 
-// Bets for every race of the day (JRA and NAR) whose post time is still ahead, earliest first.
-export const warmBetsDay = async (env: Env, nowMs: number): Promise<number[]> => {
-  const ymd = jstYmd(nowMs);
-  const nowHhmm = new Date(nowMs + JST_OFFSET_MS).toISOString().slice(11, 16).replace(":", "");
-  const races = [...(await loadPostTimes(env, ymd))]
-    .filter(([, time]) => time >= nowHhmm)
-    .toSorted(([, a], [, b]) => a.localeCompare(b))
-    .map(([key]) => ({ ymd, keibajoCode: key.slice(0, 2), raceBango: key.slice(3) }));
-  const statuses: number[] = [];
-  await chunk(races, CRON_CONCURRENCY).reduce(async (previous, group) => {
-    await previous;
-    statuses.push(...(await Promise.all(group.map((race) => safeWarmBets(env, race)))));
-  }, Promise.resolve());
-  return statuses;
-};
-
-const safeWarmBets = async (env: Env, race: RaceAddress): Promise<number> => {
-  try {
-    return await warmRaceBets(env, race);
-  } catch (error) {
-    console.error("clef bets warm failed", raceSuffix(race), String(error));
-    return 503;
-  }
-};
-
 export const jstYmd = (nowMs: number): string =>
   new Date(nowMs + JST_OFFSET_MS).toISOString().slice(0, 10).replaceAll("-", "");
 
@@ -294,6 +268,5 @@ export default {
   async scheduled(controller: ScheduledEvent, env: Env): Promise<void> {
     const statuses = await warmDay(env, jstYmd(controller.scheduledTime));
     console.log("clef rerank warm", JSON.stringify(statuses));
-    console.log("clef bets warm", JSON.stringify(await warmBetsDay(env, controller.scheduledTime)));
   },
 };

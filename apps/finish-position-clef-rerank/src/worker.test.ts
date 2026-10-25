@@ -7,7 +7,6 @@ import worker, {
   jstYmd,
   rerankRace,
   resultKey,
-  warmBetsDay,
   warmDay,
   type Env,
 } from "./worker";
@@ -214,7 +213,7 @@ it("warms every indexed race in bounded groups from the cron", async () => {
   expect(await warmDay(env, "20261018")).toStrictEqual([200, 404]);
   await worker.scheduled({ scheduledTime: Date.parse("2026-10-18T00:10:00Z") }, env);
   expect(console.log).toHaveBeenCalledWith("clef rerank warm", "[200,404]");
-  expect(console.log).toHaveBeenCalledWith("clef bets warm", "[]");
+  expect(console.log).toHaveBeenCalledTimes(1);
 });
 
 it("warms races in post-time order from the viewer race list", async () => {
@@ -266,48 +265,6 @@ it("keeps index order when the race list is not an object or the viewer is down"
   expect(await warmDay(env, "20261018")).toStrictEqual([200, 404]);
   vi.mocked(env.VIEWER.fetch).mockRejectedValueOnce(new Error("offline"));
   expect(await warmDay(env, "20261018")).toStrictEqual([200, 404]);
-});
-
-it("warms bets for races still ahead of the clock in post-time order", async () => {
-  vi.spyOn(console, "error").mockImplementation(() => undefined);
-  const env = makeEnv({});
-  vi.mocked(env.VIEWER.fetch).mockResolvedValue(
-    Response.json({
-      upcoming: [
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: "1018",
-          keibajoCode: "45",
-          raceBango: "11",
-          hassoJikoku: "2030",
-        },
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: "1018",
-          keibajoCode: "08",
-          raceBango: "11",
-          hassoJikoku: "1540",
-        },
-        {
-          kaisaiNen: "2026",
-          kaisaiTsukihi: "1018",
-          keibajoCode: "08",
-          raceBango: "01",
-          hassoJikoku: "0955",
-        },
-      ],
-    }),
-  );
-  vi.mocked(env.DETAIL_SECTION_CACHE_KV.get).mockImplementation(async (key: string) => {
-    if (key === "pred:fp:v1:20261018:45:11") throw new Error("kv down");
-    return null;
-  });
-  expect(await warmBetsDay(env, Date.parse("2026-10-18T05:00:00Z"))).toStrictEqual([304, 503]);
-  expect(console.error).toHaveBeenCalledWith(
-    "clef bets warm failed",
-    "20261018:45:11",
-    "Error: kv down",
-  );
 });
 
 it("converts the cron time to the JST race date", () => {

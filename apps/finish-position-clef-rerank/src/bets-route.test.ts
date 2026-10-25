@@ -7,7 +7,6 @@ import {
   parseTarget,
   suggestRaceBets,
   viewerPath,
-  warmRaceBets,
   type BetEnv,
 } from "./bets-route";
 
@@ -403,48 +402,6 @@ it("signs odds by the order of the six shortest win odds", () => {
     }),
   ).toBe("2-4-5-3-6-7");
   expect(oddsSignature(null)).toBe("");
-});
-
-const basePrediction = JSON.stringify([
-  { horseNumber: "1", modelVersion: "base", predictedFinishNorm: 0, predictionGeneratedAt: "g1" },
-  { horseNumber: "2", modelVersion: "base", predictedFinishNorm: 1, predictionGeneratedAt: "g1" },
-]);
-const warmRace = { ymd: "20261018", keibajoCode: "08", raceBango: "11" };
-
-it("warms the default budget once per served prediction generation", async () => {
-  const env = makeEnv(
-    { "pred:fp:v1:20261018:08:11": basePrediction },
-    {
-      "/api/races/2026/10/18/08/11/sections/win-rate-heatmap?source=jra": heatmap,
-      "/api/races/2026/10/18/08/11/realtime?source=jra": realtime,
-    },
-  );
-  expect(await warmRaceBets(env, warmRace)).toBe(404);
-  expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenLastCalledWith(
-    "clefbet:v5:warmed:20261018:08:11",
-    "g1",
-    { expirationTtl: 259200 },
-  );
-  expect(vi.mocked(env.DETAIL_SECTION_CACHE_KV.put).mock.calls[1]?.[0]).toBe(
-    "clefbet:v5:result:20261018:08:11:2000:t10000",
-  );
-});
-
-it("skips the warm without a prediction or when it was already warmed", async () => {
-  const noBase = makeEnv({}, {});
-  expect(await warmRaceBets(noBase, warmRace)).toBe(304);
-  const warmed = makeEnv(
-    { "pred:fp:v1:20261018:08:11": basePrediction, "clefbet:v5:warmed:20261018:08:11": "g1" },
-    {},
-  );
-  expect(await warmRaceBets(warmed, warmRace)).toBe(304);
-  expect(warmed.VIEWER.fetch).toHaveBeenCalledTimes(0);
-});
-
-it("does not mark a race warmed when the suggestion is unavailable", async () => {
-  const env = makeEnv({ "pred:fp:v1:20261018:08:11": basePrediction }, {});
-  expect(await warmRaceBets(env, warmRace)).toBe(404);
-  expect(env.DETAIL_SECTION_CACHE_KV.put).toHaveBeenCalledTimes(0);
 });
 
 it("caches a bet-type selection under its own result key", async () => {
