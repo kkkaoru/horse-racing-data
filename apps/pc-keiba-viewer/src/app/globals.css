@@ -305,12 +305,6 @@ main {
   padding: var(--space-7px-40) var(--space-9px-21);
 }
 
-.race-global-summary-condition {
-  max-width: var(--space-220px-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .race-global-summary-countdown {
   background: var(--color-hex-fff4d6-7);
   color: var(--color-hex-6f4714-8);
@@ -8853,10 +8847,6 @@ fieldset.stats-section-toggle-wrap {
 
   .race-global-summary span {
     padding: var(--space-5px-17) var(--space-4px-18);
-  }
-
-  .race-global-summary-condition {
-    max-width: var(--space-96px-66);
   }
 
   .race-global-summary-countdown {
