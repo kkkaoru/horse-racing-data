@@ -14,7 +14,7 @@
     "tsc": "bunx tsc --noEmit"
   },
   "dependencies": {
-    "iconv-lite": "0.7.2",
+    "iconv-lite": "0.7.3",
     "pg": "8.21.0"
   },
   "devDependencies": {
