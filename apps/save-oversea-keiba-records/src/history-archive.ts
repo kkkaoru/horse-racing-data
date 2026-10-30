@@ -77,7 +77,7 @@ export const verifyHistoryArchive = (
   }
   if (
     state.checkpoint.pendingUrl === null &&
-    countedHistoryRows(state.rows, plan.profile) !== state.publishedCount
+    countedHistoryRows(state.rows, plan.profile) > (state.publishedCount ?? 0)
   ) {
     throw new Error("History archive completion does not match the published population.");
   }
@@ -118,7 +118,8 @@ export const collectHistoryArchive = async (
         }
         if (
           page.nextUrl === null &&
-          countedHistoryRows([...progress.state.rows, ...page.rows], input.plan.profile) !==
+          // Fewer listed rows than the published total is a genuine source gap: keep what exists.
+          countedHistoryRows([...progress.state.rows, ...page.rows], input.plan.profile) >
             page.publishedCount
         ) {
           throw new Error("History terminal row count differs from the published population.");

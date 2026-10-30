@@ -8,7 +8,7 @@ import {
   buildHistoryStatements,
   type HistoryPublicationInput,
 } from "./storage/history-publication";
-import type { HistorySourceRow } from "./sources/history-source-page";
+import { countedHistoryRows, type HistorySourceRow } from "./sources/history-source-page";
 import type {
   SecondaryHorseResult,
   SecondaryPersonResult,
@@ -89,7 +89,10 @@ export const prepareHistoryArchive = (
     input,
     archivedRows: state.rows.length,
     publishedCount: state.publishedCount,
-    sourceComplete: state.checkpoint.pendingUrl === null && eligible.length === distinct.size,
+    sourceComplete:
+      state.checkpoint.pendingUrl === null &&
+      eligible.length === distinct.size &&
+      countedHistoryRows(state.rows, plan.profile) === state.publishedCount,
     sourcePartialRows: partial,
     duplicateRows: eligible.length - distinct.size,
   };

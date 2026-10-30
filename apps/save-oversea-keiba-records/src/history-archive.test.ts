@@ -90,8 +90,16 @@ it("resumes a bounded first page and finishes a second without refetching the fi
   expect(fetchPage).toHaveBeenLastCalledWith("https://example.test/results/?page=2");
 });
 
-it("rejects a terminal page that silently truncates the declared population", async () => {
+it("keeps a terminal page that lists fewer rows than the declared population as a source gap", async () => {
   fetchPage.mockResolvedValue(`Published (2) ${table}</html>`);
+  const result = await collectHistoryArchive({ plan, state: null, pageBudget: 2, ports });
+  expect(result.collection.status).toBe("complete");
+  expect(result.state.rows).toHaveLength(1);
+  expect(result.state.publishedCount).toBe(2);
+});
+
+it("rejects a terminal page that lists more counted rows than the declared population", async () => {
+  fetchPage.mockResolvedValue(`Published (0) ${table}</html>`);
   const result = await collectHistoryArchive({ plan, state: null, pageBudget: 2, ports });
   expect(result.collection.status).toBe("blocked");
   expect(result.state.rows).toHaveLength(0);
@@ -135,11 +143,16 @@ it("rejects inconsistent row counts in a stored checkpoint", async () => {
   );
 });
 
-it("does not trust a completed checkpoint when its source population differs", async () => {
+it("does not trust a completed checkpoint holding more rows than its source population", async () => {
   const first = await collectHistoryArchive({ plan, state: null, pageBudget: 1, ports });
-  expect(() => verifyHistoryArchive({ ...first.state, publishedCount: 2 }, plan)).toThrow(
+  expect(() => verifyHistoryArchive({ ...first.state, publishedCount: 0 }, plan)).toThrow(
     "History archive completion does not match the published population.",
   );
+});
+
+it("accepts a completed checkpoint holding fewer rows than its source population", async () => {
+  const first = await collectHistoryArchive({ plan, state: null, pageBudget: 1, ports });
+  expect(() => verifyHistoryArchive({ ...first.state, publishedCount: 2 }, plan)).not.toThrow();
 });
 
 it("completes when only configured uncounted rows exceed the published population", async () => {

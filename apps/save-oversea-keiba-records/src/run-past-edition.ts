@@ -33,7 +33,6 @@ export interface PastEditionArgs {
   readonly raceName: string;
   readonly venueCode: string;
   readonly raceNumber: string;
-  readonly confirmedFieldSize: number | null;
   readonly apply: boolean;
 }
 export interface PastEditionPlan {
@@ -49,15 +48,13 @@ export interface PastEditionPlan {
 
 export const OVERSEA_RACE_RESULT_PROFILE_PATH: string = "OVERSEA_RACE_RESULT_PROFILE_PATH";
 const USAGE: string =
-  "Use past-edition FILE --source-race-id ID --race-name NAME --venue-code CODE --race-number NN [--confirmed-field-size N] [--apply].";
+  "Use past-edition FILE --source-race-id ID --race-name NAME --venue-code CODE --race-number NN [--apply].";
 const VALUE_OPTIONS: ReadonlySet<string> = new Set([
   "--source-race-id",
   "--race-name",
   "--venue-code",
   "--race-number",
-  "--confirmed-field-size",
 ]);
-const FIELD_SIZE_PATTERN: RegExp = /^\d{1,2}$/u;
 const VENUE_CODE_PATTERN: RegExp = /^[A-Z][0-9A-Z]$/u;
 const RACE_NUMBER_PATTERN: RegExp = /^\d{2}$/u;
 const SOURCE_RACE_ID_PATTERN: RegExp = /^[0-9A-Za-z]+$/u;
@@ -93,9 +90,6 @@ export const parsePastEditionArgs = (argv: readonly string[]): PastEditionArgs =
     raceName: options.get("--race-name") ?? "",
     venueCode: options.get("--venue-code") ?? "",
     raceNumber: options.get("--race-number") ?? "",
-    confirmedFieldSize: options.has("--confirmed-field-size")
-      ? Number(options.get("--confirmed-field-size"))
-      : null,
     apply: flags.includes("--apply"),
   };
   const valid: boolean =
@@ -104,8 +98,6 @@ export const parsePastEditionArgs = (argv: readonly string[]): PastEditionArgs =
     SOURCE_RACE_ID_PATTERN.test(args.sourceRaceId) &&
     VENUE_CODE_PATTERN.test(args.venueCode) &&
     RACE_NUMBER_PATTERN.test(args.raceNumber) &&
-    (!options.has("--confirmed-field-size") ||
-      FIELD_SIZE_PATTERN.test(options.get("--confirmed-field-size") ?? "")) &&
     flags.every((flag: string) => flag === "--apply");
   if (!valid) throw new Error(USAGE);
   return args;
@@ -213,19 +205,14 @@ export const buildPastEditionPlan = (
     (runner: SecondaryRaceResultRunner) => !NON_STARTERS.has(runner.finishPositionText),
   ).length;
   const raceRow: JvdRaRow = mapJvdRows({ race, storageIdentity, resolvedCodes: new Map() }).race;
-  // Some source pages list only part of the field; a horse-number gap without an explicit
-  // field-size confirmation must not become a new race with a partial runner list.
+  // Some source pages list only part of the field. Partial data is still stored as published
+  // (never padded); a horse-number gap is reported as sourcePartial.
   const highestNumber: number = Math.max(...result.runners.map((runner) => runner.horseNumber));
-  const sourcePartial: boolean =
-    highestNumber > result.runners.length && args.confirmedFieldSize !== starters;
-  const createsPartialRace: boolean = sourcePartial && !existing.raceExists;
   return {
     raceKey: `${raceRow.kaisai_nen}/${raceRow.kaisai_tsukihi}/${args.venueCode}/${args.raceNumber}`,
-    insertRace:
-      existing.raceExists || createsPartialRace ? null : { ...raceRow, shusso_tosu: pad(starters) },
+    insertRace: existing.raceExists ? null : { ...raceRow, shusso_tosu: pad(starters) },
     // Non-starters are not part of the field: the race request requires rows == field size.
     insertRunners: runners
-      .filter(() => !createsPartialRace)
       .filter(({ runner }: MappedRunner) => !NON_STARTERS.has(runner.finishPositionText))
       .filter(({ row }: MappedRunner) => !existing.umaban.has(row.umaban))
       .map(({ row }: MappedRunner) => row),
@@ -235,7 +222,7 @@ export const buildPastEditionPlan = (
     ),
     parsedRunners: result.runners.length,
     starters,
-    sourcePartial,
+    sourcePartial: highestNumber > result.runners.length,
   };
 };
 
