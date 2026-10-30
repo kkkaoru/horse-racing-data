@@ -170,6 +170,7 @@ describe("D1 sync state", () => {
     const again = await createRunWithDataSpec(input);
     expect([race.created, difn.created, again.created]).toStrictEqual([true, true, false]);
     expect(again.run.run_id).toBe(difn.run.run_id);
+    expect((await getLatestRun(db, "jv", "20260903"))?.run_id).toBe(race.run.run_id);
     expect(difn.run).toMatchObject({ data_spec: "DIFN", advance_cursor: 0 });
     expect(
       await db

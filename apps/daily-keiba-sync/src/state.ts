@@ -167,6 +167,8 @@ export const getDailyRun = async (
     .bind(`${provider}:${runDate}:daily`)
     .first<RunRow>();
 
+// The daily DIFN horse-master run never shadows the race sync that status
+// pollers (the local replica fallback) wait for.
 export const getLatestRun = async (
   db: D1Database,
   provider: Provider,
@@ -174,7 +176,7 @@ export const getLatestRun = async (
 ): Promise<RunRow | null> =>
   await db
     .prepare(
-      "select * from sync_runs where provider = ? and run_date = ? order by created_at desc, rowid desc limit 1",
+      "select * from sync_runs where provider = ? and run_date = ? and data_spec <> 'DIFN' order by created_at desc, rowid desc limit 1",
     )
     .bind(provider, runDate)
     .first<RunRow>();
