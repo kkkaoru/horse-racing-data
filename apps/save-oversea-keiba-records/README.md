@@ -215,6 +215,24 @@ and the Catalog sync as described above. Owners of past runners become known fro
 the collected horse pages, so rerun `event-entities` / `event-plans` after a horse
 pass to add them.
 
+### Overseas pedigrees from archived horse pages
+
+The horse pages archived by `history collect` (fetched only through the production
+proxy) embed the same two-generation pedigree table as the pedigree response, so
+pedigrees are stored without any extra request:
+
+```sh
+OVERSEA_PEDIGREE_MARKUP_PROFILE_PATH=/private/pedigree-profile.json \
+  bun run history pedigree-plan /private/history local
+bun run history pedigree-apply /private/history local --confirm-write
+bun run history pedigree-apply /private/history production --confirm-write
+```
+
+It inserts only horses missing from `oversea_horse_pedigree`, in one locked
+transaction with a readback. A horse whose page has no pedigree table is skipped
+(a source gap, never filled). A stored row that differs is kept as-is and only
+reported in `conflicts`. Sync `oversea_horse_pedigree` to the Catalog afterwards.
+
 ### Explicit production source-id mirroring
 
 ```sh

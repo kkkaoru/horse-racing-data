@@ -4,13 +4,15 @@ import { runHistoryCommand } from "./history-command";
 import type { HistoryPublicationReport } from "./history-publication-operator";
 import type { SourceIdMirrorReport } from "./source-id-mirror";
 import type { EventEntitiesReport } from "./event-entities";
+import type { PedigreeStoreReport } from "./pedigree-store";
 
 try {
   const result:
     | HistoryCliReport
     | HistoryPublicationReport
     | SourceIdMirrorReport
-    | EventEntitiesReport = await runHistoryCommand({
+    | EventEntitiesReport
+    | PedigreeStoreReport = await runHistoryCommand({
     argv: Bun.argv.slice(2),
     env: process.env,
     runtime: createHistoryCliRuntime(),

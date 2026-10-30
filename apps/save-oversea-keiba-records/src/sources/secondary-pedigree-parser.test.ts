@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 
 import {
   parseSecondaryHorsePedigree,
+  parseSecondaryHorsePedigreeHtml,
   type SecondaryPedigreeMarkupProfile,
 } from "./secondary-pedigree-parser";
 
@@ -105,4 +106,17 @@ it("rejects a pedigree with an unexpected ancestor count", () => {
   expect(() => parseSecondaryHorsePedigree(json, "horse-1", PROFILE)).toThrow(
     "Secondary pedigree has 5 ancestors.",
   );
+});
+
+it("parses the same two-generation table embedded in an archived horse page", () => {
+  expect(
+    parseSecondaryHorsePedigreeHtml(`<html><body>${VALID_HTML}</body></html>`, "horse-2", PROFILE),
+  ).toStrictEqual({
+    dam: { name: "Rhea", sourceHorseId: "dam-1" },
+    damSire: { name: "Siyouni", sourceHorseId: "dam-sire-1" },
+    sire: { name: "Night & Thunder", sourceHorseId: "sire-1" },
+    sireSire: { name: "Dubawi", sourceHorseId: "sire-sire-1" },
+    sourceHorseId: "horse-2",
+    sourceUrl: "https://secondary.test/horse/ped/horse-2/",
+  });
 });

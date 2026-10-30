@@ -7,6 +7,7 @@ import {
 import { runHistoryLocalMirror, runHistoryProductionMirror } from "./history-local-mirror";
 import { runSourceIdMirror, type SourceIdMirrorReport } from "./source-id-mirror";
 import { runEventEntities, type EventEntitiesReport } from "./event-entities";
+import { runPedigreeStore, type PedigreeStoreReport } from "./pedigree-store";
 import {
   createHistoryConnection,
   type HistoryConnection,
@@ -42,7 +43,11 @@ const publicationArguments = (args: readonly string[]): PublicationArguments => 
 export const runHistoryCommand = async (
   input: HistoryCommandInput,
 ): Promise<
-  HistoryCliReport | HistoryPublicationReport | SourceIdMirrorReport | EventEntitiesReport
+  | HistoryCliReport
+  | HistoryPublicationReport
+  | SourceIdMirrorReport
+  | EventEntitiesReport
+  | PedigreeStoreReport
 > => {
   if (input.argv[0] === "collect" || input.argv[0] === "status" || input.argv[0] === "audit")
     return runHistoryCli(input);
@@ -52,6 +57,8 @@ export const runHistoryCommand = async (
     return runSourceIdMirror(input);
   if (input.argv[0] === "event-entities" || input.argv[0] === "event-plans")
     return runEventEntities(input);
+  if (input.argv[0] === "pedigree-plan" || input.argv[0] === "pedigree-apply")
+    return runPedigreeStore(input);
   const args: PublicationArguments = publicationArguments(input.argv);
   const connection: HistoryConnection = createHistoryConnection(input.env, args.target);
   try {

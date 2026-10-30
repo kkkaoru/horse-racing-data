@@ -94,8 +94,16 @@ export const parseSecondaryHorsePedigree = (
   json: string,
   sourceHorseId: string,
   profile: SecondaryPedigreeMarkupProfile,
+): SecondaryHorsePedigree =>
+  parseSecondaryHorsePedigreeHtml(parseResponse(json), sourceHorseId, profile);
+
+// The horse page embeds the same two-generation table as the pedigree AJAX response.
+export const parseSecondaryHorsePedigreeHtml = (
+  html: string,
+  sourceHorseId: string,
+  profile: SecondaryPedigreeMarkupProfile,
 ): SecondaryHorsePedigree => {
-  const ancestors = parseAncestors(parseResponse(json), profile);
+  const ancestors = parseAncestors(html, profile);
   if (!isCompletePedigree(ancestors)) {
     throw new Error(`Secondary pedigree has ${String(ancestors.length)} ancestors.`);
   }
