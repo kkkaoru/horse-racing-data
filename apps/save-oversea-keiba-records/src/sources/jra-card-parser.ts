@@ -21,8 +21,9 @@ const BODY_PATTERN: RegExp = /<tbody[^>]*>([\s\S]*?)<\/tbody>/i;
 const RUNNER_PATTERN: RegExp = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
 // Official scratched entries replace the published horse number with this marker.
 // Do not invent a number from row order or include them in the active field.
+// Reserve (補, also-eligible) entries are not in the active field either until they draw in.
 const WITHDRAWN_NUMBER_PATTERN: RegExp =
-  /<td\s+class="num"[^>]*>\s*<span\s+class="cap"[^>]*>\s*取消\s*<\/span>\s*<\/td>/i;
+  /<td\s+class="num"[^>]*>\s*(?:<span\s+class="cap"[^>]*>\s*取消\s*<\/span>\s*<\/td>|<span\s+class="horse_icon\s+sub"[^>]*>\s*補\s*<\/span>)/i;
 const TAG_PATTERN: RegExp = /<[^>]+>/g;
 const WHITESPACE_PATTERN: RegExp = /\s+/g;
 const TRAINER_COUNTRY_PATTERN: RegExp = /\s*\(([^)]+)\)$/;
@@ -36,7 +37,9 @@ const START_TIME_PATTERN: RegExp = /発走時刻：[\s\S]*?<strong>(\d{1,2})時(
 const LOCAL_START_TIME_PATTERN: RegExp =
   /class="local_time"[^>]*>（現地時間：\d{1,2}月\d{1,2}日\s+(\d{1,2})時(\d{2})分）<\/span>/i;
 const RACE_NAME_PATTERN: RegExp = /class="race_name"[^>]*>([\s\S]*?)<\/span>/i;
-const HORSE_NUMBER_PATTERN: RegExp = /<td\s+class="num"[^>]*>\s*(\d+)\s*<\/td>/i;
+// Equipment icons (e.g. blinkers) can follow the number inside the same cell.
+const HORSE_NUMBER_PATTERN: RegExp =
+  /<td\s+class="num"[^>]*>\s*(\d+)\s*(?:<span\s+class="horse_icon[^"]*"[^>]*>[\s\S]*?<\/span>\s*)*<\/td>/i;
 const HORSE_NAME_PATTERN: RegExp =
   /<div\s+class="name"[^>]*>[\s\S]*?<div\s+class="txt"[^>]*>([\s\S]*?)<\/div>/i;
 const GATE_PATTERN: RegExp = /<td\s+class="waku"[^>]*>\s*(\d+)\s*<\/td>/i;

@@ -95,6 +95,22 @@ test("excludes officially withdrawn entries without inventing horse numbers", ()
   ]);
 });
 
+test("excludes reserve entries that have not drawn into the field", () => {
+  const card: string = CARD_HTML.replace(
+    '<td class="num">2</td>',
+    '<td class="num">\n<span class="horse_icon sub">補</span>2</td>',
+  );
+  expect(parseJraCard(card).runners.map((runner) => runner.horseNumber)).toStrictEqual([1]);
+});
+
+test("reads a horse number followed by an equipment icon", () => {
+  const card: string = CARD_HTML.replace(
+    '<td class="num">1</td>',
+    '<td class="num">\n1<span class="horse_icon blinker"><img src="/b.png" alt="ブリンカー着用" /></span>\n</td>',
+  );
+  expect(parseJraCard(card).runners.map((runner) => runner.horseNumber)).toStrictEqual([1, 2]);
+});
+
 test("rejects a card with only withdrawn entries", () => {
   const card: string = CARD_HTML.replace(
     /<td class="num">\d<\/td>/g,
