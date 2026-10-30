@@ -181,6 +181,7 @@ const CACHE_WARM_HEADER: string = "X-PC-Keiba-Cache-Warm";
 const partnershipCohortCache = createPartnershipCohortCache();
 const HEATMAP_CACHE_API_TTL_SECONDS = 36 * 60 * 60;
 const HEATMAP_KV_TTL_SECONDS = 36 * 60 * 60;
+const OVERSEAS_KEIBAJO_PATTERN: RegExp = /^[A-Z][0-9A-Z]$/u;
 const HEATMAP_R2_SQL_TIMEOUT_MS = 60_000;
 const HEATMAP_BLOODLINE_UNAVAILABLE_MARKER = '"bloodlineUnavailable":true';
 // R2 SQL error code for "query expression too deep: nesting depth exceeds
@@ -1613,6 +1614,21 @@ const conditionHistoryStatsBody = async (
   );
 };
 
+// Before the draw is posted the current race has no frames, so a matched
+// history with finishes still yields no frame rows. Such a body must not stay
+// in the 36-hour caches (it hid every frame rate on 2026-10-31); the 20-minute
+// R2 SQL answer cache bounds the repeated scans. Overseas races bypass that
+// cache and keep their gate-mapped body; an empty history still caches.
+const lacksCurrentFrames = (filters: WinRateHeatmapStatsFilters, body: string): boolean => {
+  const payload: { finishPositionStats: { count: number }[]; frameStats: unknown[] } =
+    JSON.parse(body);
+  return (
+    !OVERSEAS_KEIBAJO_PATTERN.test(filters.keibajoCode) &&
+    payload.frameStats.length === 0 &&
+    payload.finishPositionStats.some((row) => row.count > 0)
+  );
+};
+
 const handleConditionHistoryStats = async (
   url: URL,
   env: Env,
@@ -1631,7 +1647,7 @@ const handleConditionHistoryStats = async (
     dependencies,
     readKvConditionHistoryStats,
   );
-  if (cached) return cached;
+  if (cached && !lacksCurrentFrames(filters, await cached.clone().text())) return cached;
   const body = await coalesce(
     `${conditionHistoryCoalesceKey(filters)}:${mappingRevision ?? ""}`,
     async () => {
@@ -1641,14 +1657,15 @@ const handleConditionHistoryStats = async (
         : JSON.stringify({ ...JSON.parse(raw), mappingRevision });
     },
   );
-  await populateCaches(
-    dependencies.cache,
-    env.CATALOG_KV,
-    descriptor,
-    body,
-    HEATMAP_CACHE_API_TTL_SECONDS,
-    HEATMAP_KV_TTL_SECONDS,
-  );
+  if (!lacksCurrentFrames(filters, body))
+    await populateCaches(
+      dependencies.cache,
+      env.CATALOG_KV,
+      descriptor,
+      body,
+      HEATMAP_CACHE_API_TTL_SECONDS,
+      HEATMAP_KV_TTL_SECONDS,
+    );
   return jsonRowsResponse(body, "r2-sql");
 };
 
@@ -1926,7 +1943,6 @@ const handlePartnershipStats = async (
 // per-race reads stay ungated so page rendering never queues behind them.
 // Overseas results also depend on gate mappings whose content can change
 // without changing the SQL text, so their queries are never reused.
-const OVERSEAS_KEIBAJO_PATTERN: RegExp = /^[A-Z][0-9A-Z]$/u;
 
 const heavyR2SqlDependencies = (
   env: Env,

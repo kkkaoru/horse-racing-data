@@ -1,7 +1,15 @@
 import { expect, it } from "vitest";
 
 import { cacheRequestFor, conditionHistoryStatsDescriptor, kvKeyFor } from "./cache";
-import type { CacheStore, Env, Fetcher, KvStore, WorkerDependencies } from "./types";
+import { loadGateMappingRevision } from "./gate-mapping-revision";
+import type {
+  CacheStore,
+  Env,
+  Fetcher,
+  KvStore,
+  WinRateHeatmapStatsFilters,
+  WorkerDependencies,
+} from "./types";
 import { handleRequest, loadConditionAggregates } from "./worker";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -627,6 +635,106 @@ it("reads condition-history stats from Cache API then KV before R2 SQL", async (
   );
   expect(kvHit.headers.get("X-Catalog-Cache")).toBe("kv");
   expect(kvHarness.fetchCalls).toStrictEqual([]);
+});
+
+it("recomputes a cached condition-history body that has no current frames", async () => {
+  const harness = createConditionHarness();
+  const descriptor = conditionHistoryStatsDescriptor({
+    date: "20260822",
+    includeDistance: true,
+    includeSurface: true,
+    includeTurn: true,
+    includeVenue: true,
+    keibajoCode: "07",
+    raceBango: "08",
+    source: "jra",
+    years: 10,
+  });
+  await harness.dependencies.cache.put(
+    cacheRequestFor(descriptor),
+    new Response(
+      JSON.stringify({
+        carriedWeightClassStats: [],
+        finishPositionStats: [{ count: 3 }],
+        frameStats: [],
+        raceTimeStats: { raceCount: 0 },
+        weightClassStats: [],
+      }),
+    ),
+  );
+  const response = await handleRequest(
+    new Request(conditionUrl),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.headers.get("X-Catalog-Cache")).toBe("r2-sql");
+  expect(harness.fetchCalls.slice(0, 2).toSorted()).toStrictEqual(["combined", "finish"]);
+  expect([...harness.kvEntries.keys()].filter((key) => key.startsWith("catalog:")).length).toBe(1);
+});
+
+it("does not cache a condition-history body computed before the draw", async () => {
+  const harness = createConditionHarness();
+  const withoutFrames: Fetcher = async (input, init) => {
+    const response = await harness.dependencies.fetchImpl(input, init);
+    const answer: { result: { rows: Record<string, unknown>[] }; success: boolean } =
+      await response.json();
+    return Response.json({
+      ...answer,
+      result: { rows: answer.result.rows.filter((row) => row.stats_set !== "frame") },
+    });
+  };
+  const response = await handleRequest(new Request(conditionUrl), harness.env, {
+    ...harness.dependencies,
+    fetchImpl: withoutFrames,
+  });
+  const body: { frameStats: unknown[] } = await response.json();
+  expect(response.status).toBe(200);
+  expect(body.frameStats).toStrictEqual([]);
+  expect([...harness.kvEntries.keys()].filter((key) => key.startsWith("catalog:"))).toStrictEqual(
+    [],
+  );
+  expect(harness.cacheEntries.size).toBe(0);
+});
+
+it("serves a cached overseas condition-history body without frames", async () => {
+  const harness = createConditionHarness();
+  const filters: WinRateHeatmapStatsFilters = {
+    date: "20260822",
+    includeDistance: true,
+    includeSurface: true,
+    includeTurn: true,
+    includeVenue: true,
+    keibajoCode: "A8",
+    raceBango: "08",
+    source: "jra",
+    years: 10,
+  };
+  const mappingRevision = await loadGateMappingRevision({
+    env: harness.env,
+    fetchImpl: harness.dependencies.fetchImpl,
+    filters,
+  });
+  const descriptor = { ...conditionHistoryStatsDescriptor(filters), mappingRevision };
+  await harness.dependencies.cache.put(
+    cacheRequestFor(descriptor),
+    new Response(
+      JSON.stringify({
+        carriedWeightClassStats: [],
+        finishPositionStats: [{ count: 3 }],
+        frameStats: [],
+        raceTimeStats: { raceCount: 0 },
+        weightClassStats: [],
+      }),
+    ),
+  );
+  const response = await handleRequest(
+    new Request(
+      "https://catalog.test/v1/condition-history-stats?year=2026&month=08&day=22&keibajoCode=A8&raceNumber=08&source=jra&years=10&includeVenue=1&includeDistance=1&includeSurface=1&includeTurn=1",
+    ),
+    harness.env,
+    harness.dependencies,
+  );
+  expect(response.headers.get("X-Catalog-Cache")).toBe("cache-api");
 });
 
 it("rejects condition-history requests with invalid filters", async () => {
