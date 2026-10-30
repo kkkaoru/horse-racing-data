@@ -4,7 +4,11 @@ export { IngestionArchiveJournal } from "./ingestion-archive-journal";
 export { R2SqlGate } from "./r2-sql-gate";
 export { IngestionBufferService } from "./ingestion-service";
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { loadGateMappingRevision, parseGateMappingRevisionInput } from "./gate-mapping-revision";
+import {
+  gateRevisionFetcher,
+  loadGateMappingRevision,
+  parseGateMappingRevisionInput,
+} from "./gate-mapping-revision";
 import { timingSafeEqual } from "node:crypto";
 import catalogWorker from "./worker";
 import { handleIngestionDeadLetters } from "./ingestion-dead-letter";
@@ -329,7 +333,9 @@ export default class CatalogWorker extends WorkerEntrypoint<
       loadGateMappingRevision({
         env: this.env,
         filters: parseGateMappingRevisionInput(input),
-        fetchImpl: fetch,
+        fetchImpl: gateRevisionFetcher(fetch, this.env.CATALOG_KV, (promise) =>
+          this.ctx.waitUntil(promise),
+        ),
       }),
     );
   }

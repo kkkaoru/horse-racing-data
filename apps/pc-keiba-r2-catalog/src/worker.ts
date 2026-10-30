@@ -14,7 +14,7 @@ import {
 import { buildArcBloodlineLabelsQuery } from "./win-rate-heatmap-stats";
 import { loadForeignOwnerStats } from "./foreign-owner-reader";
 // Run with bun via the package scripts.
-import { loadGateMappingRevision } from "./gate-mapping-revision";
+import { gateRevisionFetcher, loadGateMappingRevision } from "./gate-mapping-revision";
 import { isCurrentArc } from "./arc-cohort";
 import { loadArcQualifiedPeople, type ArcQualifiedResult } from "./arc-qualified-people";
 import { buildRaceCourseQuery, normaliseRaceCourse } from "./race-course";
@@ -869,7 +869,7 @@ const handleWinRateHeatmapStats = async (
   const mappingRevision = await loadGateMappingRevision({
     env,
     filters,
-    fetchImpl: dependencies.fetchImpl,
+    fetchImpl: gateRevisionFetcher(dependencies.fetchImpl, env.CATALOG_KV, dependencies.waitUntil),
     arcQualified,
   });
   const arcInputs =
@@ -1639,7 +1639,7 @@ const handleConditionHistoryStats = async (
   const mappingRevision = await loadGateMappingRevision({
     env,
     filters,
-    fetchImpl: dependencies.fetchImpl,
+    fetchImpl: gateRevisionFetcher(dependencies.fetchImpl, env.CATALOG_KV, dependencies.waitUntil),
   });
   const descriptor = { ...conditionHistoryStatsDescriptor(filters), mappingRevision };
   const cached = await cachedCatalogResponse(
@@ -1902,7 +1902,11 @@ const handlePartnershipStats = async (
   const mappingRevision = await loadGateMappingRevision({
     env,
     filters,
-    fetchImpl: withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+    fetchImpl: gateRevisionFetcher(
+      withRequestTimeout(dependencies.fetchImpl, HEATMAP_R2_SQL_TIMEOUT_MS),
+      env.CATALOG_KV,
+      dependencies.waitUntil,
+    ),
   });
   const revision = JSON.stringify([
     "partnership-unknown-id-v1",

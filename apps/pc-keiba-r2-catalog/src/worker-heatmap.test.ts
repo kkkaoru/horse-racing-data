@@ -659,9 +659,19 @@ it("invalidates an overseas aggregate when only historical mapping content chang
   expect((await handleRequest(request, harness.env, dependencies)).status).toBe(200);
   expect(harness.fetchCalls).toHaveLength(2);
   published.gate = 1;
+  // Within the revision answer TTL the edit is not seen yet and the aggregate is reused.
+  expect((await handleRequest(request, harness.env, dependencies)).status).toBe(200);
+  expect(harness.fetchCalls).toHaveLength(2);
+  // TTL expiry: the cached revision reads are gone, so the edit invalidates the aggregate.
+  [...harness.kvEntries.keys()]
+    .filter((key) => key.startsWith("r2sql-result:"))
+    .forEach((key) => harness.kvEntries.delete(key));
   expect((await handleRequest(request, harness.env, dependencies)).status).toBe(200);
   expect(harness.fetchCalls).toHaveLength(4);
   published.failed = true;
+  [...harness.kvEntries.keys()]
+    .filter((key) => key.startsWith("r2sql-result:"))
+    .forEach((key) => harness.kvEntries.delete(key));
   expect((await handleRequest(request, harness.env, dependencies)).status).toBe(502);
   expect(harness.fetchCalls).toHaveLength(4);
 });

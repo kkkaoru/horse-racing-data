@@ -1,7 +1,10 @@
 // Run with bun.
 import { expect, it, vi } from "vitest";
-import { loadGateMappingRevision as loadRevision } from "./gate-mapping-revision";
-import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters } from "./types";
+import {
+  gateRevisionFetcher,
+  loadGateMappingRevision as loadRevision,
+} from "./gate-mapping-revision";
+import type { KvStore, R2SqlCatalogConfig, WinRateHeatmapStatsFilters } from "./types";
 const loadGateMappingRevision: typeof loadRevision = (input) =>
   loadRevision({
     ...input,
@@ -397,3 +400,45 @@ it.each([
     expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(4);
   },
 );
+
+it("reads the event titles of the whole day, not of the requested race", async () => {
+  const fetchImpl = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+    Response.json({ success: true, result: { rows: [] } }),
+  );
+  await loadRevision({ env, filters: { ...filters, raceBango: "11" }, fetchImpl });
+  expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)).query).toBe(
+    "SELECT DISTINCT kyosomei_hondai FROM pc_keiba.jvd_ra WHERE kaisai_nen = '2026' AND kaisai_tsukihi = '1004' AND keibajo_code = 'A8' ORDER BY kyosomei_hondai LIMIT 100",
+  );
+});
+it("reuses revision reads from KV for five minutes", async () => {
+  const stored = new Map<string, string>();
+  const ttls: (number | undefined)[] = [];
+  const kv: KvStore = {
+    get: async (key) => stored.get(key) ?? null,
+    put: async (key, value, options) => {
+      stored.set(key, value);
+      ttls.push(options?.expirationTtl);
+    },
+    delete: async (key) => {
+      stored.delete(key);
+    },
+  };
+  const fetchImpl = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+    Response.json({ success: true, result: { rows: [] } }),
+  );
+  const cached = gateRevisionFetcher(fetchImpl, kv);
+  const first = await loadRevision({
+    env,
+    filters: { ...filters, raceBango: "11" },
+    fetchImpl: cached,
+  });
+  const second = await loadRevision({
+    env,
+    filters: { ...filters, raceBango: "12" },
+    fetchImpl: cached,
+  });
+  expect(second).toBe(first);
+  // Titles, mappings, profiles and the fixed Arc-day owner read, each once.
+  expect(fetchImpl).toHaveBeenCalledTimes(4);
+  expect(ttls).toStrictEqual([300, 300, 300, 300]);
+});

@@ -1,6 +1,7 @@
 // Run with bun. Content identity includes historical corrections, even at the same timestamp.
-import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters, Fetcher } from "./types";
+import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters, Fetcher, KvStore } from "./types";
 import { executeR2Sql } from "./r2-sql";
+import { cachedR2SqlFetcher } from "./r2-sql-result-cache";
 import { tableName, validateFilters, usesOverseasGate } from "./win-rate-heatmap-stats";
 import { buildForeignOwnerQuery, normaliseForeignOwnerRows } from "./foreign-owner-reader";
 import {
@@ -36,6 +37,11 @@ const PEDIGREE_FIELDS: string[] = [
 const compareTuple = (a: unknown[], b: unknown[]): number =>
   JSON.stringify(a) < JSON.stringify(b) ? -1 : Number(JSON.stringify(a) > JSON.stringify(b));
 const MAX_ROWS: number = 100000;
+// Every heatmap, condition and partnership read and each viewer ensure recomputes this
+// revision; uncached, its 3-4 reads queued behind the R2 SQL gate and stalled the builds.
+// shortcut: the overseas tables carry no snapshot id in the serving manifest, so a source
+// edit reaches the revision within this TTL; key on Iceberg snapshots if that lag matters.
+export const GATE_REVISION_RESULT_TTL_SECONDS: number = 5 * 60;
 const EVENT_HISTORY_YEARS: number = 30;
 // Every overseas event of the day shares this revision, so the RPC needs no race number.
 const eventTitleSql = async (input: {
@@ -47,7 +53,10 @@ const eventTitleSql = async (input: {
     ? eventTitlesFromRows(
         await executeR2Sql(
           input.env,
-          buildEventTitlesQuery(input.env.R2_SQL_NAMESPACE, input.filters),
+          buildEventTitlesQuery(input.env.R2_SQL_NAMESPACE, {
+            date: input.filters.date,
+            keibajoCode: input.filters.keibajoCode,
+          }),
           input.fetchImpl,
         ),
       )
@@ -56,6 +65,11 @@ const eventTitleSql = async (input: {
 };
 const eventHistoryStart = (date: string): string =>
   `${String(Number(date.slice(0, 4)) - EVENT_HISTORY_YEARS).padStart(4, "0")}${date.slice(4)}`;
+export const gateRevisionFetcher = (
+  fetchImpl: Fetcher,
+  kv: KvStore | undefined,
+  waitUntil?: (promise: Promise<unknown>) => void,
+): Fetcher => cachedR2SqlFetcher(fetchImpl, kv, waitUntil, GATE_REVISION_RESULT_TTL_SECONDS);
 export const loadGateMappingRevision = async (input: {
   env: R2SqlCatalogConfig;
   filters: RevisionFilters;
