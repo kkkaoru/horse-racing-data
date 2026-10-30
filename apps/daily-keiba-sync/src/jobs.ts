@@ -2,6 +2,7 @@
 import { purgeProviderCursorCache } from "./cache";
 import { indexCatalogFile, planCatalogIndex } from "./catalog-index";
 import { isPermanentJobError, isTransientJobError } from "./errors";
+import { isUnpartitionedTable } from "./layouts";
 import { syncCatalogTable } from "./catalog-sync";
 import { syncNeonTable } from "./neon-sync";
 import { acquisitionBodyForSpec } from "./schedule";
@@ -31,10 +32,12 @@ import {
   parseSourceReadable,
   parseTableStage,
   tableStagingKey,
+  type ParsedSourceStream,
 } from "./source-stream";
 import { putStream } from "./staging";
 import type { CatalogTargetRow } from "./state";
 import type {
+  AcquisitionDataSpec,
   AcquisitionRequest,
   CatalogTableJob,
   Env,
@@ -71,19 +74,36 @@ const SOURCE_FAILURE_HEADERS: readonly string[] = [
   "X-NV-Link-Socket-Bytes",
   "X-NV-Link-Socket-Parse",
 ];
+// DIFN also carries RA/SE for NAR and overseas races JRA horses ran in; the
+// RACE runs own jvd_ra/jvd_se, so a DIFN run stages only the horse master.
+const DIFN_TABLES: ReadonlySet<string> = new Set(["jvd_um"]);
 // pipeline-health-monitor alerts when a provider's scheduled sync stops succeeding.
 export const providerSyncHealthKey = (provider: Provider): string =>
   `provider-sync:last-success:${provider}`;
 
 const targetPartition = (target: CatalogTargetRow, record: RecordRow): string => {
-  if (target.table_name === "jvd_cs") {
+  if (isUnpartitionedTable(target.table_name)) {
     if (target.partition_field !== "__unpartitioned__")
-      throw new Error("Course target requires an unpartitioned configuration");
+      throw new Error("Master target requires an unpartitioned configuration");
     return "__all__";
   }
   const value = record[target.partition_field];
   return typeof value === "string" ? value.trim() : "";
 };
+
+const isMasterOnlySpec = (dataSpec: AcquisitionDataSpec): boolean =>
+  dataSpec === "COMM" || dataSpec === "DIFN";
+
+const stagedTables = (
+  dataSpec: AcquisitionDataSpec,
+  parsed: ParsedSourceStream,
+): ParsedSourceStream =>
+  dataSpec === "DIFN"
+    ? {
+        ...parsed,
+        tables: parsed.tables.filter((table) => DIFN_TABLES.has(table.layout.tableName)),
+      }
+    : parsed;
 
 const rawStagingKey = (job: AcquisitionRequest): string =>
   `source-staging/v1/${job.provider}/${job.runDate}/${job.runId}/source.ndjson`;
@@ -126,8 +146,8 @@ const validateAcquisitionIdentity = (
   job: Pick<R2BucketJob, "provider" | "advanceCursor">,
 ): void => {
   if (run.provider !== job.provider) throw new Error("Source acquisition provider mismatch");
-  if (run.data_spec === "COMM" && job.advanceCursor)
-    throw new Error("COMM-only acquisition cannot advance the race cursor");
+  if (isMasterOnlySpec(run.data_spec) && job.advanceCursor)
+    throw new Error(`${run.data_spec}-only acquisition cannot advance the race cursor`);
 };
 
 const sourceRequest = async (
@@ -307,11 +327,12 @@ export const acquireRun = async (
 };
 
 const stageR2Bucket = async (job: R2BucketJob, env: Env, now: Date): Promise<void> => {
-  validateAcquisitionIdentity(await getRun(env.DB, job.runId), job);
+  const run = await getRun(env.DB, job.runId);
+  validateAcquisitionIdentity(run, job);
   await updateRunStatus(env.DB, job.runId, "parsing", now);
   const object = await env.SOURCE_STAGING.get(job.stagingKey);
   if (object === null) throw new Error("Staging object not found");
-  const parsed = await parseSourceReadable(object.body, job.provider);
+  const parsed = stagedTables(run.data_spec, await parseSourceReadable(object.body, job.provider));
   if (job.advanceCursor) {
     if (job.cursorTime === undefined) throw new Error("R2 Bucket cursor time is missing");
     await advanceProviderAcquisitionCursor(env.DB, job.provider, job.cursorTime, now);

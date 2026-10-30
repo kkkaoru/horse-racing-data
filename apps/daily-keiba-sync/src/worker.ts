@@ -7,12 +7,13 @@ import {
 } from "./cache";
 import { isPermanentJobError, PermanentJobError } from "./errors";
 import { acquireRun, handleJob, recordJobFailure } from "./jobs";
-import { layoutByTable } from "./layouts";
+import { isUnpartitionedTable, layoutByTable } from "./layouts";
 import { syncRunningStyleCatalog } from "./running-style-catalog";
 import {
   BOOTSTRAP_LOOKBACK_DAYS,
   CRON_RUNNING_STYLE_CATALOG,
   DEFAULT_LOOKBACK_DAYS,
+  DIFN_LOOKBACK_DAYS,
   defaultAcquisitionWindow,
   jstDate,
   jstTimestamp,
@@ -120,7 +121,8 @@ const startAcquisition = async (
   now: Date,
   requestedWindow?: RequestedAcquisitionWindow,
 ): Promise<RunRow> => {
-  const advanceCursor = trigger !== "manual";
+  // Only the RACE run owns the provider cursor; explicit windows never move it.
+  const advanceCursor = trigger !== "manual" && requestedWindow === undefined;
   const cursorTime = jstTimestamp(now.getTime());
   const fallbackWindow = defaultAcquisitionWindow(provider, runDate, lookbackDays);
   const previousCursor = advanceCursor
@@ -225,6 +227,14 @@ const scheduled = async (event: ScheduledController, env: Env): Promise<void> =>
   if (action === undefined) throw new Error("Unknown cron trigger");
   const now = new Date(event.scheduledTime);
   const runDate = jstDate(event.scheduledTime);
+  if (action.action === "difn") {
+    await startAcquisition(env, "jv", runDate, "daily", DIFN_LOOKBACK_DAYS, false, now, {
+      dataSpec: "DIFN",
+      ...defaultAcquisitionWindow("jv", runDate, DIFN_LOOKBACK_DAYS),
+      toTime: jstTimestamp(now.getTime()),
+    });
+    return;
+  }
   if (action.action === "run") {
     await startAcquisition(
       env,
@@ -243,7 +253,7 @@ const scheduled = async (event: ScheduledController, env: Env): Promise<void> =>
 const parseAdminRunRequest = (value: Record<string, unknown>, now: Date): AdminRunRequest => {
   const provider = parseProvider(value.provider);
   const dataSpec = value.dataSpec === undefined ? "RACE" : value.dataSpec;
-  if (dataSpec !== "RACE" && dataSpec !== "COMM" && dataSpec !== "RACECOMM")
+  if (dataSpec !== "RACE" && dataSpec !== "COMM" && dataSpec !== "RACECOMM" && dataSpec !== "DIFN")
     throw new Error("Invalid acquisition spec");
   if (
     dataSpec !== "RACE" &&
@@ -284,14 +294,18 @@ const adminRun = async (request: Request, env: Env, now: Date): Promise<Response
   }
   try {
     if (parsed.dataSpec !== "RACE") {
+      const masterTable = parsed.dataSpec === "DIFN" ? "jvd_um" : "jvd_cs";
       const targets = await listCatalogTargets(env.DB, parsed.provider);
       if (
         !targets.some(
           (target) =>
-            target.table_name === "jvd_cs" && target.partition_field === "__unpartitioned__",
+            target.table_name === masterTable && target.partition_field === "__unpartitioned__",
         )
       )
-        return Response.json({ error: "COMM Catalog target is not configured" }, { status: 409 });
+        return Response.json(
+          { error: `${parsed.dataSpec} Catalog target is not configured` },
+          { status: 409 },
+        );
     }
     const run = await startAcquisition(
       env,
@@ -368,12 +382,11 @@ const adminIndex = async (request: Request, env: Env, now: Date): Promise<Respon
     const targets = await listCatalogTargets(env.DB, provider);
     const target = targets.find((candidate) => candidate.table_name === value.tableName);
     if (target === undefined) throw new Error("Catalog target is not configured");
-    const validPartition =
-      target.table_name === "jvd_cs"
-        ? provider === "jv" &&
-          target.partition_field === "__unpartitioned__" &&
-          value.partitionValue === "__all__"
-        : /^20\d{2}$/.test(value.partitionValue);
+    const validPartition = isUnpartitionedTable(target.table_name)
+      ? provider === "jv" &&
+        target.partition_field === "__unpartitioned__" &&
+        value.partitionValue === "__all__"
+      : /^20\d{2}$/.test(value.partitionValue);
     if (!validPartition) throw new Error("Invalid index partition");
     const runId = `index-${crypto.randomUUID()}`;
     const runDate = jstDate(now.getTime());

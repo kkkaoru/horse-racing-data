@@ -4,6 +4,7 @@ import {
   acquisitionBodyForSpec,
   defaultAcquisitionWindow,
   CRON_JV_DAILY,
+  CRON_JV_DIFN_DAILY,
   CRON_JV_MONITOR,
   CRON_NV_DAILY,
   CRON_NV_MONITOR,
@@ -55,6 +56,7 @@ describe("daily schedule", () => {
     expect(scheduledAction(CRON_NV_MONITOR)).toEqual({ action: "monitor", provider: "nv" });
     expect(scheduledAction(CRON_JV_DAILY)).toEqual({ action: "run", provider: "jv" });
     expect(scheduledAction(CRON_JV_MONITOR)).toEqual({ action: "monitor", provider: "jv" });
+    expect(scheduledAction(CRON_JV_DIFN_DAILY)).toStrictEqual({ action: "difn", provider: "jv" });
     expect(scheduledAction("* * * * *")).toBeUndefined();
   });
 

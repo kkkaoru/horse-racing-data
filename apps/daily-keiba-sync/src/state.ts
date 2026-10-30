@@ -30,6 +30,15 @@ export interface IndexChunkRow {
   table_name: string;
 }
 
+interface DedupeKeyInput {
+  dataSpec: AcquisitionDataSpec;
+  force: boolean;
+  provider: Provider;
+  runDate: string;
+  runId: string;
+  trigger: TriggerKind;
+}
+
 export interface AcquisitionRunInput {
   db: D1Database;
   provider: Provider;
@@ -47,6 +56,19 @@ export interface AcquisitionRunInput {
 
 const nowIso = (now: Date): string => now.toISOString();
 
+// The daily DIFN horse-master run is a second daily run beside the RACE one.
+const dailyDedupeKey = ({
+  dataSpec,
+  force,
+  provider,
+  runDate,
+  runId,
+  trigger,
+}: DedupeKeyInput): string => {
+  if (force) return `${provider}:${runDate}:${trigger}:${runId}`;
+  return dataSpec === "DIFN" ? `${provider}:${runDate}:difn` : `${provider}:${runDate}:daily`;
+};
+
 export const createRunWithDataSpec = async ({
   db,
   provider,
@@ -62,12 +84,10 @@ export const createRunWithDataSpec = async ({
   advanceCursor,
 }: AcquisitionRunInput): Promise<{ created: boolean; run: RunRow }> => {
   if (provider === "nv" && dataSpec !== "RACE") throw new Error("NV acquisition requires RACE");
-  if (dataSpec === "COMM" && advanceCursor)
-    throw new Error("COMM-only acquisition cannot advance the race cursor");
+  if ((dataSpec === "COMM" || dataSpec === "DIFN") && advanceCursor)
+    throw new Error(`${dataSpec}-only acquisition cannot advance the race cursor`);
   const runId = crypto.randomUUID();
-  const dedupeKey = force
-    ? `${provider}:${runDate}:${trigger}:${runId}`
-    : `${provider}:${runDate}:daily`;
+  const dedupeKey = dailyDedupeKey({ dataSpec, force, provider, runDate, runId, trigger });
   const timestamp = nowIso(now);
   const result = await db
     .prepare(

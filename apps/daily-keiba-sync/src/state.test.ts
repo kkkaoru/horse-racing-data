@@ -66,6 +66,7 @@ beforeAll(async () => {
     "0003_acquisition_window.sql",
     "0005_acquisition_data_spec.sql",
     "0006_catalog_row_index_all_positions.sql",
+    "0007_jvd_um_difn_target.sql",
   ]) {
     const migration = await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8");
     await db.exec(
@@ -147,6 +148,38 @@ describe("D1 sync state", () => {
       to_time: "20260903010000",
     });
     expect(await getProviderAcquisitionCursor(db, "jv")).toBeNull();
+  });
+
+  test("keeps one daily DIFN run beside the daily RACE run and never lets it move the cursor", async () => {
+    const race = await createRun(db, "jv", "20260903", "daily", 2, now, false);
+    const input: Parameters<typeof createRunWithDataSpec>[0] = {
+      db,
+      provider: "jv",
+      dataSpec: "DIFN",
+      runDate: "20260903",
+      trigger: "daily",
+      lookbackDays: 7,
+      now,
+      force: false,
+      fromTime: "20260827000000",
+      toTime: "20260903203000",
+      cursorTime: "20260903203000",
+      advanceCursor: false,
+    };
+    const difn = await createRunWithDataSpec(input);
+    const again = await createRunWithDataSpec(input);
+    expect([race.created, difn.created, again.created]).toStrictEqual([true, true, false]);
+    expect(again.run.run_id).toBe(difn.run.run_id);
+    expect(difn.run).toMatchObject({ data_spec: "DIFN", advance_cursor: 0 });
+    expect(
+      await db
+        .prepare("select dedupe_key from sync_runs where run_id = ?")
+        .bind(difn.run.run_id)
+        .first(),
+    ).toStrictEqual({ dedupe_key: "jv:20260903:difn" });
+    await expect(createRunWithDataSpec({ ...input, advanceCursor: true })).rejects.toThrow(
+      "DIFN-only acquisition cannot advance the race cursor",
+    );
   });
 
   test("a deduplicated existing run keeps RACE even when the proposed policy changes", async () => {

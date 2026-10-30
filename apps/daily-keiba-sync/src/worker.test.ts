@@ -171,6 +171,7 @@ beforeAll(async () => {
       "0003_acquisition_window.sql",
       "0005_acquisition_data_spec.sql",
       "0006_catalog_row_index_all_positions.sql",
+      "0007_jvd_um_difn_target.sql",
     ].map((name) => readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8")),
   );
   await env.DB.exec(
@@ -456,6 +457,40 @@ describe("daily sync Worker", () => {
       expect(mocks.acquireRun).not.toHaveBeenCalled();
     },
   );
+
+  test("a manual DIFN run requires the unpartitioned jvd_um target", async () => {
+    const request = (): Request =>
+      new Request("https://example/admin/run", {
+        method: "POST",
+        body: JSON.stringify({
+          provider: "jv",
+          dataSpec: "DIFN",
+          fromTime: "20260901000000",
+          toTime: "20260904090000",
+        }),
+      });
+    mocks.listTargets.mockResolvedValueOnce([
+      { table_name: "jvd_cs", partition_field: "__unpartitioned__" },
+    ]);
+    const missing = await adminRun(request(), env, new Date("2026-09-04T00:00:00Z"));
+    expect(missing.status).toBe(409);
+    expect(await missing.json()).toStrictEqual({
+      error: "DIFN Catalog target is not configured",
+    });
+    mocks.listTargets.mockResolvedValueOnce([
+      { table_name: "jvd_um", partition_field: "__unpartitioned__" },
+    ]);
+    mocks.createRunWithDataSpec.mockResolvedValueOnce({
+      created: true,
+      run: { ...run(), data_spec: "DIFN", advance_cursor: 0 },
+    });
+    const accepted = await adminRun(request(), env, new Date("2026-09-04T00:00:00Z"));
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({ dataSpec: "DIFN" });
+    expect(mocks.createRunWithDataSpec).toHaveBeenCalledWith(
+      expect.objectContaining({ dataSpec: "DIFN", advanceCursor: false, trigger: "manual" }),
+    );
+  });
 
   test("COMM acquisition remains authenticated before reading configuration", async () => {
     const response = await fetchHandler(
@@ -996,6 +1031,28 @@ describe("daily sync Worker", () => {
     await expect(
       scheduled({ cron: "bad", noRetry: vi.fn(), scheduledTime: 0 }, env),
     ).rejects.toThrow("Unknown cron");
+  });
+
+  test("starts the daily DIFN horse-master run over a week without touching the cursor", async () => {
+    await scheduled(
+      { cron: "30 11 * * *", noRetry: vi.fn(), scheduledTime: Date.parse("2026-09-03T11:30:00Z") },
+      env,
+    );
+    expect(mocks.createRunWithDataSpec).toHaveBeenCalledWith({
+      db: expect.anything(),
+      provider: "jv",
+      dataSpec: "DIFN",
+      runDate: "20260903",
+      trigger: "daily",
+      lookbackDays: 7,
+      now: expect.any(Date),
+      force: false,
+      fromTime: "20260827000000",
+      toTime: "20260903203000",
+      cursorTime: "20260903203000",
+      advanceCursor: false,
+    });
+    expect(mocks.cachedCursor).not.toHaveBeenCalled();
   });
 
   test("runs the running-style Catalog sync for the JST run date on its cron", async () => {

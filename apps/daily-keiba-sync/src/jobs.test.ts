@@ -125,6 +125,7 @@ beforeAll(async () => {
     "0003_acquisition_window.sql",
     "0005_acquisition_data_spec.sql",
     "0006_catalog_row_index_all_positions.sql",
+    "0007_jvd_um_difn_target.sql",
   ]) {
     const migration = await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8");
     await baseEnv.DB.exec(
@@ -288,7 +289,7 @@ describe("sync queue jobs", () => {
         baseEnv,
         now,
       ),
-    ).rejects.toThrow("Course target requires an unpartitioned configuration");
+    ).rejects.toThrow("Master target requires an unpartitioned configuration");
     expect(queue.messages).toHaveLength(0);
     expect(mocks.catalog).not.toHaveBeenCalled();
     expect(mocks.neon).not.toHaveBeenCalled();
@@ -366,6 +367,88 @@ describe("sync queue jobs", () => {
       });
     },
   );
+
+  test("stages only the horse master from a DIFN run, never its NAR race rows", async () => {
+    const { run } = await createRunWithDataSpec({
+      db: baseEnv.DB,
+      provider: "jv",
+      dataSpec: "DIFN",
+      runDate: "20260904",
+      trigger: "manual",
+      lookbackDays: 7,
+      now,
+      force: true,
+      fromTime: "20260828000000",
+      toTime: "20260904200000",
+      cursorTime: "20260904200000",
+      advanceCursor: false,
+    });
+    const body = sourceBody([
+      makeRecord("jvd_um", { ketto_toroku_bango: "2024104246" }),
+      makeRecord("jvd_ra", { kaisai_nen: "2026", keibajo_code: "44" }),
+    ]);
+    const env: Env = {
+      ...baseEnv,
+      JV_SOURCE: {
+        fetch: async () =>
+          new Response(body, { headers: { "Content-Type": "application/x-ndjson" } }),
+      },
+    };
+    await acquireRun(
+      {
+        advanceCursor: false,
+        cursorTime: "20260904200000",
+        fromTime: "20260828000000",
+        provider: "jv",
+        runDate: "20260904",
+        runId: run.run_id,
+        toTime: "20260904200000",
+      },
+      env,
+      now,
+    );
+    const staged = queue.messages[0];
+    if (staged?.type !== "r2-bucket-jvlink") throw new Error("Missing JV stage job");
+    await handleJob(staged, env, now);
+    expect(
+      await baseEnv.DB.prepare("select table_name from sync_run_tables where run_id = ?")
+        .bind(run.run_id)
+        .all(),
+    ).toMatchObject({ results: [{ table_name: "jvd_um" }] });
+    expect(await getProviderAcquisitionCursor(baseEnv.DB, "jv")).toBeNull();
+  });
+
+  test("rejects DIFN cursor advancement from a replayed staging message", async () => {
+    const { run } = await createRunWithDataSpec({
+      db: baseEnv.DB,
+      provider: "jv",
+      dataSpec: "DIFN",
+      runDate: "20260904",
+      trigger: "manual",
+      lookbackDays: 7,
+      now,
+      force: true,
+      fromTime: "20260828000000",
+      toTime: "20260904200000",
+      cursorTime: "20260904200000",
+      advanceCursor: false,
+    });
+    await expect(
+      handleJob(
+        {
+          type: "r2-bucket-jvlink",
+          provider: "jv",
+          runDate: "20260904",
+          runId: run.run_id,
+          stagingKey: "must-not-be-read",
+          advanceCursor: true,
+          cursorTime: "20260904200000",
+        },
+        baseEnv,
+        now,
+      ),
+    ).rejects.toThrow("DIFN-only acquisition cannot advance the race cursor");
+  });
 
   test("rejects a mismatched provider or COMM cursor request before source I/O", async () => {
     const { run } = await createRunWithDataSpec({

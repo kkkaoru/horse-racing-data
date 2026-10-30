@@ -5,12 +5,15 @@ export const CRON_NV_DAILY = "0 16 * * *";
 export const CRON_NV_MONITOR = "0 17 * * *";
 export const CRON_JV_DAILY = "0 11 * * *";
 export const CRON_JV_MONITOR = "0 12 * * *";
+export const CRON_JV_DIFN_DAILY = "30 11 * * *";
 export const CRON_RUNNING_STYLE_CATALOG = "30 20 * * *";
 export const DEFAULT_LOOKBACK_DAYS = 2;
 export const BOOTSTRAP_LOOKBACK_DAYS = 7;
+// UM rows are keyed upserts, so a week-long window lets a missed DIFN day heal.
+export const DIFN_LOOKBACK_DAYS = 7;
 
 export interface ScheduledAction {
-  action: "monitor" | "run";
+  action: "difn" | "monitor" | "run";
   provider: Provider;
 }
 
@@ -24,6 +27,7 @@ const ACTIONS: Readonly<Record<string, ScheduledAction>> = Object.freeze({
   [CRON_NV_MONITOR]: { action: "monitor", provider: "nv" },
   [CRON_JV_DAILY]: { action: "run", provider: "jv" },
   [CRON_JV_MONITOR]: { action: "monitor", provider: "jv" },
+  [CRON_JV_DIFN_DAILY]: { action: "difn", provider: "jv" },
 });
 
 export const scheduledAction = (cron: string): ScheduledAction | undefined => ACTIONS[cron];

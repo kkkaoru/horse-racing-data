@@ -71,6 +71,7 @@ beforeAll(async () => {
     "0003_acquisition_window.sql",
     "0005_acquisition_data_spec.sql",
     "0006_catalog_row_index_all_positions.sql",
+    "0007_jvd_um_difn_target.sql",
   ]) {
     const migration = await readFile(new URL(`../migrations/${name}`, import.meta.url), "utf8");
     await env.DB.exec(

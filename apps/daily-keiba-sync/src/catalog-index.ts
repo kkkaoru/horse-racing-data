@@ -5,7 +5,7 @@ import { applicablePositionDeletes } from "icebird/src/delete.js";
 import { parquetReadObjects } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
 import { permanentFailure } from "./errors";
-import { layoutByTable, rowKey } from "./layouts";
+import { isUnpartitionedTable, layoutByTable, rowKey } from "./layouts";
 import {
   beginIndexPartition,
   clearIndexPartition,
@@ -31,9 +31,10 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const matchesPartition = (job: IndexPlanJob, partition: Record<string, unknown>): boolean => {
-  if (job.tableName !== "jvd_cs") return String(partition.kaisai_nen) === job.partitionValue;
+  if (!isUnpartitionedTable(job.tableName))
+    return String(partition.kaisai_nen) === job.partitionValue;
   if (Object.keys(partition).length !== 0)
-    throw permanentFailure("index-partition", new Error("course file is partitioned"));
+    throw permanentFailure("index-partition", new Error("master file is partitioned"));
   return true;
 };
 
@@ -119,8 +120,8 @@ export const planCatalogIndex = async (
   env: Env,
   now = new Date(),
 ): Promise<void> => {
-  if (job.tableName === "jvd_cs" && job.partitionValue !== "__all__")
-    throw permanentFailure("index-partition", new Error("invalid course partition"));
+  if (isUnpartitionedTable(job.tableName) && job.partitionValue !== "__all__")
+    throw permanentFailure("index-partition", new Error("invalid master partition"));
   const started = await beginIndexPartition(env.DB, job.tableName, job.partitionValue, now);
   if (!started) {
     const partition = await getIndexPartition(env.DB, job.tableName, job.partitionValue);
@@ -210,10 +211,9 @@ export const indexCatalogFile = async (
   const loaded = await loadCatalogTable(env, job.tableName);
   const deleted = await deletedPositions(chunk, loaded);
   const file = await loaded.resolver.reader(chunk.file_path, chunk.file_size);
-  const columns =
-    job.tableName === "jvd_cs"
-      ? [...layout.primaryKey]
-      : [...new Set([...layout.primaryKey, "kaisai_nen"])];
+  const columns = isUnpartitionedTable(job.tableName)
+    ? [...layout.primaryKey]
+    : [...new Set([...layout.primaryKey, "kaisai_nen"])];
   const values: readonly unknown[] = await parquetReadObjects({
     columns,
     compressors,

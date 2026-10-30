@@ -21,6 +21,8 @@ export type RecordRow = Readonly<Record<string, RecordValue>>;
 const RECORD_TERMINATOR_BYTES = 2;
 const TYPE_BYTES = 2;
 const IDENTIFIER = /^[a-z][a-z0-9_]*$/;
+// Masters synced as one unpartitioned Iceberg table (partition "__all__").
+const UNPARTITIONED_TABLES: ReadonlySet<string> = new Set(["jvd_cs", "jvd_um"]);
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -206,6 +208,9 @@ export const catalogDeleteRowKeys = (layout: RecordLayout, row: RecordRow): read
   if (!isDomesticJraRunner(layout, row) || !/^(?:0[1-9]|1[0-8])$/.test(umaban)) return [current];
   return [current, rowKey(layout, { ...row, umaban: "00" })];
 };
+
+export const isUnpartitionedTable = (tableName: string): boolean =>
+  UNPARTITIONED_TABLES.has(tableName);
 
 export const layoutByTable = (tableName: string): RecordLayout => {
   if (tableName === NETKEIBA_TRAINING_LAYOUT.tableName) return NETKEIBA_TRAINING_LAYOUT;

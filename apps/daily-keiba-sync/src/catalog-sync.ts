@@ -9,7 +9,7 @@ import { restCatalogUpdateTable } from "icebird/src/catalog/rest.js";
 import { parquetReadObjects } from "hyparquet";
 import { compressors } from "hyparquet-compressors";
 import { isTransientJobError, permanentFailure, transientFailure } from "./errors";
-import { catalogDeleteRowKeys, layoutByTable, rowKey } from "./layouts";
+import { catalogDeleteRowKeys, isUnpartitionedTable, layoutByTable, rowKey } from "./layouts";
 import { createR2Resolver } from "./r2-resolver";
 import {
   findCatalogPositions,
@@ -59,11 +59,11 @@ const validateSchema = (tableName: string, metadata: CatalogMetadata): void => {
   const layout = layoutByTable(tableName);
   const fields = currentSchema(metadata).fields;
   if (
-    tableName === "jvd_cs" &&
+    isUnpartitionedTable(tableName) &&
     (!metadata["partition-specs"].some((spec) => spec["spec-id"] === metadata["default-spec-id"]) ||
       metadata["partition-specs"].some((spec) => spec.fields.length !== 0))
   )
-    throw new Error("Course master requires unpartitioned Iceberg metadata");
+    throw new Error("Master table requires unpartitioned Iceberg metadata");
   if (fields.length !== layout.columns.length)
     throw new Error("Iceberg schema column count mismatch");
   for (let index = 0; index < fields.length; index += 1) {
@@ -80,7 +80,7 @@ const validateSchema = (tableName: string, metadata: CatalogMetadata): void => {
 };
 
 const partitionValue = (tableName: string, row: RecordRow): string => {
-  if (tableName === "jvd_cs") return "__all__";
+  if (isUnpartitionedTable(tableName)) return "__all__";
   const value = row.kaisai_nen;
   if (typeof value !== "string") throw new Error("Catalog row has no partition value");
   return value.trim();
@@ -189,10 +189,9 @@ const indexCommittedRows = async (
       entry.data_file.file_path,
       Number(entry.data_file.file_size_in_bytes),
     );
-    const columns =
-      tableName === "jvd_cs"
-        ? [...layout.primaryKey]
-        : [...new Set([...layout.primaryKey, "kaisai_nen"])];
+    const columns = isUnpartitionedTable(tableName)
+      ? [...layout.primaryKey]
+      : [...new Set([...layout.primaryKey, "kaisai_nen"])];
     const values: readonly unknown[] = await parquetReadObjects({ columns, compressors, file });
     for (let position = 0; position < values.length; position += 1) {
       const row = parsePhysicalRow(values[position], columns);

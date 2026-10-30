@@ -19,6 +19,7 @@
       "0 17 * * *", // NV-Link monitor/recovery — JST 02:00
       "0 11 * * *", // JV-Link acquire/sync — JST 20:00
       "0 12 * * *", // JV-Link monitor/recovery — JST 21:00
+      "30 11 * * *", // JV-Link DIFN horse master (UM) -> jvd_um — JST 20:30
       "30 20 * * *", // Running-style predictions -> R2 Catalog — JST 05:30
     ],
   },

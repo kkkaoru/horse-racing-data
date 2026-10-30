@@ -8,7 +8,7 @@ export type {
   RecordValue,
   RecordRow,
 } from "./layouts";
-export type AcquisitionDataSpec = "RACE" | "COMM" | "RACECOMM";
+export type AcquisitionDataSpec = "RACE" | "COMM" | "RACECOMM" | "DIFN";
 export type TriggerKind = "daily" | "manual" | "monitor";
 
 export interface AcquisitionRequest {

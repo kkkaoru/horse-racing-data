@@ -4,6 +4,7 @@ import type { RecordLayout, RecordRow } from "./layouts";
 import {
   catalogDeleteRowKeys,
   isProvisionalJraRunner,
+  isUnpartitionedTable,
   layoutByTable,
   layoutForRecord,
   optionalLayoutForRecord,
@@ -53,6 +54,30 @@ describe("fixed-record layouts", () => {
     expect(row.data_kubun).toBe("7");
     expect(row.kaisai_nen).toBe("2026");
     expect(rowKey(layout, row)).toContain("2026");
+  });
+
+  test("decodes the JV UM horse master keyed by its registration number", () => {
+    const bytes = makeRecord("jvd_um", {
+      ketto_joho_01b: "サンダースノー",
+      ketto_joho_05b: "ディープインパクト",
+      ketto_toroku_bango: "2024104246",
+    });
+    const layout = layoutForRecord("jv", bytes);
+    const row = parseFixedRecord(layout, bytes);
+    expect(layout.tableName).toBe("jvd_um");
+    expect(layout.recordBytes).toBe(1609);
+    expect(layout.columns.length).toBe(89);
+    expect(rowKey(layout, row)).toBe("2024104246");
+    expect(String(row.ketto_joho_01b).trim()).toBe("サンダースノー");
+    expect(String(row.ketto_joho_05b).trim()).toBe("ディープインパクト");
+  });
+
+  test("treats only the master tables as unpartitioned", () => {
+    expect([
+      isUnpartitionedTable("jvd_um"),
+      isUnpartitionedTable("jvd_cs"),
+      isUnpartitionedTable("jvd_se"),
+    ]).toStrictEqual([true, true, false]);
   });
 
   test("loads different provider layouts for the same record type", () => {
