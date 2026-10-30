@@ -16,6 +16,8 @@ export interface HistorySourcePageProfile {
   readonly populationPattern: string;
   readonly nextLabels: readonly string[];
   readonly emptyMarker: string;
+  // Listed rows the source excludes from its published total (e.g. scratched entries).
+  readonly uncountedFinishTexts?: readonly string[];
 }
 
 export interface HistorySourcePageInput {
@@ -35,6 +37,13 @@ export interface ParsedHistorySourcePage {
 const LINK_PATTERN: RegExp = /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/giu;
 const TAG_PATTERN: RegExp = /<[^>]+>/gu;
 const INTEGER_PATTERN: RegExp = /^\d+$/u;
+
+export const countedHistoryRows = (
+  rows: readonly HistorySourceRow[],
+  profile: HistorySourcePageProfile,
+): number =>
+  rows.filter((row) => !(profile.uncountedFinishTexts ?? []).includes(row.finishPositionText))
+    .length;
 
 const plainText = (text: string): string =>
   text.replace(TAG_PATTERN, " ").replaceAll("&nbsp;", " ").replace(/\s+/gu, " ").trim();
@@ -84,7 +93,7 @@ export const parseHistorySourcePage = (input: HistorySourcePageInput): ParsedHis
     input.kind === "horse"
       ? parseSecondaryHorseResults(input.html, input.sourceId, input.profile.markup)
       : parseSecondaryPersonResults(input.html, input.kind, input.sourceId, input.profile.markup);
-  if (rows.length === 0 || rows.length > publishedCount) {
+  if (rows.length === 0 || countedHistoryRows(rows, input.profile) > publishedCount) {
     throw new Error("Parsed history rows disagree with the published population.");
   }
   return { rows, nextUrl, publishedCount };

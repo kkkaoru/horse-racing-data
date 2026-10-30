@@ -96,7 +96,9 @@ const isPlan = (value: unknown): value is HistoryArchivePlan =>
   markup(value.profile.markup) &&
   typeof value.profile.populationPattern === "string" &&
   typeof value.profile.emptyMarker === "string" &&
-  stringList(value.profile.nextLabels);
+  stringList(value.profile.nextLabels) &&
+  (value.profile.uncountedFinishTexts === undefined ||
+    stringList(value.profile.uncountedFinishTexts));
 
 const isState = (value: unknown): value is HistoryArchiveState =>
   isHistoryRecord(value) &&

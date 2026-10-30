@@ -142,6 +142,22 @@ it("does not trust a completed checkpoint when its source population differs", a
   );
 });
 
+it("completes when only configured uncounted rows exceed the published population", async () => {
+  const scratched: string = table
+    .replace('<table data-demo="results">', "")
+    .replace("<td>2</td>", "<td>Scratched</td>")
+    .replace("race1", "race2");
+  fetchPage.mockResolvedValue(`Published (1) ${table.replace("</table>", "")}${scratched}</html>`);
+  const counted: HistoryArchivePlan = {
+    ...plan,
+    profile: { ...plan.profile, uncountedFinishTexts: ["Scratched"] },
+  };
+  const result = await collectHistoryArchive({ plan: counted, state: null, pageBudget: 1, ports });
+  expect(result.collection.status).toBe("complete");
+  expect(result.state.rows.map((row) => row.finishPositionText)).toStrictEqual(["2", "Scratched"]);
+  expect(() => verifyHistoryArchive(result.state, counted)).not.toThrow();
+});
+
 it("preserves explicitly declared zero-result coverage", async () => {
   fetchPage.mockResolvedValue("Published (0) No results</html>");
   const result = await collectHistoryArchive({ plan, state: null, pageBudget: 1, ports });

@@ -6,6 +6,7 @@ import {
   type HistoryCollectionResult,
 } from "./sources/history-collection";
 import {
+  countedHistoryRows,
   parseHistorySourcePage,
   type HistorySourceKind,
   type HistorySourcePageProfile,
@@ -74,7 +75,10 @@ export const verifyHistoryArchive = (
   ) {
     throw new Error("History archive belongs to a different plan or has inconsistent progress.");
   }
-  if (state.checkpoint.pendingUrl === null && state.rows.length !== state.publishedCount) {
+  if (
+    state.checkpoint.pendingUrl === null &&
+    countedHistoryRows(state.rows, plan.profile) !== state.publishedCount
+  ) {
     throw new Error("History archive completion does not match the published population.");
   }
 };
@@ -114,7 +118,8 @@ export const collectHistoryArchive = async (
         }
         if (
           page.nextUrl === null &&
-          progress.state.rows.length + page.rows.length !== page.publishedCount
+          countedHistoryRows([...progress.state.rows, ...page.rows], input.plan.profile) !==
+            page.publishedCount
         ) {
           throw new Error("History terminal row count differs from the published population.");
         }

@@ -56,6 +56,33 @@ it("parses person rows and deduplicates identical top/bottom next links", () => 
   expect(result.nextUrl).toBe("https://example.test/results/?page=2&sort=date");
 });
 
+it("excludes configured uncounted rows from the published population comparison", () => {
+  const scratched: string = table
+    .replace('<table data-example="results">', "")
+    .replace("<td>2</td>", "<td>Scratched</td>");
+  const result = parseHistorySourcePage({
+    html: `Published (1) ${table.replace("</table>", "")}${scratched}</html>`,
+    url: "https://example.test/results/",
+    kind: "horse",
+    sourceId: "horse1",
+    profile: { ...profile, uncountedFinishTexts: ["Scratched"] },
+  });
+  expect(result.rows.map((row) => row.finishPositionText)).toStrictEqual(["2", "Scratched"]);
+  expect(result.publishedCount).toBe(1);
+});
+
+it("still rejects more counted rows than the published population", () => {
+  expect(() =>
+    parseHistorySourcePage({
+      html: `Published (1) ${table.replace("</table>", "")}${table.replace('<table data-example="results">', "")}</html>`,
+      url: "https://example.test/results/",
+      kind: "horse",
+      sourceId: "horse1",
+      profile: { ...profile, uncountedFinishTexts: ["Scratched"] },
+    }),
+  ).toThrow("Parsed history rows disagree with the published population.");
+});
+
 it("parses horse rows without assuming absence of a next link proves population completion", () => {
   const result = parseHistorySourcePage({
     html: `Published (2) ${table}</html>`,

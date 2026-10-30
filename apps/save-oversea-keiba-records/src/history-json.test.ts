@@ -147,6 +147,19 @@ it("rejects non-string next labels", () => {
   );
 });
 
+it("accepts uncounted finish texts and rejects non-string entries", () => {
+  const valid = structuredClone(plan);
+  Reflect.set(valid.profile, "uncountedFinishTexts", ["Scratched"]);
+  expect(decodeHistoryPlan(JSON.stringify(valid)).profile.uncountedFinishTexts).toStrictEqual([
+    "Scratched",
+  ]);
+  const invalid = structuredClone(plan);
+  Reflect.set(invalid.profile, "uncountedFinishTexts", [1]);
+  expect(() => decodeHistoryPlan(JSON.stringify(invalid))).toThrow(
+    "Private history plan is invalid.",
+  );
+});
+
 it("decodes archive rows without inventing missing source values", () => {
   const value = decodeHistoryArchive(
     JSON.stringify({
