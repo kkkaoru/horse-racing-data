@@ -1117,7 +1117,7 @@ it("preserves the distinct stored same-title owner scope", () => {
   ).toBe("stored-results-race-10y");
 });
 
-it("limits native nonfinish rate semantics to the exact current Arc context", () => {
+it("applies native nonfinish rate semantics to overseas events only", () => {
   const arc: WinRateHeatmapStatsFilters = {
     ...jraFilters,
     date: "20261004",
@@ -1131,8 +1131,8 @@ it("limits native nonfinish rate semantics to the exact current Arc context", ()
     "btrim(coalesce(se.ijo_kubun_code, '')) NOT IN ('1', '2')",
   );
   expect(buildWinRateHeatmapBloodlineQuery(config, jraFilters)).not.toMatch("ijo_kubun_code");
-  expect(buildWinRateHeatmapSimilarQuery(config, { ...arc, raceBango: "04" })).not.toMatch(
-    "ijo_kubun_code",
+  expect(buildWinRateHeatmapSimilarQuery(config, { ...arc, raceBango: "04" })).toMatch(
+    "btrim(coalesce(se.ijo_kubun_code, '')) NOT IN ('1', '2')",
   );
 });
 

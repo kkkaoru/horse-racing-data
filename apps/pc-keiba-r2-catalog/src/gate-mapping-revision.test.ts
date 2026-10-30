@@ -248,11 +248,13 @@ it("projects all race mappings with explicit nulls and fixed owner scope", async
     Response.json({ success: true, result: { rows: [] } }),
   );
   await loadRevision({ env, filters: { ...filters, raceBango: "01" }, fetchImpl });
-  expect(fetchImpl).toHaveBeenCalledTimes(3);
-  expect(fetchImpl.mock.calls[1]?.[1]?.body).toMatch(/LEFT JOIN/);
-  expect(fetchImpl.mock.calls[1]?.[1]?.body).toMatch(/COALESCE/);
-  expect(fetchImpl.mock.calls[1]?.[1]?.body).not.toMatch(/race_bango =/);
-  expect(fetchImpl.mock.calls[2]?.[1]?.body).toMatch(/race_bango = '05'/);
+  // A non-Arc overseas race first reads the day's event titles to find its past editions.
+  expect(fetchImpl).toHaveBeenCalledTimes(4);
+  expect(fetchImpl.mock.calls[0]?.[1]?.body).toMatch(/SELECT DISTINCT kyosomei_hondai/);
+  expect(fetchImpl.mock.calls[2]?.[1]?.body).toMatch(/LEFT JOIN/);
+  expect(fetchImpl.mock.calls[2]?.[1]?.body).toMatch(/COALESCE/);
+  expect(fetchImpl.mock.calls[2]?.[1]?.body).not.toMatch(/race_bango =/);
+  expect(fetchImpl.mock.calls[3]?.[1]?.body).toMatch(/race_bango = '05'/);
 });
 
 it("fences actual 30Y venue outputs and rejects malformed owner aggregates", async () => {
@@ -391,6 +393,7 @@ it.each([
     expect(await loadRevision({ env, filters: { ...filters, ...change }, fetchImpl })).toBe(
       "gate-v1-bbf6e1fa22ed1f76c1da4f6a32b1f4e0faed7257d10055b50b1ffea3e41d8a7b",
     );
-    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(3);
+    // Overseas races add one event-title read; with no titles the revision bytes are unchanged.
+    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(4);
   },
 );

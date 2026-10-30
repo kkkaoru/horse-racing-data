@@ -1,7 +1,17 @@
 // Run with bun. Deterministic local DuckDB fixtures, never production access.
 import { DuckDBInstance } from "@duckdb/node-api";
 import { expect, it } from "vitest";
-import { arcTitleSql, isCurrentArc } from "./arc-cohort";
+import {
+  arcTitleSql,
+  buildEventTitlesQuery,
+  eventScopeTitleSql,
+  eventTitlesFromRows,
+  eventTitlesSql,
+  isCurrentArc,
+  isOverseasEvent,
+  normalizeEventTitle,
+  overseasEventScope,
+} from "./arc-cohort";
 import { buildPartnershipCountsQuery } from "./heatmap-partnership-sql";
 import type { PartnershipKind, PartnershipScope } from "./heatmap-partnership";
 import {
@@ -217,4 +227,56 @@ it("keeps unique pretarget Arc bloodlines including current horses, with source-
     c.closeSync();
     db.closeSync();
   }
+});
+
+it("treats every JRA-sold overseas venue code as an event, and nothing else", () => {
+  expect(
+    isOverseasEvent({ source: "jra", date: "20261101", keibajoCode: "A4", raceBango: "12" }),
+  ).toBe(true);
+  expect(
+    isOverseasEvent({ source: "jra", date: "20261101", keibajoCode: "05", raceBango: "12" }),
+  ).toBe(false);
+  expect(
+    isOverseasEvent({ source: "nar", date: "20261101", keibajoCode: "A4", raceBango: "12" }),
+  ).toBe(false);
+});
+
+it("normalizes event titles and scopes them by title", () => {
+  expect(normalizeEventTitle(" ＢＣクラシック　(GI)")).toBe("ＢＣクラシック");
+  expect(overseasEventScope("BCターフ")).toBe("overseas-event-v1:BCターフ");
+  expect(eventScopeTitleSql("t.k", "overseas-event-v1:BCターフ")).toBe(
+    "btrim(replace(t.k, chr(12288), '')) IN ('BCターフ', 'BCターフ(GI)')",
+  );
+  expect(eventScopeTitleSql("t.k", "arc-cohort-policy-v2")).toBe(
+    "btrim(replace(t.k, chr(12288), '')) IN ('凱旋門賞', '凱旋門賞(GI)')",
+  );
+  expect(eventTitlesSql("t.k", ["O'Brien"])).toBe(
+    "btrim(replace(t.k, chr(12288), '')) IN ('O''Brien', 'O''Brien(GI)')",
+  );
+});
+
+it("reads distinct normalized titles and skips rows without one", () => {
+  expect(
+    eventTitlesFromRows([
+      { kyosomei_hondai: "ＢＣマイル(GI)" },
+      { kyosomei_hondai: "ＢＣマイル" },
+      { kyosomei_hondai: "　" },
+      { kyosomei_hondai: null },
+      { kyosomei_hondai: "ＢＣスプリント" },
+    ]),
+  ).toStrictEqual(["ＢＣスプリント", "ＢＣマイル"]);
+});
+
+it("builds the event title query with and without a race number", () => {
+  expect(buildEventTitlesQuery("pc_keiba", { date: "20261101", keibajoCode: "A4" })).toBe(
+    "SELECT DISTINCT kyosomei_hondai FROM pc_keiba.jvd_ra WHERE kaisai_nen = '2026' AND kaisai_tsukihi = '1101' AND keibajo_code = 'A4' ORDER BY kyosomei_hondai LIMIT 100",
+  );
+  expect(
+    buildEventTitlesQuery("pc_keiba", { date: "20261101", keibajoCode: "A4", raceBango: "12" }),
+  ).toBe(
+    "SELECT DISTINCT kyosomei_hondai FROM pc_keiba.jvd_ra WHERE kaisai_nen = '2026' AND kaisai_tsukihi = '1101' AND keibajo_code = 'A4' AND race_bango = '12' ORDER BY kyosomei_hondai LIMIT 100",
+  );
+  expect(() => buildEventTitlesQuery("pc-keiba", { date: "20261101", keibajoCode: "A4" })).toThrow(
+    "Invalid event namespace",
+  );
 });

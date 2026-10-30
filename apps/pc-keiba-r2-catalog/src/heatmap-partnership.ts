@@ -1,4 +1,5 @@
 // Run with bun (bunx vitest).
+import type { EventScope } from "./arc-cohort";
 import type { CatalogSource } from "./types";
 
 export type PartnershipKind =
@@ -15,11 +16,11 @@ export interface PartnershipScope {
   source: CatalogSource;
   revision: string;
   surface?: string;
-  eventScope?: "arc-cohort-policy-v2";
+  eventScope?: EventScope;
 }
 
 export interface PartnershipHistory {
-  eventScope?: "arc-cohort-policy-v2";
+  eventScope?: EventScope;
   surface: string;
   date: string;
   finishPosition: number | null;

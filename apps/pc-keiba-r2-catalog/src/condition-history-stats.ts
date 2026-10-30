@@ -12,7 +12,7 @@ import type {
   R2SqlCatalogConfig,
   WinRateHeatmapStatsFilters,
 } from "./types";
-import { isCurrentArc } from "./arc-cohort";
+import { isCurrentArc, isOverseasEvent } from "./arc-cohort";
 import { encodedRaceTimeTenthsSql } from "./race-time";
 import { hexTripletSql } from "./time-score-sql";
 import {
@@ -311,7 +311,7 @@ export const buildConditionFrameStatsQuery = (
 ): string => {
   const checked = validateFilters(filters);
   const current = currentTables(checked.source);
-  const arc: boolean = isCurrentArc(checked);
+  const arc: boolean = isOverseasEvent(checked);
   const overseas = usesOverseasGate(checked);
   const frame = overseas ? "gate_mapping.gate_number" : integerSelect("se.wakuban", "00");
   const selectList = `${frame} AS frame_number,
@@ -372,7 +372,7 @@ export const buildConditionWeightClassStatsQuery = (input: {
   const checked = validateFilters(input.filters);
   const banEi = isBanEiKeibajo(checked.keibajoCode);
   const columns = banEi ? BAN_EI_WEIGHT_CLASS_COLUMNS : WEIGHT_CLASS_COLUMNS;
-  const arc: boolean = isCurrentArc(checked);
+  const arc: boolean = isOverseasEvent(checked);
   const classColumns = columns.map((column) => column.classColumn).join(", ");
   return `
 WITH ${currentRaceCteSql(input.env, checked)},

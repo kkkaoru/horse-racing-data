@@ -1,5 +1,5 @@
 // Run with bun (bunx vitest).
-import { arcTitleSql } from "./arc-cohort";
+import { eventScopeTitleSql } from "./arc-cohort";
 import {
   partnershipStartDate,
   partnershipSurface,
@@ -125,7 +125,7 @@ const historyWhere = (input: PartnershipQueryInput, source: CatalogSource): stri
     .map((column) => `AND nullif(replace(btrim(se.${column}), '0', ''), '') IS NOT NULL`)
     .join("\n    ");
   // The plain kaisai_nen bounds let R2 SQL prune partitions; concat() cannot.
-  return `concat(se.kaisai_nen, se.kaisai_tsukihi) < '${input.scope.date}'\n    AND se.kaisai_nen <= '${input.scope.date.slice(0, 4)}'\n    ${lower}\n    ${venue}\n    ${surfacePredicate}\n    ${horsePredicate(input)}\n    ${ownerTargetPredicate(input)}\n    ${input.scope.eventScope === undefined ? "" : `AND EXISTS (SELECT 1 FROM ${tableName(input.config, currentTables(source).raceTable)} arc WHERE arc.kaisai_nen = se.kaisai_nen AND arc.kaisai_tsukihi = se.kaisai_tsukihi AND arc.keibajo_code = se.keibajo_code AND arc.race_bango = se.race_bango AND ${arcTitleSql("arc.kyosomei_hondai")})`}\n    ${identities}`;
+  return `concat(se.kaisai_nen, se.kaisai_tsukihi) < '${input.scope.date}'\n    AND se.kaisai_nen <= '${input.scope.date.slice(0, 4)}'\n    ${lower}\n    ${venue}\n    ${surfacePredicate}\n    ${horsePredicate(input)}\n    ${ownerTargetPredicate(input)}\n    ${input.scope.eventScope === undefined ? "" : `AND EXISTS (SELECT 1 FROM ${tableName(input.config, currentTables(source).raceTable)} arc WHERE arc.kaisai_nen = se.kaisai_nen AND arc.kaisai_tsukihi = se.kaisai_tsukihi AND arc.keibajo_code = se.keibajo_code AND arc.race_bango = se.race_bango AND ${eventScopeTitleSql("arc.kyosomei_hondai", input.scope.eventScope)})`}\n    ${identities}`;
 };
 
 // Venue cohorts always match the target surface, independently of the

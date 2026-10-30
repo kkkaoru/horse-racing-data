@@ -1,5 +1,13 @@
 // Run with bun (bunx vitest).
-import { isCurrentArc } from "./arc-cohort";
+import {
+  ARC_EVENT_SCOPE,
+  buildEventTitlesQuery,
+  eventTitlesFromRows,
+  isCurrentArc,
+  isOverseasEvent,
+  overseasEventScope,
+  type EventScope,
+} from "./arc-cohort";
 import {
   partnershipSurface,
   type PartnershipKind,
@@ -137,6 +145,22 @@ const mappedRows = (input: {
   });
 };
 
+// Other overseas events are scoped by the current race's own normalized title.
+const partnershipEventScope = async (
+  input: PartnershipStatsRequest,
+): Promise<EventScope | undefined> => {
+  const context = { ...input.cohort.query.scope, raceBango: input.raceBango };
+  if (isCurrentArc(context)) return ARC_EVENT_SCOPE;
+  if (!isOverseasEvent(context)) return undefined;
+  return eventTitlesFromRows(
+    await input.cohort.execute(
+      buildEventTitlesQuery(input.cohort.query.config.R2_SQL_NAMESPACE, context),
+    ),
+  )
+    .map(overseasEventScope)
+    .at(0);
+};
+
 export const loadPartnershipStats = async (
   input: PartnershipStatsRequest,
 ): Promise<PartnershipStatsRow[] | null> => {
@@ -161,6 +185,7 @@ export const loadPartnershipStats = async (
     entry.horseId === null ? [] : [entry.horseId],
   );
   const groups: (PartnershipStatsRow[] | null)[] = [];
+  const eventScope: EventScope | undefined = await partnershipEventScope(input);
   // Bound R2 SQL concurrency to the two queries inside each shared cohort.
   for (const kind of KINDS) {
     if (kind === "horseJockey" && horseIds.length === 0) continue;
@@ -168,9 +193,7 @@ export const loadPartnershipStats = async (
       ...input.cohort.query.scope,
       kind,
       surface,
-      eventScope: isCurrentArc({ ...input.cohort.query.scope, raceBango: input.raceBango })
-        ? "arc-cohort-policy-v2"
-        : undefined,
+      eventScope,
     };
     const cohort = await input.cache.load({
       ...input.cohort,

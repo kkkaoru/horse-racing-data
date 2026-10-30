@@ -627,6 +627,10 @@ it("invalidates an overseas aggregate when only historical mapping content chang
   const dependencies: WorkerDependencies = {
     ...harness.dependencies,
     fetchImpl: async (input, init) => {
+      // The day's event-title read for past editions is not an aggregate query.
+      if (String(init?.body).includes("SELECT DISTINCT kyosomei_hondai")) {
+        return Response.json({ success: true, result: { rows: [] } });
+      }
       if (String(init?.body).includes("SELECT race_source, source, kaisai_nen")) {
         if (published.failed) throw new Error("revision offline");
         return Response.json({

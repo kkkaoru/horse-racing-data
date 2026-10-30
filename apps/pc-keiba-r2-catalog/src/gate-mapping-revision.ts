@@ -3,7 +3,14 @@ import type { R2SqlCatalogConfig, WinRateHeatmapStatsFilters, Fetcher } from "./
 import { executeR2Sql } from "./r2-sql";
 import { tableName, validateFilters, usesOverseasGate } from "./win-rate-heatmap-stats";
 import { buildForeignOwnerQuery, normaliseForeignOwnerRows } from "./foreign-owner-reader";
-import { arcTitleSql, isCurrentArc } from "./arc-cohort";
+import {
+  arcTitleSql,
+  buildEventTitlesQuery,
+  eventTitlesFromRows,
+  eventTitlesSql,
+  isCurrentArc,
+  isOverseasEvent,
+} from "./arc-cohort";
 import { loadArcQualifiedPeople, type ArcQualifiedResult } from "./arc-qualified-people";
 interface RevisionFilters extends WinRateHeatmapStatsFilters {
   qualifiedArcRevision?: boolean;
@@ -29,6 +36,26 @@ const PEDIGREE_FIELDS: string[] = [
 const compareTuple = (a: unknown[], b: unknown[]): number =>
   JSON.stringify(a) < JSON.stringify(b) ? -1 : Number(JSON.stringify(a) > JSON.stringify(b));
 const MAX_ROWS: number = 100000;
+const EVENT_HISTORY_YEARS: number = 30;
+// Every overseas event of the day shares this revision, so the RPC needs no race number.
+const eventTitleSql = async (input: {
+  env: R2SqlCatalogConfig;
+  filters: RevisionFilters;
+  fetchImpl: Fetcher;
+}): Promise<((column: string) => string) | undefined> => {
+  const titles: string[] = isOverseasEvent(input.filters)
+    ? eventTitlesFromRows(
+        await executeR2Sql(
+          input.env,
+          buildEventTitlesQuery(input.env.R2_SQL_NAMESPACE, input.filters),
+          input.fetchImpl,
+        ),
+      )
+    : [];
+  return titles.length === 0 ? undefined : (column: string) => eventTitlesSql(column, titles);
+};
+const eventHistoryStart = (date: string): string =>
+  `${String(Number(date.slice(0, 4)) - EVENT_HISTORY_YEARS).padStart(4, "0")}${date.slice(4)}`;
 export const loadGateMappingRevision = async (input: {
   env: R2SqlCatalogConfig;
   filters: RevisionFilters;
@@ -38,6 +65,10 @@ export const loadGateMappingRevision = async (input: {
   const filters = validateFilters(input.filters);
   if (!usesOverseasGate(filters)) return undefined;
   const arc: boolean = isCurrentArc(filters) || input.filters.qualifiedArcRevision === true;
+  const titleSql: ((column: string) => string) | undefined = arc
+    ? arcTitleSql
+    : await eventTitleSql({ ...input, filters });
+  const since: string = eventHistoryStart(filters.date);
   // Include both race sources because similar-history can union them. No updated_at heuristic.
   const rows = await executeR2Sql(
     input.env,
@@ -74,7 +105,7 @@ FROM ${tableName(input.env, "oversea_runner_source_id")} m
 LEFT JOIN ${tableName(input.env, "oversea_horse_pedigree")} p
 ON p.source = m.source AND p.source_horse_id = m.source_horse_id
 WHERE m.source = 'netkeiba' AND m.keibajo_code = '${filters.keibajoCode}'
-AND ${arc ? "(" : ""}m.kaisai_nen = '${filters.date.slice(0, 4)}' AND m.kaisai_tsukihi = '${filters.date.slice(4)}'${arc ? ` OR (m.race_source = 'jra' AND concat(m.kaisai_nen, m.kaisai_tsukihi) >= '19961004' AND concat(m.kaisai_nen, m.kaisai_tsukihi) < '${filters.date}' AND EXISTS (SELECT 1 FROM ${tableName(input.env, "jvd_ra")} historical_arc WHERE historical_arc.kaisai_nen = m.kaisai_nen AND historical_arc.kaisai_tsukihi = m.kaisai_tsukihi AND historical_arc.keibajo_code = m.keibajo_code AND historical_arc.race_bango = m.race_bango AND ${arcTitleSql("historical_arc.kyosomei_hondai")})))` : ""}
+AND ${titleSql === undefined ? "" : "("}m.kaisai_nen = '${filters.date.slice(0, 4)}' AND m.kaisai_tsukihi = '${filters.date.slice(4)}'${titleSql === undefined ? "" : ` OR (m.race_source = 'jra' AND concat(m.kaisai_nen, m.kaisai_tsukihi) >= '${since}' AND concat(m.kaisai_nen, m.kaisai_tsukihi) < '${filters.date}' AND EXISTS (SELECT 1 FROM ${tableName(input.env, "jvd_ra")} historical_arc WHERE historical_arc.kaisai_nen = m.kaisai_nen AND historical_arc.kaisai_tsukihi = m.kaisai_tsukihi AND historical_arc.keibajo_code = m.keibajo_code AND historical_arc.race_bango = m.race_bango AND ${titleSql("historical_arc.kyosomei_hondai")})))`}
 ORDER BY m.race_source, m.source, m.kaisai_nen, m.kaisai_tsukihi, m.keibajo_code, m.race_bango, m.umaban
 LIMIT 2049`,
     input.fetchImpl,
@@ -89,9 +120,9 @@ LIMIT 2049`,
         !validIdentity(row) ||
         (profileDate !== filters.date &&
           !(
-            arc &&
+            titleSql !== undefined &&
             row.race_source === "jra" &&
-            profileDate >= "19961004" &&
+            profileDate >= since &&
             profileDate < filters.date
           )) ||
         row.keibajo_code !== filters.keibajoCode ||

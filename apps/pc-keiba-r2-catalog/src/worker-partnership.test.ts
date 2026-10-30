@@ -128,7 +128,14 @@ it("warms overseas partnership cohorts through URL parsing and all SQL scopes", 
       },
     ],
   });
-  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(8);
+  // Overseas races also read the day's event titles; those reads are not partnership scopes.
+  const titleReads = (): number =>
+    vi
+      .mocked(test.dependencies.fetchImpl)
+      .mock.calls.filter(([, init]) =>
+        String(init?.body).includes("SELECT DISTINCT kyosomei_hondai"),
+      ).length;
+  expect(vi.mocked(test.dependencies.fetchImpl).mock.calls.length - titleReads()).toBe(8);
   expect(test.dependencies.fetchImpl).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({ body: expect.stringMatching("keibajo_code = 'A8'") }),
@@ -137,7 +144,7 @@ it("warms overseas partnership cohorts through URL parsing and all SQL scopes", 
   expect((await handleRequest(new Request(overseasUrl), test.env, test.dependencies)).status).toBe(
     200,
   );
-  expect(test.dependencies.fetchImpl).toHaveBeenCalledTimes(11);
+  expect(vi.mocked(test.dependencies.fetchImpl).mock.calls.length - titleReads()).toBe(11);
 });
 
 it("returns a cache-miss status without running history aggregation on reads", async () => {
