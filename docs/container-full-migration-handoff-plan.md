@@ -123,7 +123,7 @@ Worker 側に LightGBM / ONNX の着順 scorer はありません。ライブラ
 読み方:
 
 - 平常日の predict は 7–15 GiB-h/日 で、9 月から 1/20〜1/40 に下がっています。10/16–17 のスパイクは原因未特定です (同時期に finish-position-cron の例外が増加。10/16 は 13,976 req 中 1,277 exceptions)。
-- **10/26–29 のゼロは削減ではなく障害**です。`finish-position-race-day` Workflow の NAR prewarm がこの 4 日すべて errored で、`day-base not ready reason=day-base-missing-or-invalid` になり、`prewarm-day-base` step が `busy` を返し続けました。Workers Observability (10/27 00–03Z) のログは `[day-base-prewarm] discovery deferred category=nar reason=catalog-races-empty` が 15 件、`Catalog bulk readiness entries failed with HTTP 502` が 12 件。R2 Catalog に NAR の当日レースが無い (または読めない) ため day-base が作られず、fanout Workflow も起動していません。10/30 に回復しています。この期間に NAR の着順・脚質予測が公開されたかは未確認です (§6)。
+- **10/26–29 のゼロは削減ではなく障害**です。`finish-position-race-day` Workflow の NAR prewarm がこの 4 日すべて errored で、`day-base not ready reason=day-base-missing-or-invalid` になり、`prewarm-day-base` step が `busy` を返し続けました。Workers Observability (10/27 00–03Z) のログは `[day-base-prewarm] discovery deferred category=nar reason=catalog-races-empty` が 15 件、`Catalog bulk readiness entries failed with HTTP 502` が 12 件。R2 Catalog に NAR の当日レースが無い (または読めない) ため day-base が作られず、fanout Workflow も起動していません。10/30 に回復しています。根因は NV (UmaConn) 取込の停止です (P0-1)。この期間に NAR の着順・脚質予測が公開されたかは未確認です (§6)。
 - Workers request 量: finish-position-cron は平常 21k–35k/日 (UTC)、10/22 は 464k、10/23 は 778k。`f5fcb204` (10/24, completion watch の自己再送停止) の修正内容と整合しますが、因果は未証明です。
 - Workflow 成功率: `finish-position-race-day` は 10/24–30 で 117 起動中 47 失敗。`pc-keiba-viewer-heatmap-warm` は累計 825 complete / 0 errored ですが、10/26–28 はイベントがありません。
 
@@ -161,7 +161,8 @@ Worker 側に LightGBM / ONNX の着順 scorer はありません。ライブラ
 
 ### P0-1. 10/26–29 NAR 障害の確認と再発防止
 
-- **目的**: `catalog-races-empty` / Catalog bulk readiness 502 で NAR の day-base が 4 日間作られなかった件について、影響範囲 (予測が公開されなかったレース) と根因を確定し、再発時に検知・回復できるようにする。
+- **根因 (2026-10-31 に D1 `daily-keiba-sync.sync_runs` で確認済み)**: NV (UmaConn) の取込が提供元の緊急メンテナンスで止まっていた。`provider='nv'` の daily run は run_date 20261025–20261029 がすべて `acquisition_failed` (files 0 / records 0、10/24 以降は `X-NV-Link-Failure-Stage=license-verify`)、20261030 に `succeeded` (files 123 / records 13,599) で回復。Catalog に NAR の当日レースが入らず `catalog-races-empty` になったのはその結果で、予測パイプライン側の不具合ではない。残る作業は下の検知と回復の改善。
+- **目的**: NV 取込が止まった日に、それを早く検知し、復旧後に自動で追いつけるようにする。影響範囲 (予測が公開されなかったレース) も記録する。
 - **対象ファイル**: `finish-position-cron/src/day-base-prewarm.ts` (`getDayBaseDiscoveryReadiness`)、`race-day-workflow.ts`、`pc-keiba-r2-catalog` の race list / bulk readiness エンドポイント、`daily-keiba-sync` (NV 取込: `0 16` / `0 17` UTC cron)、`pipeline-health-monitor/src/provider-sync-signal.ts`。
 - **手順**:
   1. 読み取りのみで確認する。Workers Observability で 10/25–10/30 の `daily-keiba-sync` と `pc-keiba-r2-catalog` のエラーを見る。NV/UmaConn の取込 run 状態は D1 を read-only で見る。Viewer KV `pred:fp:v1` / `pred:rs:v1` の対象日キーの有無も確認する。
@@ -289,7 +290,7 @@ Worker 側に LightGBM / ONNX の着順 scorer はありません。ライブラ
 
 ## 6. 未確認事項
 
-- 10/26–29 に NAR (およびばんえい 10/26) の着順・脚質予測が公開されたか。`catalog-races-empty` の根因 (NV 取込 / Catalog / R2 SQL)。
+- 10/26–29 に NAR (およびばんえい 10/26) の着順・脚質予測が公開されたか。(`catalog-races-empty` の根因は NV 取込停止と確認済み: P0-1)
 - 10/16–17 predict スパイクの原因 (32 日保持のため 11/16 頃が期限)。
 - 10/22–23 の request 急増と `f5fcb204` の因果。
 - JRA06R01 (9/27) の 06 番の公式出走可否と snapshot 差の根因。NAR55R09 / 54R12 #12 の除外理由。
