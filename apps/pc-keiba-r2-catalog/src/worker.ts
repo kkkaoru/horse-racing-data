@@ -642,7 +642,8 @@ const parseKnownBloodlineCount = (rows: ReadonlyArray<Record<string, unknown>>):
 };
 
 // v2 holds each race's runners and pedigree names; v1 held only counts.
-const DAY_KNOWN_BLOODLINE_KV_PREFIX = "heatmap-day-known-bloodline:v2";
+// v3: names of horses registered since 2026-09 reached jvd_um (DIFN ingestion).
+const DAY_KNOWN_BLOODLINE_KV_PREFIX = "heatmap-day-known-bloodline:v3";
 
 // A missing or corrupt cached day decodes to no races, which never inlines
 // the runners and keeps the per-race count.

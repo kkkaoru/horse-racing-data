@@ -106,7 +106,7 @@ const presetUnnamedDayPedigrees = (
   race: { date: string; keibajoCode: string; raceBango: string; source: "jra" | "nar" },
 ): void => {
   harness.kvEntries.set(
-    `heatmap-day-known-bloodline:v2:${race.source}:${race.date}`,
+    `heatmap-day-known-bloodline:v3:${race.source}:${race.date}`,
     JSON.stringify({ [`${race.keibajoCode}:${race.raceBango}`]: [] }),
   );
 };

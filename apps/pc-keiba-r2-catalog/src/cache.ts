@@ -141,7 +141,9 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
   }
   if (descriptor.kind === "win-rate-heatmap-stats") {
     // Named-race grade matching and verified pedigree supplements change cached aggregates.
-    url.pathname = "/v3/win-rate-heatmap-stats";
+    // v4: jvd_um gained the horses registered since 2026-09 (DIFN ingestion), so
+    // earlier bodies lack those runners' bloodline rows.
+    url.pathname = "/v4/win-rate-heatmap-stats";
     if (/^[A-Z][0-9A-Z]$/u.test(descriptor.keibajoCode))
       url.searchParams.set("overseasInputs", "source-mapping-v1");
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);
