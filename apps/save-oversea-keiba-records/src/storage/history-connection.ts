@@ -52,10 +52,15 @@ const queryOn =
     return { rowCount: result.rowCount, rows: result.rows };
   };
 
-export const createHistoryConnection = (
+export interface TargetPool {
+  readonly targetFingerprint: string;
+  readonly pool: PostgresPool;
+}
+
+export const createTargetPool = (
   env: Readonly<Record<string, string | undefined>>,
   target: HistoryDatabaseTarget,
-): HistoryConnection => {
+): TargetPool => {
   const url: string = connectionString(env, target);
   const native: Pool = new Pool({
     connectionString: url,
@@ -73,7 +78,14 @@ export const createHistoryConnection = (
   };
   return {
     targetFingerprint: createHash("sha256").update(JSON.stringify({ target, url })).digest("hex"),
-    database: createHistoryDatabase(pool),
-    close: pool.end,
+    pool,
   };
+};
+
+export const createHistoryConnection = (
+  env: Readonly<Record<string, string | undefined>>,
+  target: HistoryDatabaseTarget,
+): HistoryConnection => {
+  const { targetFingerprint, pool }: TargetPool = createTargetPool(env, target);
+  return { targetFingerprint, database: createHistoryDatabase(pool), close: pool.end };
 };

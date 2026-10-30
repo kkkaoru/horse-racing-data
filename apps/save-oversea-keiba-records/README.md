@@ -169,6 +169,22 @@ back to local credentials. After inspecting existing conflicting records,
 variants without falsely reporting canonical completeness. This command publishes
 PostgreSQL only; Catalog and raw R2 preservation are separate verified stages.
 
+### Explicit production source-id mirroring
+
+```sh
+# Same private environment as mirror-production plus the local POSTGRES_* values.
+bun run history source-ids-plan 2026 1101 A4
+bun run history source-ids-production 2026 1101 A4 /private/source-id-receipts/new-pass --confirm-production
+```
+
+The production Viewer joins overseas runners to their netkeiba histories through
+`oversea_runner_source_id`, which the `production` race request does not publish.
+These commands copy one meeting's local `source=netkeiba` rows to production.
+They insert missing rows and fill only production NULL columns. Any differing
+non-null value fails closed and nothing is written. One transaction holds a
+table lock, reads the rows back and checks them before commit. `source-ids-plan`
+is read-only. The receipt directory must be new.
+
 **Database publication is a separate stage.** `prepareHistoryArchive` validates source scope, preserves genuine missing runner/finish records as `sourcePartialRows`, rejects other invalid canonical rows and conflicting duplicates, and reports archival coverage. `buildMissingHistoryStatements` selects only candidates without an exact all-column database match. `createHistoryDatabase` inserts that delta inside a transaction, verifies both the delta and full canonical input before commit, and reports submitted/inserted/verified counts. Existing conflicting records cause rollback, not overwrite. These APIs do not write JV rows, models, forecasts, or runner mappings. The CLI connects these stages with explicit target selection:
 
 ```sh
