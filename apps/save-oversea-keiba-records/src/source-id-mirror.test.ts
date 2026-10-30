@@ -1,6 +1,6 @@
 // This file runs with Bun and Vitest. Database pools and the filesystem are mocked.
-import { beforeEach, expect, it, vi } from "vitest";
-import { planSourceIdMirror, runSourceIdMirror } from "./source-id-mirror";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { isCurrentMeeting, planSourceIdMirror, runSourceIdMirror } from "./source-id-mirror";
 
 const ports = vi.hoisted(() => ({
   createTargetPool: vi.fn(),
@@ -40,6 +40,9 @@ const LOCAL_ROW = {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // The 2026-11-01 fixtures are a past meeting unless a test moves the clock.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-12-01T00:00:00Z"));
   ports.createTargetPool.mockImplementation((_env: unknown, target: string) => ({
     targetFingerprint: target,
     pool: {
@@ -51,6 +54,10 @@ beforeEach(() => {
   ports.end.mockResolvedValue(undefined);
   ports.mkdir.mockResolvedValue(undefined);
   ports.writeFile.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 it("plans inserts, null fills, conflicts and unchanged rows without touching real values", () => {
@@ -67,6 +74,7 @@ it("plans inserts, null fills, conflicts and unchanged rows without touching rea
         { ...LOCAL_ROW, umaban: "03", source_jockey_id: "a9999" },
         { ...LOCAL_ROW, umaban: "04", source_url: "https://example.test/" },
       ],
+      false,
     ),
   ).toStrictEqual({
     inserts: [LOCAL_ROW],
@@ -76,6 +84,7 @@ it("plans inserts, null fills, conflicts and unchanged rows without touching rea
         columns: ["source_owner_id"],
       },
     ],
+    gateRefreshes: [],
     conflicts: ["jra/2026/1101/A4/06/03/netkeiba:source_jockey_id"],
     unchanged: 2,
   });
@@ -92,6 +101,7 @@ it("reports a read-only plan against production", async () => {
     localRows: 1,
     inserted: 1,
     filled: 0,
+    gatesRefreshed: 0,
     unchanged: 0,
     conflicts: [],
   });
@@ -129,6 +139,7 @@ it("inserts and fills inside one verified transaction and writes a receipt", asy
     localRows: 2,
     inserted: 1,
     filled: 1,
+    gatesRefreshed: 0,
     unchanged: 0,
     conflicts: [],
   });
@@ -229,4 +240,93 @@ it("rejects malformed arguments and missing confirmation", async () => {
   ).rejects.toThrow(
     "Use source-ids-plan YEAR MMDD VENUE or source-ids-production YEAR MMDD VENUE NEW_RECEIPT_DIRECTORY --confirm-production.",
   );
+});
+
+it("treats today and later JST meetings as current", () => {
+  expect(
+    isCurrentMeeting(
+      { year: "2026", monthDay: "1101", venue: "A4" },
+      Date.parse("2026-10-31T15:00:00Z"),
+    ),
+  ).toBe(true);
+  expect(
+    isCurrentMeeting(
+      { year: "2026", monthDay: "1101", venue: "A4" },
+      Date.parse("2026-11-01T15:00:00Z"),
+    ),
+  ).toBe(false);
+});
+
+it("refreshes shifted and cleared gates of a current meeting instead of reporting conflicts", () => {
+  expect(
+    planSourceIdMirror(
+      [
+        { ...LOCAL_ROW, umaban: "06", gate_number: null },
+        { ...LOCAL_ROW, umaban: "07", gate_number: "6" },
+        { ...LOCAL_ROW, umaban: "08", gate_number: "8" },
+        { ...LOCAL_ROW, umaban: "09", gate_number: "9", source_owner_id: "a0004" },
+      ],
+      [
+        { ...LOCAL_ROW, umaban: "06", gate_number: "6" },
+        { ...LOCAL_ROW, umaban: "07", gate_number: "7" },
+        { ...LOCAL_ROW, umaban: "08", gate_number: "8" },
+        { ...LOCAL_ROW, umaban: "09", gate_number: null },
+      ],
+      true,
+    ),
+  ).toStrictEqual({
+    inserts: [],
+    fills: [
+      {
+        row: { ...LOCAL_ROW, umaban: "09", gate_number: "9", source_owner_id: "a0004" },
+        columns: ["source_owner_id"],
+      },
+    ],
+    gateRefreshes: [
+      { ...LOCAL_ROW, umaban: "06", gate_number: null },
+      { ...LOCAL_ROW, umaban: "07", gate_number: "6" },
+      { ...LOCAL_ROW, umaban: "09", gate_number: "9", source_owner_id: "a0004" },
+    ],
+    conflicts: [],
+    unchanged: 1,
+  });
+});
+
+it("writes gate refreshes for a current meeting and verifies them", async () => {
+  vi.setSystemTime(new Date("2026-10-31T12:00:00Z"));
+  const shifted = { ...LOCAL_ROW, umaban: "07", gate_number: "6" };
+  ports.localQuery.mockResolvedValue({ rowCount: 1, rows: [shifted] });
+  ports.clientQuery.mockImplementation(async (text: string) => {
+    const selects = ports.clientQuery.mock.calls.filter(([sql]) =>
+      String(sql).startsWith("SELECT"),
+    );
+    if (!text.startsWith("SELECT")) return { rowCount: 1, rows: [] };
+    return selects.length === 1
+      ? { rowCount: 1, rows: [{ ...shifted, gate_number: "7" }] }
+      : { rowCount: 1, rows: [shifted] };
+  });
+  await expect(
+    runSourceIdMirror({
+      argv: [
+        "source-ids-production",
+        "2026",
+        "1101",
+        "A4",
+        "/private/receipt",
+        "--confirm-production",
+      ],
+      env: ENV,
+    }),
+  ).resolves.toStrictEqual({
+    status: "complete",
+    operation: "applied",
+    localRows: 1,
+    inserted: 0,
+    filled: 0,
+    gatesRefreshed: 1,
+    unchanged: 0,
+    conflicts: [],
+  });
+  const update = ports.clientQuery.mock.calls.find(([sql]) => String(sql).startsWith("UPDATE"));
+  expect(update?.[1]).toStrictEqual(["6", "jra", "2026", "1101", "A4", "06", "07", "netkeiba"]);
 });

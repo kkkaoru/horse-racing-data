@@ -39,6 +39,7 @@ test("parses race metadata and runner details from a compact JRA card", () => {
     distanceMetres: 2390,
     surface: "芝",
     direction: "右",
+    scratchedHorseNames: [],
     startTime: "23:35",
     localStartTime: "15:35",
     runners: [
@@ -93,6 +94,8 @@ test("excludes officially withdrawn entries without inventing horse numbers", ()
   expect(parseJraCard(card).runners.map((runner) => runner.horseName)).toStrictEqual([
     "サンプルホース",
   ]);
+  // The scratched horse is named so a stored starter row can be marked 取消.
+  expect(parseJraCard(card).scratchedHorseNames).toStrictEqual(["テストホース"]);
 });
 
 test("excludes reserve entries that have not drawn into the field", () => {
@@ -101,6 +104,7 @@ test("excludes reserve entries that have not drawn into the field", () => {
     '<td class="num">\n<span class="horse_icon sub">補</span>2</td>',
   );
   expect(parseJraCard(card).runners.map((runner) => runner.horseNumber)).toStrictEqual([1]);
+  expect(parseJraCard(card).scratchedHorseNames).toStrictEqual([]);
 });
 
 test("reads a horse number followed by an equipment icon", () => {
@@ -224,6 +228,7 @@ test("parses a JRA-VAN World card when the official JRA CNAME is unavailable", (
     distanceMetres: 1600,
     surface: "芝",
     direction: "直線",
+    scratchedHorseNames: [],
     startTime: "22:50",
     localStartTime: "15:50",
     runners: [

@@ -215,6 +215,17 @@ and the Catalog sync as described above. Owners of past runners become known fro
 the collected horse pages, so rerun `event-entities` / `event-plans` after a horse
 pass to add them.
 
+### Scratches (取消)
+
+US post positions shift down when an entry scratches, so a page's 枠順 is the actual
+stall and our umaban is the program number. Scratched entries of past editions stay in
+jvd_se with `ijo_kubun_code` 1 and never receive a gate. On race day, rerun `save --apply`
+with the refreshed JRA card: a horse now shown as 取消 has its stored unplaced row marked
+`ijo_kubun_code` 1 and its gate cleared, and the later horses' shifted gates come from the
+card. `source-ids-production` copies those gate changes (including the cleared gate) for a
+meeting dated today or later (JST); past meetings stay fill-only. Send the changed jvd_se
+rows with `production prepare/apply` for each race.
+
 ### Past post positions, sex/age and weights from ahonoora.com
 
 netkeiba does not publish post positions for past overseas editions. The

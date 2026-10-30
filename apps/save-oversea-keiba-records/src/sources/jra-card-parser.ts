@@ -24,6 +24,9 @@ const RUNNER_PATTERN: RegExp = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
 // Reserve (補, also-eligible) entries are not in the active field either until they draw in.
 const WITHDRAWN_NUMBER_PATTERN: RegExp =
   /<td\s+class="num"[^>]*>\s*(?:<span\s+class="cap"[^>]*>\s*取消\s*<\/span>\s*<\/td>|<span\s+class="horse_icon\s+sub"[^>]*>\s*補\s*<\/span>)/i;
+// Only 取消 rows: a horse that was in the field and has been scratched since.
+const SCRATCHED_NUMBER_PATTERN: RegExp =
+  /<td\s+class="num"[^>]*>\s*<span\s+class="cap"[^>]*>\s*取消\s*<\/span>\s*<\/td>/i;
 const TAG_PATTERN: RegExp = /<[^>]+>/g;
 const WHITESPACE_PATTERN: RegExp = /\s+/g;
 const TRAINER_COUNTRY_PATTERN: RegExp = /\s*\(([^)]+)\)$/;
@@ -207,6 +210,15 @@ const parseOfficialJraCard = (html: string): ParsedJraRace => {
       // RUNNER_PATTERN always has one explicit capture group.
       parseRunner(matched[1] as string),
   );
+  const scratchedHorseNames: string[] = Array.from(body.matchAll(RUNNER_PATTERN))
+    .filter((matched: RegExpMatchArray): boolean => SCRATCHED_NUMBER_PATTERN.test(matched[0]))
+    .map((matched: RegExpMatchArray): string =>
+      requiredMatch({
+        html: String(matched[1]),
+        pattern: HORSE_NAME_PATTERN,
+        fieldName: "scratched horse name",
+      }),
+    );
 
   return {
     raceName: raceNameWithGrade.replace(GRADE_PATTERN, "").trim(),
@@ -220,6 +232,7 @@ const parseOfficialJraCard = (html: string): ParsedJraRace => {
     startTime: `${hour.padStart(2, "0")}:${minute}`,
     localStartTime: `${localHour.padStart(2, "0")}:${localMinute}`,
     runners,
+    scratchedHorseNames,
   };
 };
 
@@ -347,6 +360,8 @@ export const parseJraVanWorldCard = (html: string): ParsedJraRace => {
     startTime: `${startHour.padStart(2, "0")}:${startMinute}`,
     localStartTime: `${localHour.padStart(2, "0")}:${localMinute}`,
     runners,
+    // shortcut: no JRA-VAN World scratched-row markup has been observed; parse it once seen.
+    scratchedHorseNames: [],
   };
 };
 

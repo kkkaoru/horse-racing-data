@@ -53,6 +53,7 @@ const stored = (umaban: string, finish: string, extra: Partial<StoredRunner>): S
   race_bango: "09",
   umaban,
   kakutei_chakujun: finish,
+  ijo_kubun_code: "0",
   has_source_row: true,
   gate_number: null,
   seibetsu_code: "1",
@@ -287,4 +288,26 @@ it("requires a valid action, venue, target and confirmation", async () => {
   await expect(
     runPostPositions({ argv: ["post-positions-apply", "/private/pages", "A4", "local"], env: ENV }),
   ).rejects.toThrow(usage);
+});
+
+it("never matches an unplaced page runner to a stored scratched row", () => {
+  expect(
+    planPostPositions(
+      {
+        date: "20251101",
+        title: "ブリーダーズカップクラシック",
+        runners: [{ finish: null, umaban: 6, gate: 6, sexCode: null, age: null, weightKg: null }],
+      },
+      [stored("06", "00", { ijo_kubun_code: "1" })],
+    ),
+  ).toStrictEqual({
+    updates: [],
+    profileFills: [],
+    profileConflicts: [],
+    unchanged: [],
+    withoutSourceRow: [],
+    notStored: ["20251101:ブリーダーズカップクラシック:-:6"],
+    mismatches: [],
+    conflicts: [],
+  });
 });

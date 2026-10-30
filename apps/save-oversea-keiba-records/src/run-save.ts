@@ -30,6 +30,7 @@ import {
   type SqlExecutor as IdempotentSqlExecutor,
 } from "./storage/idempotent-write";
 import { parseJraCard } from "./sources/jra-card-parser";
+import { buildScratchedRunnerStatements } from "./storage/scratched-runner-sql";
 import { mapJvdRows } from "./domain/jvd-mapper";
 import {
   createMasterLookupPort,
@@ -875,9 +876,11 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
     raceNumber: args.raceNumber,
     source: OVERSEA_SOURCE_NETKEIBA,
   });
-  const overseaStatements: readonly SqlStatement[] = buildOverseaPersistStatements(overseaPlan);
-
   const raceKey = toRaceKey(jvdRows.race);
+  const overseaStatements: readonly SqlStatement[] = [
+    ...buildOverseaPersistStatements(overseaPlan),
+    ...buildScratchedRunnerStatements({ raceKey, horseNames: jraRace.scratchedHorseNames }),
+  ];
   const diffResult: DryRunDiffResult = await runDryRunDiffGate({
     raceKey,
     incomingRows: toDiffableRows(jvdRows.runners),
@@ -918,6 +921,11 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
     ports.logger.info(
       `Would upsert ${String(overseaPlan.sourceIdRows.length)} oversea_runner_source_id row(s) (source=netkeiba). Identity table will not be overwritten.`,
     );
+    if (jraRace.scratchedHorseNames.length > 0) {
+      ports.logger.info(
+        `Would mark ${String(jraRace.scratchedHorseNames.length)} scratched runner(s) 取消 and clear their gates.`,
+      );
+    }
     if (masterCandidates.length > 0) {
       ports.logger.info(
         `Would insert ${String(masterCandidates.length)} numeric-only master row(s) (ON CONFLICT DO NOTHING).`,

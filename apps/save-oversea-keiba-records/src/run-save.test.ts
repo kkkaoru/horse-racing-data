@@ -1811,3 +1811,72 @@ test("runSave dry-run skips a parsed runner that has no horseId", async () => {
     ),
   ).toBe(true);
 });
+
+const JRA_HTML_WITH_SCRATCH: string = JRA_HTML.replace(
+  "</tbody>",
+  `<tr>
+<td class="num"><span class="cap">取消</span></td>
+<td class="horse"><div class="name"><div class="line"><div class="txt">スクラッチホース</div></div></div></td>
+<td class="waku">5</td>
+</tr>
+</tbody>`,
+);
+
+test("runSave dry-run reports a newly scratched runner without writing", async () => {
+  const logger = createFakeLogger();
+  const statementLog: StatementLog = { statements: [] };
+  const result = await runSave({
+    argv: baseArgv(["--jra-file", "cache/jra.html", "--secondary-file", "cache/secondary.html"]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort({ urls: [] }, new Map()),
+      fileReadPort: createFileReadPort(
+        { paths: [] },
+        new Map([
+          ["cache/jra.html", JRA_HTML_WITH_SCRATCH],
+          ["cache/secondary.html", SECONDARY_HTML],
+        ]),
+      ),
+      executor: createRecordingExecutor(statementLog, selectEmptyHandler),
+    }),
+  });
+  expect(result.wrote).toBe(false);
+  expect(logger.infos.filter((line) => line.startsWith("Would mark "))).toStrictEqual([
+    "Would mark 1 scratched runner(s) 取消 and clear their gates.",
+  ]);
+});
+
+test("runSave --apply marks a newly scratched runner 取消 inside the write transaction", async () => {
+  const logger = createFakeLogger();
+  const txLog: StatementLog = { statements: [] };
+  const result = await runSave({
+    argv: baseArgv([
+      "--apply",
+      "--jra-file",
+      "cache/jra.html",
+      "--secondary-file",
+      "cache/secondary.html",
+    ]),
+    env: {},
+    ports: buildPorts({
+      logger: logger.port,
+      fetchPort: createFetchPort({ urls: [] }, new Map()),
+      fileReadPort: createFileReadPort(
+        { paths: [] },
+        new Map([
+          ["cache/jra.html", JRA_HTML_WITH_SCRATCH],
+          ["cache/secondary.html", SECONDARY_HTML],
+        ]),
+      ),
+      executor: createRecordingExecutor({ statements: [] }, selectEmptyHandler),
+      transactionExecutor: createRecordingExecutor(txLog, selectEmptyHandler),
+    }),
+  });
+  expect(result.wrote).toBe(true);
+  expect(
+    txLog.statements
+      .filter((statement) => statement.values[4] === "スクラッチホース")
+      .map((statement) => statement.text.split(" ").slice(0, 2).join(" ")),
+  ).toStrictEqual(["UPDATE oversea_runner_source_id", "UPDATE jvd_se"]);
+});

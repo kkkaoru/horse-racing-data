@@ -26,6 +26,7 @@ export interface StoredRunner {
   readonly race_bango: string;
   readonly umaban: string;
   readonly kakutei_chakujun: string;
+  readonly ijo_kubun_code: string;
   readonly has_source_row: boolean;
   readonly gate_number: string | null;
   readonly seibetsu_code: string;
@@ -78,6 +79,8 @@ interface RaceMatch {
   readonly runners: readonly StoredRunner[];
 }
 
+// JV 1 取消, 2 除外, 3 競走除外: never started, so no gate and never a page runner.
+const NON_STARTER_CODES: ReadonlySet<string> = new Set(["1", "2", "3"]);
 const ORIGIN: string = "https://ahonoora.com/";
 const PAGE_INTERVAL_MS: number = 2000;
 const FILE_MODE: number = 0o600;
@@ -90,7 +93,7 @@ const USAGE: string =
 const TITLE_SQL: string = "replace(btrim(replace(r.kyosomei_hondai, chr(12288), '')), '・', '')";
 // The JST card date of a US evening race can be the next day, so both days are searched.
 const RUNNERS_SQL: string = `SELECT r.kaisai_nen, r.kaisai_tsukihi, s.race_bango, s.umaban, s.kakutei_chakujun,
-  s.seibetsu_code, s.barei, s.futan_juryo,
+  s.seibetsu_code, s.barei, s.futan_juryo, s.ijo_kubun_code,
   (o.umaban IS NOT NULL) AS has_source_row, o.gate_number::text AS gate_number
 FROM jvd_ra r
 JOIN jvd_se s USING (kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango)
@@ -134,7 +137,12 @@ const storedFor = (
   stored: readonly StoredRunner[],
 ): StoredRunner | undefined =>
   runner.finish === null
-    ? stored.find((local) => runner.umaban !== null && twoDigits(runner.umaban) === local.umaban)
+    ? stored.find(
+        (local) =>
+          runner.umaban !== null &&
+          twoDigits(runner.umaban) === local.umaban &&
+          !NON_STARTER_CODES.has(local.ijo_kubun_code.trim()),
+      )
     : stored.find((local) => Number(local.kakutei_chakujun) === runner.finish);
 
 // JV codes: seibetsu_code 1/2/3, barei two digits, futan_juryo in 0.1 kg (55.5 -> "555").
@@ -222,6 +230,7 @@ const toRunners = (result: PostgresQueryResult): (StoredRunner & { readonly day:
     race_bango: String(row.race_bango),
     umaban: String(row.umaban),
     kakutei_chakujun: String(row.kakutei_chakujun ?? ""),
+    ijo_kubun_code: String(row.ijo_kubun_code ?? ""),
     has_source_row: row.has_source_row === true,
     gate_number: typeof row.gate_number === "string" ? row.gate_number : null,
     seibetsu_code: String(row.seibetsu_code ?? ""),

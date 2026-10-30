@@ -20,6 +20,8 @@ export interface SourceIdFill {
 export interface SourceIdMirrorPlan {
   readonly inserts: readonly SourceIdRow[];
   readonly fills: readonly SourceIdFill[];
+  // Today's or a future meeting only: scratches shift later gates, so local gates win.
+  readonly gateRefreshes: readonly SourceIdRow[];
   readonly conflicts: readonly string[];
   readonly unchanged: number;
 }
@@ -29,6 +31,7 @@ export interface SourceIdMirrorReport {
   readonly localRows: number;
   readonly inserted: number;
   readonly filled: number;
+  readonly gatesRefreshed: number;
   readonly unchanged: number;
   readonly conflicts: readonly string[];
 }
@@ -71,6 +74,8 @@ VALUES (${COLUMNS.map(placeholder).join(", ")})`;
 const KEY_PREDICATE: string = KEY_COLUMNS.map(
   (column, index) => `${column} = $${String(index + 2)}`,
 ).join(" AND ");
+const GATE_COLUMN: string = "gate_number";
+const JST_OFFSET_MS: number = 9 * 60 * 60 * 1000;
 const MEETING_PATTERN: RegExp = /^(\d{4}) (\d{4}) ([0-9A-Z]{2})$/u;
 const DIRECTORY_MODE: number = 0o700;
 const FILE_MODE: number = 0o600;
@@ -95,9 +100,16 @@ const differingColumns = (local: SourceIdRow, remote: SourceIdRow): string[] =>
 const fillableColumns = (local: SourceIdRow, remote: SourceIdRow): string[] =>
   VALUE_COLUMNS.filter((column) => local[column] !== null && remote[column] === null);
 
+const jstToday = (nowMs: number): string =>
+  new Date(nowMs + JST_OFFSET_MS).toISOString().slice(0, 10).replaceAll("-", "");
+
+export const isCurrentMeeting = (meeting: MeetingKey, nowMs: number): boolean =>
+  `${meeting.year}${meeting.monthDay}` >= jstToday(nowMs);
+
 export const planSourceIdMirror = (
   local: readonly SourceIdRow[],
   remote: readonly SourceIdRow[],
+  refreshGates: boolean,
 ): SourceIdMirrorPlan => {
   const remoteByKey: ReadonlyMap<string, SourceIdRow> = new Map(
     remote.map((row) => [rowKey(row), row]),
@@ -109,15 +121,29 @@ export const planSourceIdMirror = (
     },
   );
   const fills: SourceIdFill[] = existing
-    .map(([row, match]) => ({ row, columns: fillableColumns(row, match) }))
+    .map(([row, match]) => ({
+      row,
+      columns: fillableColumns(row, match).filter(
+        (column) => !refreshGates || column !== GATE_COLUMN,
+      ),
+    }))
     .filter((fill) => fill.columns.length > 0);
+  const gateRefreshes: SourceIdRow[] = refreshGates
+    ? existing.filter(([row, match]) => row[GATE_COLUMN] !== match[GATE_COLUMN]).map(([row]) => row)
+    : [];
+  const refreshed: ReadonlySet<string> = new Set(gateRefreshes.map(rowKey));
   return {
     inserts: local.filter((row) => !remoteByKey.has(rowKey(row))),
     fills,
+    gateRefreshes,
     conflicts: existing.flatMap(([row, match]) =>
-      differingColumns(row, match).map((column) => `${rowKey(row)}:${column}`),
+      differingColumns(row, match)
+        .filter((column) => !refreshGates || column !== GATE_COLUMN)
+        .map((column) => `${rowKey(row)}:${column}`),
     ),
-    unchanged: existing.length - fills.length,
+    unchanged: existing.filter(
+      ([row]) => !refreshed.has(rowKey(row)) && !fills.some((fill) => fill.row === row),
+    ).length,
   };
 };
 
@@ -143,6 +169,12 @@ const applyPlan = async (
       COLUMNS.map((column) => row[column] ?? ""),
     );
   }
+  for (const row of plan.gateRefreshes) {
+    await client.query(
+      `UPDATE oversea_runner_source_id SET gate_number = NULLIF($1, '')::smallint, updated_at = now() WHERE ${KEY_PREDICATE}`,
+      [row[GATE_COLUMN] ?? "", ...KEY_COLUMNS.map((key) => String(row[key]))],
+    );
+  }
   for (const fill of plan.fills) {
     for (const column of fill.columns) {
       await client.query(
@@ -163,6 +195,7 @@ const summary = (
   localRows: local.length,
   inserted: plan.inserts.length,
   filled: plan.fills.length,
+  gatesRefreshed: plan.gateRefreshes.length,
   unchanged: plan.unchanged,
   conflicts: plan.conflicts,
 });
@@ -171,12 +204,17 @@ const writeTransaction = async (
   production: TargetPool,
   local: readonly SourceIdRow[],
   meeting: MeetingKey,
+  refreshGates: boolean,
 ): Promise<SourceIdMirrorPlan> => {
   const client: PostgresPoolClient = await production.pool.connect();
   try {
     await client.query("BEGIN");
     await client.query("LOCK TABLE oversea_runner_source_id IN SHARE ROW EXCLUSIVE MODE");
-    const plan: SourceIdMirrorPlan = planSourceIdMirror(local, await selectRows(client, meeting));
+    const plan: SourceIdMirrorPlan = planSourceIdMirror(
+      local,
+      await selectRows(client, meeting),
+      refreshGates,
+    );
     assert.equal(
       plan.conflicts.length,
       0,
@@ -186,9 +224,13 @@ const writeTransaction = async (
     const readback: SourceIdMirrorPlan = planSourceIdMirror(
       local,
       await selectRows(client, meeting),
+      refreshGates,
     );
     assert.equal(
-      readback.inserts.length + readback.fills.length + readback.conflicts.length,
+      readback.inserts.length +
+        readback.fills.length +
+        readback.gateRefreshes.length +
+        readback.conflicts.length,
       0,
       "Production readback differs from local source ids.",
     );
@@ -214,6 +256,7 @@ export const runSourceIdMirror = async ({
     USAGE,
   );
   const meeting: MeetingKey = parseMeeting(rest.slice(0, 3));
+  const refreshGates: boolean = isCurrentMeeting(meeting, Date.now());
   const localPool: TargetPool = createTargetPool(localHistoryEnvironment(env), "local");
   const production: TargetPool = createTargetPool(env, "production");
   try {
@@ -223,7 +266,7 @@ export const runSourceIdMirror = async ({
       return summary(
         "planned",
         local,
-        planSourceIdMirror(local, await selectRows(production.pool, meeting)),
+        planSourceIdMirror(local, await selectRows(production.pool, meeting), refreshGates),
       );
     const directory: string = String(rest[3]);
     await mkdir(directory, { mode: DIRECTORY_MODE });
@@ -235,7 +278,7 @@ export const runSourceIdMirror = async ({
     const report: SourceIdMirrorReport = summary(
       "applied",
       local,
-      await writeTransaction(production, local, meeting),
+      await writeTransaction(production, local, meeting, refreshGates),
     );
     await writeFile(
       join(directory, "receipt.json"),

@@ -232,4 +232,6 @@ export interface SqlStatement {
 
 export interface ParsedJraRace extends ParsedRace {
   localStartTime: string;
+  // Horses shown as 取消 on the card; they leave the active field (see run-save).
+  scratchedHorseNames: readonly string[];
 }
