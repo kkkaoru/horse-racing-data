@@ -72,6 +72,12 @@ Horse rows map to `oversea_horse_race_history` with explicit source provenance. 
 
 ## Resumable history collection
 
+For many entities (an overseas meeting's runners, past editions and connections), queue them with
+`scripts/collect-queue.sh BASE_DIR QUEUE_FILE [PAGE_BUDGET]`. Each queue line is `kind id`, with the plan at
+`BASE_DIR/plans/<kind>-<id>.json`. It collects serially, records `done`/`blocked` in `BASE_DIR/state.txt`,
+logs to `BASE_DIR/collect.log`, and skips finished entities, so rerun the same command after a reboot.
+Keep `BASE_DIR` outside temporary directories.
+
 From this package directory:
 
 ```sh
