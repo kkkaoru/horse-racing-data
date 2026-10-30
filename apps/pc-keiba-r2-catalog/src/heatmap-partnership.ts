@@ -1,5 +1,6 @@
 // Run with bun (bunx vitest).
-import type { EventScope } from "./arc-cohort";
+import { createHash } from "node:crypto";
+import { ARC_EVENT_SCOPE, type EventScope } from "./arc-cohort";
 import type { CatalogSource } from "./types";
 
 export type PartnershipKind =
@@ -99,6 +100,12 @@ export const partnershipStartDate = (scope: PartnershipScope): string | null => 
   return validDate(candidate) ? candidate : `${year}0228`;
 };
 
+// KV keys are capped at 512 bytes; a URL-encoded Japanese title alone can exceed it.
+const eventScopeKey = (scope: EventScope): string =>
+  scope === ARC_EVENT_SCOPE
+    ? scope
+    : `overseas-event-v1-sha256:${createHash("sha256").update(scope).digest("hex")}`;
+
 export const partnershipCacheKey = (scope: PartnershipScope): string => {
   validatePartnershipScope(scope);
   // Unscoped keys remain byte-identical. Arc keys additionally identify the event cohort.
@@ -116,7 +123,7 @@ export const partnershipCacheKey = (scope: PartnershipScope): string => {
       ? "jockeyTrainerOwner-all-sources"
       : scope.kind,
     partnershipSurface(scope),
-    ...(scope.eventScope === undefined ? [] : [scope.eventScope]),
+    ...(scope.eventScope === undefined ? [] : [eventScopeKey(scope.eventScope)]),
   ]
     .map(encodeURIComponent)
     .join(":");

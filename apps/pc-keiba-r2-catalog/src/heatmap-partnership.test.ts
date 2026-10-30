@@ -259,6 +259,20 @@ it("versions only explicit Arc partnership keys while preserving domestic bytes"
   );
 });
 
+it("keys overseas event cohorts by a title hash so the KV key stays under 512 bytes", () => {
+  expect(
+    partnershipCacheKey({
+      ...scope,
+      date: "20261101",
+      keibajoCode: "A4",
+      revision: "gate-v1-0000000000000000000000000000000000000000000000000000000000000000",
+      eventScope: "overseas-event-v1:ブリーダーズカップフィリー＆メアスプリント",
+    }),
+  ).toBe(
+    "heatmap-partnership-v3:gate-v1-0000000000000000000000000000000000000000000000000000000000000000:jra:20261101:A4:jockeyVenue:%E8%8A%9D:overseas-event-v1-sha256%3A457a886d3e275fb619269965c89e410d3d7a97462604b11a24439f5f246a73c0",
+  );
+});
+
 it("fails closed for unverified Arc event membership and excludes NAR in the reference aggregator", () => {
   expect(
     aggregatePartnership({
