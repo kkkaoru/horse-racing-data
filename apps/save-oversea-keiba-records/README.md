@@ -169,6 +169,29 @@ back to local credentials. After inspecting existing conflicting records,
 variants without falsely reporting canonical completeness. This command publishes
 PostgreSQL only; Catalog and raw R2 preservation are separate verified stages.
 
+### Past overseas editions from cached result pages
+
+```sh
+OVERSEA_RACE_RESULT_PROFILE_PATH=/private/race-result-profile.json \
+  bun run past-edition /private/past-results/<page>.html \
+  --source-race-id '<secondary-race-id>' --race-name '<JV race title>' \
+  --venue-code A4 --race-number 09 [--apply]
+```
+
+JV often carries only the Japanese runners of an overseas race that JRA did not
+sell. This command reads a result page already fetched through the proxy and
+parses it with a private profile. The profile holds the table marker, route
+prefixes, date and course patterns, trainer badges and cell indexes, and must
+not be committed. The command uses local PostgreSQL only and runs as a dry run
+unless `--apply` is given. It inserts `jvd_ra` only when the race key is absent.
+It inserts `jvd_se` only for horse numbers that have no row, so official JV rows
+are never rewritten. It stores finish position, JV abnormality code and winner
+time. It also adds `oversea_runner_source_id` rows (`ON CONFLICT DO NOTHING`)
+for runners whose source page exists. The race key uses the published local race
+date, as JV does. Some older source pages list only part of the field. The report
+prints `parsedRunners` and `starters` so that partial fields stay visible, and no
+runner is ever invented.
+
 ### Explicit production source-id mirroring
 
 ```sh
