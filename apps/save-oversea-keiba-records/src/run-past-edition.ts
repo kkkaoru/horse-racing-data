@@ -64,8 +64,6 @@ const SOURCE_RACE_ID_PATTERN: RegExp = /^[0-9A-Za-z]+$/u;
 const TIME_PATTERN: RegExp = /^(\d+):(\d{2})\.(\d)/u;
 // JV abnormality codes for the published non-finish labels.
 const IRREGULAR_CODES: ReadonlyMap<string, string> = new Map([
-  ["取", "1"],
-  ["除", "2"],
   ["中", "4"],
   ["失", "5"],
 ]);
@@ -225,8 +223,10 @@ export const buildPastEditionPlan = (
     raceKey: `${raceRow.kaisai_nen}/${raceRow.kaisai_tsukihi}/${args.venueCode}/${args.raceNumber}`,
     insertRace:
       existing.raceExists || createsPartialRace ? null : { ...raceRow, shusso_tosu: pad(starters) },
+    // Non-starters are not part of the field: the race request requires rows == field size.
     insertRunners: runners
       .filter(() => !createsPartialRace)
+      .filter(({ runner }: MappedRunner) => !NON_STARTERS.has(runner.finishPositionText))
       .filter(({ row }: MappedRunner) => !existing.umaban.has(row.umaban))
       .map(({ row }: MappedRunner) => row),
     keptRunners: runners.filter(({ row }: MappedRunner) => existing.umaban.has(row.umaban)).length,

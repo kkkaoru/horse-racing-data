@@ -68,7 +68,7 @@ it("plans a missing race and all runners in dry-run mode without writing", async
   await expect(
     runPastEdition({ argv: [...ARGS, "--confirmed-field-size", "2"], env: ENV, ports }),
   ).resolves.toBe(
-    '{"raceKey":"2025/1101/A4/09","mode":"dry-run","insertRace":true,"insertRunners":["05","02","07"],"keptExistingRunners":0,"sourceIdInserts":1,"parsedRunners":3,"starters":2,"sourcePartial":false}',
+    '{"raceKey":"2025/1101/A4/09","mode":"dry-run","insertRace":true,"insertRunners":["05","02"],"keptExistingRunners":0,"sourceIdInserts":1,"parsedRunners":3,"starters":2,"sourcePartial":false}',
   );
   expect(execute.mock.calls[0]?.[0].values).toStrictEqual(["2025", "1101", "A4", "09"]);
   expect(transactionExecute).not.toHaveBeenCalled();
@@ -82,13 +82,13 @@ it("writes only missing runners and never rewrites an existing race", async () =
       : { rowCount: 1, rows: [{ umaban: "05" }] },
   );
   await expect(runPastEdition({ argv: [...ARGS, "--apply"], env: ENV, ports })).resolves.toBe(
-    '{"raceKey":"2025/1101/A4/09","mode":"applied","insertRace":false,"insertRunners":["02","07"],"keptExistingRunners":1,"sourceIdInserts":1,"parsedRunners":3,"starters":2,"sourcePartial":true}',
+    '{"raceKey":"2025/1101/A4/09","mode":"applied","insertRace":false,"insertRunners":["02"],"keptExistingRunners":1,"sourceIdInserts":1,"parsedRunners":3,"starters":2,"sourcePartial":true}',
   );
   const statements = transactionExecute.mock.calls.map(([statement]) => statement);
   expect(
     statements.map((statement) => /INSERT INTO (\w+)/u.exec(statement.text)?.[1]),
-  ).toStrictEqual(["jvd_se", "jvd_se", "oversea_runner_source_id"]);
-  expect(statements[2].values).toStrictEqual([
+  ).toStrictEqual(["jvd_se", "oversea_runner_source_id"]);
+  expect(statements[1].values).toStrictEqual([
     "2025",
     "1101",
     "A4",
@@ -125,7 +125,7 @@ it("stores finish, abnormality and time codes on inserted runners", async () => 
     value(2, "ijo_kubun_code"),
     value(2, "soha_time"),
   ]).toStrictEqual(["00", "4", "0000"]);
-  expect(value(3, "ijo_kubun_code")).toBe("1");
+  expect(statements).toHaveLength(4);
   const raceColumns: string[] = statements[0].text.match(/\(([^)]+)\) VALUES/u)[1].split(", ");
   expect(statements[0].values[raceColumns.indexOf("shusso_tosu")]).toBe("02");
 });

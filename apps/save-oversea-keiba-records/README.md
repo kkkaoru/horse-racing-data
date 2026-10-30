@@ -185,7 +185,7 @@ prefixes, date and course patterns, trainer badges and cell indexes, and must
 not be committed. The command uses local PostgreSQL only and runs as a dry run
 unless `--apply` is given. It inserts `jvd_ra` only when the race key is absent.
 It inserts `jvd_se` only for horse numbers that have no row, so official JV rows
-are never rewritten. It stores finish position, JV abnormality code and winner
+are never rewritten. Listed non-starters (scratched or excluded) are not inserted, so runner rows match the field size, as the race request requires. It stores finish position, JV abnormality code and winner
 time. It also adds `oversea_runner_source_id` rows (`ON CONFLICT DO NOTHING`)
 for runners whose source page exists. The race key uses the published local race
 date, as JV does. Some older source pages list only part of the field. The report
