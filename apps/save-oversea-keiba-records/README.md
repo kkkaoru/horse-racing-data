@@ -215,6 +215,25 @@ and the Catalog sync as described above. Owners of past runners become known fro
 the collected horse pages, so rerun `event-entities` / `event-plans` after a horse
 pass to add them.
 
+### Past post positions, sex/age and weights from ahonoora.com
+
+netkeiba does not publish post positions for past overseas editions. The
+ahonoora.com race-history pages (Shift_JIS) list 着順, 馬番 (newer pages only), 枠順,
+性齢 and 斤量 per runner. Fetch is serial with a 2-second interval and keeps pages
+already archived. Apply matches each runner by its unique finish (a numeric 馬番 on
+the page must also agree; unplaced runners need it). It only fills empty values
+(`gate_number` NULL; `seibetsu_code` / `barei` / `futan_juryo` blank or zero). A
+differing stored value is kept and reported, and a page that cannot be read safely
+(for example a repeated post position) is reported and skipped. Only local is written.
+
+```sh
+bun run history post-positions-fetch /private/ahonoora 1996 bcdirtmile bcsprint bcmile bcturf bcclassic
+bun run history post-positions-plan /private/ahonoora A4 local
+bun run history post-positions-apply /private/ahonoora A4 local --confirm-write
+# Production: gates through source-ids-production (fill-only) per meeting, and changed
+# jvd_se rows through `production prepare/apply` for each affected race.
+```
+
 ### Meeting-specific finish predictions
 
 Once the histories are stored locally, one command trains a pooled ranker for every

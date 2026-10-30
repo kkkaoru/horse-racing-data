@@ -9,7 +9,9 @@ const ports = vi.hoisted(() => ({
   mirror: vi.fn(),
   mirrorProduction: vi.fn(),
   sourceIds: vi.fn(),
+  postPositions: vi.fn(),
 }));
+vi.mock("./post-position-store", () => ({ runPostPositions: ports.postPositions }));
 vi.mock("./source-id-mirror", () => ({ runSourceIdMirror: ports.sourceIds }));
 vi.mock("./history-cli", () => ({ runHistoryCli: ports.collect }));
 vi.mock("./history-local-mirror", () => ({
@@ -105,3 +107,11 @@ it.each([
   );
   expect(ports.connect).not.toHaveBeenCalled();
 });
+it.each(["post-positions-fetch", "post-positions-plan", "post-positions-apply"])(
+  "routes %s to the post-position store without a publication connection",
+  async (action) => {
+    await runHistoryCommand({ ...input, argv: [action, "/pages"] });
+    expect(ports.postPositions).toHaveBeenCalledTimes(1);
+    expect(ports.connect).not.toHaveBeenCalled();
+  },
+);
