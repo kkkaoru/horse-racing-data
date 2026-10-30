@@ -215,6 +215,22 @@ and the Catalog sync as described above. Owners of past runners become known fro
 the collected horse pages, so rerun `event-entities` / `event-plans` after a horse
 pass to add them.
 
+### Meeting-specific finish predictions
+
+Once the histories are stored locally, one command trains a pooled ranker for every
+race of an overseas meeting from the past editions of its titles. It runs a year-by-year
+walk-forward over 12 XGBoost rankers and 4 plain pre-race orderings, picks the one with the
+best unordered top-1..5 overlap, and writes `evaluation.json` and a `kv-bulk.json` of
+`pred:fp:v1:{date}:{venue}:{race}` bodies that the generic finish-prediction section reads.
+No odds, popularity or gate features are used. The pick is retrospective on few races.
+
+```sh
+# From apps/pc-keiba-viewer with the local PostgreSQL settings (POSTGRES_HOST included).
+PYTHONPATH=src/scripts uv run python src/scripts/overseas_event_model.py 20261101 A4 /private/model-out
+# Publish the reviewed bodies (72 h TTL) to the viewer's prediction KV namespace.
+bunx wrangler kv bulk put /private/model-out/kv-bulk.json --namespace-id <DETAIL_SECTION_CACHE_KV id> --remote
+```
+
 ### Overseas pedigrees from archived horse pages
 
 The horse pages archived by `history collect` (fetched only through the production

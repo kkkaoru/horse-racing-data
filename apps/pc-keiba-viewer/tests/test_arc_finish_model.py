@@ -97,6 +97,7 @@ def test_horse_features_exclude_target_future_and_withdrawals(
         race_date="2023-10-01",
         people_ids={"jockey": "j"},
         people_daily=daily,
+        target_distance=2400,
     )
     assert result[:7] == [1.0, 0.0, 2.0, 2.0, 2.0, 30.0, 0.0]
     assert result[9:12] == [10.0, 0.2, 0.4]
@@ -112,6 +113,7 @@ def test_missing_horse_history_remains_missing(
         race_date="2023-10-01",
         people_ids={},
         people_daily=daily,
+        target_distance=2400,
     )
     assert result[:2] == [0.0, 0.0]
     assert np.isnan(result[2:9]).all()

@@ -49,6 +49,7 @@ FEATURES: tuple[str, ...] = (
 )
 WITHDRAWN: frozenset[str] = frozenset({"取", "取消", "除", "除外"})
 EVALUATION_YEARS: tuple[int, ...] = (2023, 2024, 2025)
+ARC_DISTANCE: int = 2400
 
 
 def unordered_topk(
@@ -98,6 +99,7 @@ def entry_features(
     race_date: str,
     people_ids: Mapping[str, str],
     people_daily: pd.DataFrame,
+    target_distance: int,
 ) -> list[float]:
     date.fromisoformat(race_date)
     starts = history.loc[~history["finish_position_text"].isin(WITHDRAWN)]
@@ -105,7 +107,7 @@ def entry_features(
         starts,
         source_horse_id=horse_id,
         race_date=race_date,
-        target_distance=2400,
+        target_distance=target_distance,
     )
     values = [
         form.starts,
@@ -164,6 +166,7 @@ def card_frame(
             race_date=race_date,
             people_ids=entry_people(identities, horse_id=horse_id, race_date=race_date),
             people_daily=people_daily,
+            target_distance=ARC_DISTANCE,
         )
         finish = pd.to_numeric(
             pd.Series([entry.finish_position]), errors="coerce"
