@@ -189,8 +189,31 @@ are never rewritten. Listed non-starters (scratched or excluded) are not inserte
 time. It also adds `oversea_runner_source_id` rows (`ON CONFLICT DO NOTHING`)
 for runners whose source page exists. The race key uses the published local race
 date, as JV does. Some older source pages list only part of the field. The report
-prints `parsedRunners`, `starters` and `sourcePartial`. When the highest horse number exceeds the listed rows, it refuses to create a new race unless `--confirmed-field-size` matches the listed starters, so a partial page never becomes a partial field. No
-runner is ever invented.
+prints `parsedRunners`, `starters` and `sourcePartial`. Overseas sources are normally partial, so a page with horse-number gaps is still stored with the runners it publishes and reported as `sourcePartial: true`; history archives likewise keep fewer listed rows than the published total as a source gap. No runner or row is ever invented, and more counted rows than published still fails closed.
+
+### Event-wide history scope (every overseas race)
+
+Registering an overseas race always covers the race's past editions and every
+participant's full pre-race record, not only the current runners. After the
+current card and the past editions are stored locally (including their
+`oversea_runner_source_id` rows):
+
+```sh
+# Lists every horse, jockey, trainer and owner of the meeting's races and of every
+# earlier JRA overseas race with the same title (full-width spaces and a grade suffix ignored).
+bun run history event-entities 2026 1101 A4 /private/event-entities.txt
+# Writes one private history plan per entity that has no plan yet (existing plans are kept).
+OVERSEA_HISTORY_PLAN_TEMPLATES_PATH=/private/history-plan-templates.json \
+  bun run history event-plans /private/event-entities.txt /private/plans
+```
+
+The template file is private like the markup profiles: a JSON object with
+`horse`, `jockey`, `trainer` and `owner` entries, each `{ "urlTemplate": "…{ID}…",
+"plan": { …the rest of a history plan… } }`. Collect each planned entity with
+`history collect`, then `mirror-local`, `mirror-production`, `source-ids-production`
+and the Catalog sync as described above. Owners of past runners become known from
+the collected horse pages, so rerun `event-entities` / `event-plans` after a horse
+pass to add them.
 
 ### Explicit production source-id mirroring
 

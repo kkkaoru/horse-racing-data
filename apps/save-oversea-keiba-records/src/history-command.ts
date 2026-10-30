@@ -6,6 +6,7 @@ import {
 } from "./history-publication-operator";
 import { runHistoryLocalMirror, runHistoryProductionMirror } from "./history-local-mirror";
 import { runSourceIdMirror, type SourceIdMirrorReport } from "./source-id-mirror";
+import { runEventEntities, type EventEntitiesReport } from "./event-entities";
 import {
   createHistoryConnection,
   type HistoryConnection,
@@ -40,13 +41,17 @@ const publicationArguments = (args: readonly string[]): PublicationArguments => 
 
 export const runHistoryCommand = async (
   input: HistoryCommandInput,
-): Promise<HistoryCliReport | HistoryPublicationReport | SourceIdMirrorReport> => {
+): Promise<
+  HistoryCliReport | HistoryPublicationReport | SourceIdMirrorReport | EventEntitiesReport
+> => {
   if (input.argv[0] === "collect" || input.argv[0] === "status" || input.argv[0] === "audit")
     return runHistoryCli(input);
   if (input.argv[0] === "mirror-local") return runHistoryLocalMirror(input);
   if (input.argv[0] === "mirror-production") return runHistoryProductionMirror(input);
   if (input.argv[0] === "source-ids-plan" || input.argv[0] === "source-ids-production")
     return runSourceIdMirror(input);
+  if (input.argv[0] === "event-entities" || input.argv[0] === "event-plans")
+    return runEventEntities(input);
   const args: PublicationArguments = publicationArguments(input.argv);
   const connection: HistoryConnection = createHistoryConnection(input.env, args.target);
   try {

@@ -3,14 +3,18 @@ import { createHistoryCliRuntime, type HistoryCliReport } from "./history-cli";
 import { runHistoryCommand } from "./history-command";
 import type { HistoryPublicationReport } from "./history-publication-operator";
 import type { SourceIdMirrorReport } from "./source-id-mirror";
+import type { EventEntitiesReport } from "./event-entities";
 
 try {
-  const result: HistoryCliReport | HistoryPublicationReport | SourceIdMirrorReport =
-    await runHistoryCommand({
-      argv: Bun.argv.slice(2),
-      env: process.env,
-      runtime: createHistoryCliRuntime(),
-    });
+  const result:
+    | HistoryCliReport
+    | HistoryPublicationReport
+    | SourceIdMirrorReport
+    | EventEntitiesReport = await runHistoryCommand({
+    argv: Bun.argv.slice(2),
+    env: process.env,
+    runtime: createHistoryCliRuntime(),
+  });
   console.log(JSON.stringify(result));
   if (result.status === "paused") process.exitCode = 2;
   if (result.status === "blocked") process.exitCode = 1;
