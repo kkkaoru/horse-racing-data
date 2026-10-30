@@ -196,26 +196,19 @@ const findRaceListEntry = (
   return matches.length === 1 ? matches[0]! : null;
 };
 
-const extractOverseasEntryUrl = (html: string): string | null => {
-  const entryAnchor = Array.from(html.matchAll(ANCHOR_PATTERN))
-    .map((match) => ({ href: match[1], text: match[2] }))
-    .find(
-      (candidate) => candidate.href && candidate.text && normalizeText(candidate.text) === "出馬表",
-    );
-  if (!entryAnchor?.href) {
-    return null;
-  }
-  const url = toJraUrl(entryAnchor.href);
-  if (
-    !url ||
-    url.origin !== JRA_ORIGIN ||
-    url.pathname !== JRA_OVERSEAS_ENTRY_PATH ||
-    !url.searchParams.get("CNAME")?.startsWith(JRA_OVERSEAS_ENTRY_CNAME_PREFIX)
-  ) {
-    return null;
-  }
-  return url.toString();
-};
+const isOverseasEntryUrl = (url: URL | null): url is URL =>
+  url !== null &&
+  url.origin === JRA_ORIGIN &&
+  url.pathname === JRA_OVERSEAS_ENTRY_PATH &&
+  url.searchParams.get("CNAME")?.startsWith(JRA_OVERSEAS_ENTRY_CNAME_PREFIX) === true;
+
+// Meeting pages also carry placeholder 出馬表 anchors (href="#"); take the first real entry link.
+const extractOverseasEntryUrl = (html: string): string | null =>
+  Array.from(html.matchAll(ANCHOR_PATTERN))
+    .filter((match) => match[1] && match[2] && normalizeText(match[2]) === "出馬表")
+    .map((match) => toJraUrl(match[1]!))
+    .find(isOverseasEntryUrl)
+    ?.toString() ?? null;
 
 export const parseJraOverseasRacePage = (
   html: string,

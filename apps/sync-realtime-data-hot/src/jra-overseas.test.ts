@@ -188,6 +188,23 @@ it("parseJraOverseasRacePage rejects accessSD links without the pk01dde prefix",
   ).toBeNull();
 });
 
+it("parseJraOverseasRacePage skips placeholder 出馬表 anchors before the real entry link", () => {
+  expect(
+    parseJraOverseasRacePage(
+      `
+        <a href="#">出馬表</a>
+        <p>発走予定時刻 日本時間11月1日（日曜）7時16分</p>
+        <a href="/JRADB/accessSD.html?CNAME=pk01dde0111120260101121/34">出馬表</a>
+        <a href="#">出馬表</a>
+      `,
+      { kaisaiNen: "2026", kaisaiTsukihi: "1101", kyosomeiHondai: "ブリーダーズカップクラシック" },
+    ),
+  ).toStrictEqual({
+    debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0111120260101121/34",
+    raceStartAtJst: "2026-11-01T07:16:00+09:00",
+  });
+});
+
 it("parseJraOverseasRacePage rejects pages without an 出馬表 link", () => {
   expect(
     parseJraOverseasRacePage(
