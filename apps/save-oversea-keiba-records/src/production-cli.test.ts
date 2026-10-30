@@ -4,7 +4,7 @@ import layouts from "../../daily-keiba-sync/src/generated/record-layouts.json";
 import { buildProductionRequest, type ProductionRequestInput } from "./production-request";
 import {
   createProductionCliRuntime,
-  parseOperatorResponse,
+  parseCloudflareResult,
   runProductionCli,
   type ProductionCliRuntime,
 } from "./production-cli";
@@ -52,16 +52,12 @@ const REQUEST: ProductionRequestInput = {
   ],
 };
 const ENV: Readonly<Record<string, string>> = {
-  PC_KEIBA_CLOUDFLARE_PROFILE: "default",
   CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000001",
   PC_KEIBA_SYNC_DATABASE_ID: "database-id",
   PC_KEIBA_CATALOG_QUEUE_ID: "queue-id",
   PC_KEIBA_SOURCE_STAGING_BUCKET: "source-bucket",
 };
-const RESPONSE: string = JSON.stringify({
-  ok: true,
-  data: { content: [{ type: "text", text: JSON.stringify({ success: true, result: [] }) }] },
-});
+const RESPONSE: string = "[]";
 const RUNTIME: ProductionCliRuntime = {
   read: vi.fn(),
   write: vi.fn().mockResolvedValue(undefined),
@@ -142,6 +138,16 @@ test("reads status without staging or registration", async () => {
     await runProductionCli({ argv: ["status", "/cache"], env: ENV, runtime: RUNTIME }),
   ).toStrictEqual([]);
   expect(RUNTIME.command).toHaveBeenCalledTimes(1);
+  expect(RUNTIME.command).toHaveBeenCalledWith([
+    "env",
+    "CLOUDFLARE_ACCOUNT_ID=00000000000000000000000000000001",
+    "cf",
+    "d1",
+    "query",
+    "database-id",
+    "--body",
+    '{"sql":"select r.run_id,r.status,r.advance_cursor,t.table_name,t.catalog_status,t.neon_status,t.source_records,t.error_stage from sync_runs r join sync_run_tables t using(run_id) where r.run_id=? order by t.table_name","params":["12345678-abcd-4321-9876-123456789abc"]}',
+  ]);
   expect(RUNTIME.write).not.toHaveBeenCalled();
 });
 test("rejects missing settings before any remote operation", async () => {
@@ -161,12 +167,12 @@ test("rejects unsafe resource paths", async () => {
     }),
   ).rejects.toThrow("Missing or invalid operator setting");
 });
-test("rejects missing API profiles", async () => {
+test("rejects a missing pinned account", async () => {
   vi.mocked(RUNTIME.read).mockResolvedValue(JSON.stringify(REQUEST));
   await expect(
     runProductionCli({
       argv: ["status", "/cache"],
-      env: { ...ENV, PC_KEIBA_CLOUDFLARE_PROFILE: "" },
+      env: { ...ENV, CLOUDFLARE_ACCOUNT_ID: "" },
       runtime: RUNTIME,
     }),
   ).rejects.toThrow("Missing or invalid operator setting");
@@ -267,7 +273,7 @@ test("stops before registration when staging readback differs", async () => {
   ).rejects.toThrow("Remote staging digest mismatch");
   expect(RUNTIME.command).toHaveBeenCalledTimes(5);
   expect(vi.mocked(RUNTIME.command).mock.calls.map(([args]) => args[0])).toStrictEqual([
-    "executor",
+    "env",
     "bunx",
     "bunx",
     "bunx",
@@ -293,58 +299,36 @@ test("uploads and verifies both stages before registration and queue submission"
     published: false,
   });
   expect(RUNTIME.command).toHaveBeenCalledTimes(11);
+  expect(vi.mocked(RUNTIME.command).mock.calls.at(-1)?.[0].slice(0, 8)).toStrictEqual([
+    "env",
+    "CLOUDFLARE_ACCOUNT_ID=00000000000000000000000000000001",
+    "cf",
+    "queues",
+    "messages",
+    "bulk-push",
+    "--queue-id",
+    "queue-id",
+  ]);
   expect(RUNTIME.write).toHaveBeenLastCalledWith(
     "/cache/production-accepted.json",
     '{"runId":"12345678-abcd-4321-9876-123456789abc","accepted":true}',
   );
 });
-test("rejects non-object API envelopes", () => {
-  expect(() => parseOperatorResponse("null")).toThrow("Managed API execution failed");
+test("reads the printed API result", () => {
+  expect(parseCloudflareResult('[{"success":true,"results":[]}]')).toStrictEqual([
+    { success: true, results: [] },
+  ]);
 });
-test("rejects unsuccessful API envelopes", () => {
-  expect(() => parseOperatorResponse('{"ok":false}')).toThrow("Managed API execution failed");
+test("treats an empty printout as no result", () => {
+  expect(parseCloudflareResult(" \n")).toBe(null);
 });
-test("rejects missing API data", () => {
-  expect(() => parseOperatorResponse('{"ok":true,"data":null}')).toThrow(
-    "Managed API execution failed",
+test("rejects a D1 statement that reports failure", () => {
+  expect(() => parseCloudflareResult('[{"success":true},{"success":false}]')).toThrow(
+    "Production API operation failed",
   );
 });
-test("rejects tool errors", () => {
-  expect(() => parseOperatorResponse('{"ok":true,"data":{"isError":true}}')).toThrow(
-    "Managed API execution failed",
-  );
-});
-test("rejects missing content", () => {
-  expect(() => parseOperatorResponse('{"ok":true,"data":{}}')).toThrow(
-    "Managed API execution failed",
-  );
-});
-test("rejects missing text responses", () => {
-  expect(() =>
-    parseOperatorResponse('{"ok":true,"data":{"content":[null,{"type":"image"}]}}'),
-  ).toThrow("Managed API response is missing");
-});
-test("rejects non-string text responses", () => {
-  expect(() =>
-    parseOperatorResponse('{"ok":true,"data":{"content":[{"type":"text","text":1}]}}'),
-  ).toThrow("Managed API response is missing");
-});
-test("rejects unsuccessful API results", () => {
-  expect(() =>
-    parseOperatorResponse(
-      JSON.stringify({
-        ok: true,
-        data: { content: [{ type: "text", text: '{"success":false}' }] },
-      }),
-    ),
-  ).toThrow("Production API operation failed");
-});
-test("rejects non-object API results", () => {
-  expect(() =>
-    parseOperatorResponse(
-      JSON.stringify({ ok: true, data: { content: [{ type: "text", text: "null" }] } }),
-    ),
-  ).toThrow("Production API operation failed");
+test("rejects a printout that is not JSON", () => {
+  expect(() => parseCloudflareResult("Error: denied")).toThrow();
 });
 test("native runtime reads private files", async () => {
   io.read.mockResolvedValue("data");
@@ -371,8 +355,8 @@ test("native runtime drains subprocess output", async () => {
     exited: Promise.resolve(0),
   });
   vi.stubGlobal("Bun", { spawn });
-  expect(await createProductionCliRuntime().command(["executor", "tool"])).toBe("ok");
-  expect(spawn).toHaveBeenCalledWith(["executor", "tool"], { stdout: "pipe", stderr: "pipe" });
+  expect(await createProductionCliRuntime().command(["cf", "tool"])).toBe("ok");
+  expect(spawn).toHaveBeenCalledWith(["cf", "tool"], { stdout: "pipe", stderr: "pipe" });
 });
 test("native runtime hides subprocess failures and secrets", async () => {
   vi.stubGlobal("Bun", {
@@ -382,7 +366,7 @@ test("native runtime hides subprocess failures and secrets", async () => {
       exited: Promise.resolve(1),
     }),
   });
-  await expect(createProductionCliRuntime().command(["executor"])).rejects.toThrow(
+  await expect(createProductionCliRuntime().command(["cf"])).rejects.toThrow(
     "Operator command failed",
   );
 });

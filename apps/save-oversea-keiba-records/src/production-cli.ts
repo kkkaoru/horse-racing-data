@@ -27,10 +27,9 @@ interface Operator {
   readonly runtime: ProductionCliRuntime;
   readonly env: Readonly<Record<string, string | undefined>>;
 }
-interface ApiRequest {
+interface CloudflareRequest {
   readonly operator: Operator;
-  readonly path: string;
-  readonly body: unknown;
+  readonly args: readonly string[];
 }
 interface FileRequest {
   readonly directory: string;
@@ -68,42 +67,34 @@ const readInput = async (operator: Operator): Promise<ProductionRequestInput> =>
   if (!isInput(input)) throw new Error("Invalid production input manifest");
   return input;
 };
-export const parseOperatorResponse = (text: string): unknown => {
-  const envelope: unknown = JSON.parse(text);
-  if (
-    !isRecord(envelope) ||
-    envelope.ok !== true ||
-    !isRecord(envelope.data) ||
-    envelope.data.isError === true ||
-    !Array.isArray(envelope.data.content)
-  )
-    throw new Error("Managed API execution failed or requires approval");
-  const entry: unknown = envelope.data.content.find(
-    (item: unknown) => isRecord(item) && item.type === "text",
-  );
-  if (!isRecord(entry) || typeof entry.text !== "string")
-    throw new Error("Managed API response is missing");
-  const result: unknown = JSON.parse(entry.text);
-  if (!isRecord(result) || result.success !== true)
+// cf prints the API result; a D1 statement that reports success=false is a failure even on exit 0.
+export const parseCloudflareResult = (text: string): unknown => {
+  const result: unknown = text.trim() === "" ? null : JSON.parse(text);
+  if (Array.isArray(result) && result.some((item) => isRecord(item) && item.success === false))
     throw new Error("Production API operation failed");
-  return result.result;
+  return result;
 };
-const api = async ({ operator, path, body }: ApiRequest): Promise<unknown> => {
-  const profile: string = required(operator, "PC_KEIBA_CLOUDFLARE_PROFILE");
-  const account: string = required(operator, "CLOUDFLARE_ACCOUNT_ID");
-  const code: string = `async()=>{if(accountId!==${JSON.stringify(account)})throw Error("Cloudflare account mismatch");const r=await cloudflare.request({method:"POST",path:"/accounts/"+accountId+${JSON.stringify(path)},body:${JSON.stringify(body)}});if(!r.success||(Array.isArray(r.result)&&r.result.some(x=>x.success===false)))throw Error("Production API operation failed");return {success:true,result:r.result};}`;
-  return parseOperatorResponse(
+// The account is pinned per call so a different default account in cf can never receive writes.
+const cloudflare = async ({ operator, args }: CloudflareRequest): Promise<unknown> =>
+  parseCloudflareResult(
     await operator.runtime.command([
-      "executor",
-      "call",
-      "cloudflare-api",
-      "user",
-      profile,
-      "execute",
-      JSON.stringify({ code }),
+      "env",
+      `CLOUDFLARE_ACCOUNT_ID=${required(operator, "CLOUDFLARE_ACCOUNT_ID")}`,
+      "cf",
+      ...args,
     ]),
   );
-};
+const query = async (operator: Operator, body: unknown): Promise<unknown> =>
+  cloudflare({
+    operator,
+    args: [
+      "d1",
+      "query",
+      required(operator, "PC_KEIBA_SYNC_DATABASE_ID"),
+      "--body",
+      JSON.stringify(body),
+    ],
+  });
 const savePrepared = async ({
   directory,
   input,
@@ -124,13 +115,8 @@ const apply = async (operator: Operator): Promise<unknown> => {
   );
   if (JSON.stringify(plan) !== JSON.stringify(frozen)) throw new Error("Durable request changed");
   const bucket: string = required(operator, "PC_KEIBA_SOURCE_STAGING_BUCKET");
-  const database: string = required(operator, "PC_KEIBA_SYNC_DATABASE_ID");
   const queue: string = required(operator, "PC_KEIBA_CATALOG_QUEUE_ID");
-  await api({
-    operator,
-    path: `/d1/database/${database}/query`,
-    body: { sql: STATUS_SQL, params: [plan.runId] },
-  });
+  await query(operator, { sql: STATUS_SQL, params: [plan.runId] });
   await submitProductionRequest(input, {
     uploadAndVerify: async (stage) => {
       const file: string = join(operator.directory, `${stage.tableName}.stage.json`);
@@ -164,14 +150,20 @@ const apply = async (operator: Operator): Promise<unknown> => {
         throw new Error("Remote staging digest mismatch");
     },
     register: async (statements) => {
-      for (const body of statements)
-        await api({ operator, path: `/d1/database/${database}/query`, body });
+      for (const body of statements) await query(operator, body);
     },
     enqueue: async (jobs) => {
-      await api({
+      await cloudflare({
         operator,
-        path: `/queues/${queue}/messages/batch`,
-        body: { messages: jobs.map((job) => ({ body: job, content_type: "json" })) },
+        args: [
+          "queues",
+          "messages",
+          "bulk-push",
+          "--queue-id",
+          queue,
+          "--body",
+          JSON.stringify({ messages: jobs.map((job) => ({ body: job, content_type: "json" })) }),
+        ],
       });
       await operator.runtime.write(
         join(operator.directory, ACCEPTED_FILE),
@@ -203,11 +195,7 @@ export const runProductionCli = async ({
     return apply(operator);
   if (action === "status" && argv.length === 2) {
     const plan: ProductionRequest = buildProductionRequest(await readInput(operator));
-    return api({
-      operator,
-      path: `/d1/database/${required(operator, "PC_KEIBA_SYNC_DATABASE_ID")}/query`,
-      body: { sql: STATUS_SQL, params: [plan.runId] },
-    });
+    return query(operator, { sql: STATUS_SQL, params: [plan.runId] });
   }
   throw new Error("Invalid production command or missing --confirm-production");
 };

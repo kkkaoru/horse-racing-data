@@ -333,18 +333,17 @@ The Vitest configuration requires at least 95% statements, branches, functions, 
 copy the local database, bypass the legacy-replica guard, advance the daily cursor,
 or activate prediction models.
 
-Prerequisites: Bun, authenticated Wrangler, and an already-authorized Executor
-`cloudflare-api.user.<profile>` integration. Authorization prompts require operator
-approval; the CLI never approves them. Supply these non-secret resource settings
+Prerequisites: Bun, authenticated Wrangler, and an authenticated `cf` CLI (D1 queries
+and the Catalog queue push go through `cf`; R2 staging through Wrangler). The CLI never
+logs in or approves anything. Supply these non-secret resource settings
 through the environment (and the local PostgreSQL settings above):
 
-| Variable                         | Purpose                                                                               |
-| -------------------------------- | ------------------------------------------------------------------------------------- |
-| `CLOUDFLARE_ACCOUNT_ID`          | Explicit account for Wrangler; checked against the managed API account before staging |
-| `PC_KEIBA_CLOUDFLARE_PROFILE`    | Existing Executor Cloudflare user-profile name                                        |
-| `PC_KEIBA_SYNC_DATABASE_ID`      | Current daily-sync D1 database ID                                                     |
-| `PC_KEIBA_CATALOG_QUEUE_ID`      | Current Catalog queue ID, not its name                                                |
-| `PC_KEIBA_SOURCE_STAGING_BUCKET` | Current daily-sync source-staging bucket name                                         |
+| Variable                         | Purpose                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------- |
+| `CLOUDFLARE_ACCOUNT_ID`          | Explicit account; pinned on every `cf` call so no other account receives writes |
+| `PC_KEIBA_SYNC_DATABASE_ID`      | Current daily-sync D1 database ID                                               |
+| `PC_KEIBA_CATALOG_QUEUE_ID`      | Current Catalog queue ID, not its name                                          |
+| `PC_KEIBA_SOURCE_STAGING_BUCKET` | Current daily-sync source-staging bucket name                                   |
 
 From this app directory, with the environment already loaded:
 
