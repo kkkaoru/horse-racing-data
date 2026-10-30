@@ -175,7 +175,7 @@ PostgreSQL only; Catalog and raw R2 preservation are separate verified stages.
 OVERSEA_RACE_RESULT_PROFILE_PATH=/private/race-result-profile.json \
   bun run past-edition /private/past-results/<page>.html \
   --source-race-id '<secondary-race-id>' --race-name '<JV race title>' \
-  --venue-code A4 --race-number 09 [--apply]
+  --venue-code A4 --race-number 09 [--confirmed-field-size N] [--apply]
 ```
 
 JV often carries only the Japanese runners of an overseas race that JRA did not
@@ -189,7 +189,7 @@ are never rewritten. It stores finish position, JV abnormality code and winner
 time. It also adds `oversea_runner_source_id` rows (`ON CONFLICT DO NOTHING`)
 for runners whose source page exists. The race key uses the published local race
 date, as JV does. Some older source pages list only part of the field. The report
-prints `parsedRunners` and `starters` so that partial fields stay visible, and no
+prints `parsedRunners`, `starters` and `sourcePartial`. When the highest horse number exceeds the listed rows, it refuses to create a new race unless `--confirmed-field-size` matches the listed starters, so a partial page never becomes a partial field. No
 runner is ever invented.
 
 ### Explicit production source-id mirroring

@@ -65,8 +65,10 @@ it("plans a missing race and all runners in dry-run mode without writing", async
   execute.mockImplementation(async ({ text }: { text: string }) =>
     text.includes("count(*)") ? { rowCount: 1, rows: [{ count: "0" }] } : { rowCount: 0, rows: [] },
   );
-  await expect(runPastEdition({ argv: ARGS, env: ENV, ports })).resolves.toBe(
-    '{"raceKey":"2025/1101/A4/09","mode":"dry-run","insertRace":true,"insertRunners":["05","02","07"],"keptExistingRunners":0,"sourceIdInserts":1,"parsedRunners":3,"starters":2}',
+  await expect(
+    runPastEdition({ argv: [...ARGS, "--confirmed-field-size", "2"], env: ENV, ports }),
+  ).resolves.toBe(
+    '{"raceKey":"2025/1101/A4/09","mode":"dry-run","insertRace":true,"insertRunners":["05","02","07"],"keptExistingRunners":0,"sourceIdInserts":1,"parsedRunners":3,"starters":2,"sourcePartial":false}',
   );
   expect(execute.mock.calls[0]?.[0].values).toStrictEqual(["2025", "1101", "A4", "09"]);
   expect(transactionExecute).not.toHaveBeenCalled();
@@ -80,7 +82,7 @@ it("writes only missing runners and never rewrites an existing race", async () =
       : { rowCount: 1, rows: [{ umaban: "05" }] },
   );
   await expect(runPastEdition({ argv: [...ARGS, "--apply"], env: ENV, ports })).resolves.toBe(
-    '{"raceKey":"2025/1101/A4/09","mode":"applied","insertRace":false,"insertRunners":["02","07"],"keptExistingRunners":1,"sourceIdInserts":1,"parsedRunners":3,"starters":2}',
+    '{"raceKey":"2025/1101/A4/09","mode":"applied","insertRace":false,"insertRunners":["02","07"],"keptExistingRunners":1,"sourceIdInserts":1,"parsedRunners":3,"starters":2,"sourcePartial":true}',
   );
   const statements = transactionExecute.mock.calls.map(([statement]) => statement);
   expect(
@@ -103,7 +105,11 @@ it("stores finish, abnormality and time codes on inserted runners", async () => 
   execute.mockImplementation(async ({ text }: { text: string }) =>
     text.includes("count(*)") ? { rowCount: 1, rows: [{ count: "0" }] } : { rowCount: 0, rows: [] },
   );
-  await runPastEdition({ argv: [...ARGS, "--apply"], env: ENV, ports });
+  await runPastEdition({
+    argv: [...ARGS, "--confirmed-field-size", "2", "--apply"],
+    env: ENV,
+    ports,
+  });
   const statements = transactionExecute.mock.calls.map(([statement]) => statement);
   const columns: string[] = statements[1].text.match(/\(([^)]+)\) VALUES/u)[1].split(", ");
   const value = (index: number, column: string): string =>
@@ -122,6 +128,20 @@ it("stores finish, abnormality and time codes on inserted runners", async () => 
   expect(value(3, "ijo_kubun_code")).toBe("1");
   const raceColumns: string[] = statements[0].text.match(/\(([^)]+)\) VALUES/u)[1].split(", ");
   expect(statements[0].values[raceColumns.indexOf("shusso_tosu")]).toBe("02");
+});
+
+it("refuses to create a race from a page with unexplained horse-number gaps", async () => {
+  execute.mockImplementation(async ({ text }: { text: string }) =>
+    text.includes("count(*)") ? { rowCount: 1, rows: [{ count: "0" }] } : { rowCount: 0, rows: [] },
+  );
+  await expect(runPastEdition({ argv: [...ARGS, "--apply"], env: ENV, ports })).resolves.toBe(
+    '{"raceKey":"2025/1101/A4/09","mode":"applied","insertRace":false,"insertRunners":[],"keptExistingRunners":0,"sourceIdInserts":1,"parsedRunners":3,"starters":2,"sourcePartial":true}',
+  );
+  expect(
+    transactionExecute.mock.calls.map(
+      ([statement]) => /INSERT INTO (\w+)/u.exec(statement.text)?.[1],
+    ),
+  ).toStrictEqual(["oversea_runner_source_id"]);
 });
 
 it("requires the private result profile", async () => {
@@ -146,15 +166,19 @@ it("parses explicit options and rejects incomplete or unknown arguments", () => 
     raceName: "テストカップ",
     venueCode: "A4",
     raceNumber: "09",
+    confirmedFieldSize: null,
     apply: true,
   });
+  expect(() => parsePastEditionArgs([...ARGS, "--confirmed-field-size", "x"])).toThrow(
+    "Use past-edition FILE --source-race-id ID --race-name NAME --venue-code CODE --race-number NN [--confirmed-field-size N] [--apply].",
+  );
   expect(() => parsePastEditionArgs(ARGS.slice(0, 7))).toThrow(
-    "Use past-edition FILE --source-race-id ID --race-name NAME --venue-code CODE --race-number NN [--apply].",
+    "Use past-edition FILE --source-race-id ID --race-name NAME --venue-code CODE --race-number NN [--confirmed-field-size N] [--apply].",
   );
   expect(() => parsePastEditionArgs([...ARGS, "--force"])).toThrow(
-    "Use past-edition FILE --source-race-id ID --race-name NAME --venue-code CODE --race-number NN [--apply].",
+    "Use past-edition FILE --source-race-id ID --race-name NAME --venue-code CODE --race-number NN [--confirmed-field-size N] [--apply].",
   );
   expect(() => parsePastEditionArgs([])).toThrow(
-    "Use past-edition FILE --source-race-id ID --race-name NAME --venue-code CODE --race-number NN [--apply].",
+    "Use past-edition FILE --source-race-id ID --race-name NAME --venue-code CODE --race-number NN [--confirmed-field-size N] [--apply].",
   );
 });
