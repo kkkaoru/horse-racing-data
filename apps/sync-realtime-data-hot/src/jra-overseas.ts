@@ -26,7 +26,9 @@ export type JraOverseasRaceResolver = (
 
 const JRA_ORIGIN = "https://www.jra.go.jp";
 const JRA_OVERSEAS_RACE_LIST_BASE_URL = `${JRA_ORIGIN}/keiba/overseas/racelist`;
-const JRA_OVERSEAS_RACE_PAGE_PATH_PATTERN = /^\/keiba\/overseas\/race\/[a-z0-9_-]+\/index\.html$/iu;
+// Meeting pages may nest one page per race (e.g. /race/2026bc/classic/index.html).
+const JRA_OVERSEAS_RACE_PAGE_PATH_PATTERN =
+  /^\/keiba\/overseas\/race\/(?:[a-z0-9_-]+\/)+index\.html$/iu;
 const JRA_OVERSEAS_ENTRY_PATH = "/JRADB/accessSD.html";
 const JRA_OVERSEAS_ENTRY_CNAME_PREFIX = "pk01dde";
 export const JRA_USER_AGENT =
@@ -40,6 +42,8 @@ const GRADE_SUFFIX_PATTERN = /(?:G|JPN)\d$/iu;
 const RACE_NAME_PUNCTUATION_PATTERN = /[\s・･（）()]/gu;
 const KING_GEORGE_ROMAN_NUMERAL_PATTERN = /VI(?=世)/giu;
 const MONTH_DAY_PAD_WIDTH = 2;
+const DAY_MS = 86_400_000;
+const MONTH_INDEX_OFFSET = 1;
 const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 const SHIFT_JIS_DECODER = new TextDecoder("shift_jis");
 const KNOWN_OVERSEAS_ENTRY_URLS: Readonly<Record<string, string>> = {
@@ -83,6 +87,30 @@ const normalizeRaceName = (value: string): string =>
 
 const toMonthDay = (month: string, day: string): string =>
   `${month.padStart(MONTH_DAY_PAD_WIDTH, "0")}${day.padStart(MONTH_DAY_PAD_WIDTH, "0")}`;
+
+interface DatedMonthDay {
+  year: string;
+  monthDay: string;
+}
+
+// The race list shows the local race date, which is one day before the JST date for the Americas.
+const shiftMonthDay = (year: string, monthDay: string, days: number): DatedMonthDay => {
+  const shifted = new Date(
+    Date.UTC(
+      Number(year),
+      Number(monthDay.slice(0, 2)) - MONTH_INDEX_OFFSET,
+      Number(monthDay.slice(2, 4)),
+    ) +
+      days * DAY_MS,
+  );
+  return {
+    year: String(shifted.getUTCFullYear()),
+    monthDay: toMonthDay(
+      String(shifted.getUTCMonth() + MONTH_INDEX_OFFSET),
+      String(shifted.getUTCDate()),
+    ),
+  };
+};
 
 const toJraUrl = (href: string): URL | null => {
   try {
@@ -159,9 +187,10 @@ const findRaceListEntry = (
   // "VI世" versus full-width "６世"). Match the exact sale date first, then
   // require a unique normalized title containment match; ambiguity is rejected
   // rather than risking another race's accessSD URL.
+  const previousDay = shiftMonthDay(input.kaisaiNen, input.kaisaiTsukihi, -1).monthDay;
   const matches = entries.filter(
     (entry) =>
-      entry.kaisaiTsukihi === input.kaisaiTsukihi &&
+      (entry.kaisaiTsukihi === input.kaisaiTsukihi || entry.kaisaiTsukihi === previousDay) &&
       isRaceNameMatch(entry.raceName, input.kyosomeiHondai),
   );
   return matches.length === 1 ? matches[0]! : null;
@@ -197,7 +226,11 @@ export const parseJraOverseasRacePage = (
   if (!postTime?.[1] || !postTime[2] || !postTime[3] || !postTime[4]) {
     return null;
   }
-  if (toMonthDay(postTime[1], postTime[2]) !== input.kaisaiTsukihi) {
+  // JV keys overseas races by local date; the JST post can fall on the next day.
+  const postMonthDay = toMonthDay(postTime[1], postTime[2]);
+  const nextDay = shiftMonthDay(input.kaisaiNen, input.kaisaiTsukihi, 1);
+  const postYear = postMonthDay === nextDay.monthDay ? nextDay.year : input.kaisaiNen;
+  if (postMonthDay !== input.kaisaiTsukihi && postMonthDay !== nextDay.monthDay) {
     return null;
   }
   const debaUrl = extractOverseasEntryUrl(html);
@@ -207,7 +240,7 @@ export const parseJraOverseasRacePage = (
   const hhmm = `${postTime[3].padStart(MONTH_DAY_PAD_WIDTH, "0")}${postTime[4]}`;
   return {
     debaUrl,
-    raceStartAtJst: formatRaceStartJst(input.kaisaiNen, input.kaisaiTsukihi, hhmm),
+    raceStartAtJst: formatRaceStartJst(postYear, postMonthDay, hhmm),
   };
 };
 

@@ -101,16 +101,46 @@ it("parseJraOverseasRacePage extracts the accessSD entry URL and real JST post t
   });
 });
 
-it("parseJraOverseasRacePage rejects a post date that differs from the JV race date", () => {
+it("parseJraOverseasRacePage rejects a post date that is neither the race date nor the next JST day", () => {
   expect(
     parseJraOverseasRacePage(
       `
-        <p>発走予定時刻 日本時間 7月26日（日曜）23時35分</p>
+        <p>発走予定時刻 日本時間 7月27日（月曜）23時35分</p>
         <a href="/JRADB/accessSD.html?CNAME=pk01dde0110420260101051/32">出馬表</a>
       `,
       ASCOT_INPUT,
     ),
   ).toBeNull();
+});
+
+it("parseJraOverseasRacePage accepts a next-day JST post for a race keyed by its local date", () => {
+  expect(
+    parseJraOverseasRacePage(
+      `
+        <p>発走予定時刻 日本時間11月1日（日曜）7時16分</p>
+        <a href="/JRADB/accessSD.html?CNAME=pk01dde0111120260101121/34">出馬表</a>
+      `,
+      { kaisaiNen: "2026", kaisaiTsukihi: "1031", kyosomeiHondai: "ブリーダーズカップクラシック" },
+    ),
+  ).toStrictEqual({
+    debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0111120260101121/34",
+    raceStartAtJst: "2026-11-01T07:16:00+09:00",
+  });
+});
+
+it("parseJraOverseasRacePage rolls a next-day JST post into the next year", () => {
+  expect(
+    parseJraOverseasRacePage(
+      `
+        <p>発走予定時刻 日本時間1月1日（金曜）6時05分</p>
+        <a href="/JRADB/accessSD.html?CNAME=pk01dde0111120260101121/34">出馬表</a>
+      `,
+      { kaisaiNen: "2026", kaisaiTsukihi: "1231", kyosomeiHondai: "テスト" },
+    ),
+  ).toStrictEqual({
+    debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0111120260101121/34",
+    raceStartAtJst: "2027-01-01T06:05:00+09:00",
+  });
 });
 
 it("parseJraOverseasRacePage rejects pages without a parseable Japan post time", () => {
@@ -318,4 +348,37 @@ it("createJraOverseasRaceResolver surfaces official page HTTP failures", async (
   await expect(resolver(ASCOT_INPUT)).rejects.toStrictEqual(
     new JraOverseasFetchError("https://www.jra.go.jp/keiba/overseas/racelist/2026.html", 503),
   );
+});
+
+it("createJraOverseasRaceResolver matches a nested meeting page listed on the previous local date", async () => {
+  const fetchSpy = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(
+      new Response(
+        `<table><tr>
+          <td>2026年10月31日（土曜）</td>
+          <td><a href="/keiba/overseas/race/2026bc/classic/index.html">ブリーダーズカップクラシック（G1）</a></td>
+        </tr></table>`,
+        { status: 200 },
+      ),
+    )
+    .mockResolvedValueOnce(
+      new Response(
+        `<p>発走予定時刻 日本時間11月1日（日曜）7時16分</p>
+        <a href="/JRADB/accessSD.html?CNAME=pk01dde0111120260101121/34">出馬表</a>`,
+        { status: 200 },
+      ),
+    );
+  const resolver = createJraOverseasRaceResolver();
+  await expect(
+    resolver({
+      kaisaiNen: "2026",
+      kaisaiTsukihi: "1101",
+      kyosomeiHondai: "ブリーダーズカップクラシック　　　　　　　　",
+    }),
+  ).resolves.toStrictEqual({
+    debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0111120260101121/34",
+    raceStartAtJst: "2026-11-01T07:16:00+09:00",
+  });
+  expect(fetchSpy).toHaveBeenCalledTimes(2);
 });
