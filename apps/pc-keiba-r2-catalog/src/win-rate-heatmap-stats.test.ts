@@ -86,9 +86,10 @@ it("builds aggregate-only JRA bloodline SQL with heatmap default similar-section
   expect(sql).toMatch("FROM pc_keiba.jvd_se");
   expect(sql).toMatch("INNER JOIN pc_keiba.jvd_ra ra");
   expect(sql).toMatch("FROM pc_keiba.jvd_ra");
-  expect(sql).toMatch("LEFT JOIN pc_keiba.jvd_um primary_um");
-  expect(sql).toMatch("LEFT JOIN pc_keiba.nvd_um secondary_um");
-  expect(sql).toMatch("LEFT JOIN pc_keiba.nvd_nu tertiary_um");
+  expect(sql).toMatch("FROM pc_keiba.jvd_um GROUP BY ketto_toroku_bango HAVING count(DISTINCT");
+  expect(sql).toMatch("FROM pc_keiba.nvd_um GROUP BY ketto_toroku_bango");
+  expect(sql).toMatch("FROM pc_keiba.nvd_nu GROUP BY ketto_toroku_bango");
+  expect(sql).toMatch(") primary_um\n    ON primary_um.ketto_toroku_bango = se.ketto_toroku_bango");
   expect(sql).toMatch("ketto_joho_01b");
   expect(sql).toMatch("ketto_joho_03b");
   expect(sql).toMatch("ketto_joho_05b");
@@ -721,7 +722,7 @@ it("reads every runner's pedigree names for every race of the source on one date
   expect(sql).toMatch("se.keibajo_code,\n  se.race_bango,");
   expect(sql).toMatch("AS INT) AS umaban,\n  se.ketto_toroku_bango,");
   expect(sql).toMatch("AS damDamSire");
-  expect(/matched_history|current_race AS|race_bango = '01'|GROUP BY/u.test(sql)).toBe(false);
+  expect(/matched_history|current_race AS|race_bango = '01'|GROUP BY b/u.test(sql)).toBe(false);
   expect(dayKnownBloodlineKey("05", "11")).toBe("05:11");
 });
 
@@ -772,7 +773,7 @@ it("passes the day snapshot's names as IN-lists without current_entries, VALUES 
   expect(sql).not.toMatch("END AS b1");
   expect(sql).toMatch("GROUP BY b0, b2");
   // Only the history arm joins the pedigree masters, once.
-  expect(sql.match(/LEFT JOIN pc_keiba\.jvd_um primary_um/gu)?.length).toBe(1);
+  expect(sql.match(/FROM pc_keiba\.jvd_um GROUP BY ketto_toroku_bango/gu)?.length).toBe(1);
 });
 
 it("rejects day snapshot runners the literal query cannot use", () => {

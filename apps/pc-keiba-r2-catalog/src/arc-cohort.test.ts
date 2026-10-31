@@ -208,7 +208,7 @@ it("keeps unique pretarget Arc bloodlines including current horses, with source-
       [1, 2],
     ]);
     await c.run(
-      "INSERT INTO pc_keiba.jvd_um SELECT * FROM pc_keiba.jvd_um WHERE ketto_toroku_bango='2020100001'",
+      "INSERT INTO pc_keiba.jvd_um SELECT * REPLACE ('Conflicting sire' AS ketto_joho_01b) FROM pc_keiba.jvd_um WHERE ketto_toroku_bango='2020100001'",
     );
     expect(
       (await c.runAndReadAll(sql)).getRowObjectsJson().map((r) => [r.name, Number(r.starts)]),

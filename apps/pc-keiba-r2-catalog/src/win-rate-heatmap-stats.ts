@@ -469,24 +469,32 @@ export const rateStartPredicateSql = (filters: WinRateHeatmapStatsFilters): stri
     : `${finishPositionSql("se")} IS NOT NULL
     AND ${finishPositionSql("se")} > 0`;
 
-const uniqueMasterSql = (env: R2SqlCatalogConfig, table: string, strict: boolean): string =>
-  strict
-    ? `(SELECT * FROM ${tableName(env, table)} WHERE ketto_toroku_bango IN
-    (SELECT ketto_toroku_bango FROM ${tableName(env, table)} GROUP BY ketto_toroku_bango HAVING count(*) = 1))`
-    : tableName(env, table);
+// R2 SQL returned each multi-year jvd_se row 3x through a plain LEFT JOIN of a
+// unique master, and count(*) = 1 dropped those keys (2026-11-01 天皇賞（秋）);
+// a GROUP BY master keeps exactly one row per horse.
+const MASTER_PEDIGREE_COLUMNS: ReadonlyArray<string> = [
+  "ketto_joho_01b",
+  "ketto_joho_02b",
+  "ketto_joho_03b",
+  "ketto_joho_05b",
+  "ketto_joho_07b",
+  "ketto_joho_09b",
+  "ketto_joho_11b",
+  "ketto_joho_13b",
+];
 
-const masterJoinsSql = (
-  env: R2SqlCatalogConfig,
-  tables: CatalogTableSet,
-  strict: boolean,
-): string =>
-  `LEFT JOIN ${uniqueMasterSql(env, tables.masterPrimary, strict)} primary_um
+const uniqueMasterSql = (env: R2SqlCatalogConfig, table: string): string =>
+  `(SELECT ketto_toroku_bango, ${MASTER_PEDIGREE_COLUMNS.map((column) => `max(${column}) AS ${column}`).join(", ")}
+    FROM ${tableName(env, table)} GROUP BY ketto_toroku_bango HAVING count(DISTINCT concat(${MASTER_PEDIGREE_COLUMNS.map((column) => `coalesce(${column}, '')`).join(", '|', ")})) = 1)`;
+
+const masterJoinsSql = (env: R2SqlCatalogConfig, tables: CatalogTableSet): string =>
+  `LEFT JOIN ${uniqueMasterSql(env, tables.masterPrimary)} primary_um
     ON primary_um.ketto_toroku_bango = se.ketto_toroku_bango
     AND nullif(replace(btrim(se.ketto_toroku_bango), '0', ''), '') IS NOT NULL
-  LEFT JOIN ${uniqueMasterSql(env, tables.masterSecondary, strict)} secondary_um
+  LEFT JOIN ${uniqueMasterSql(env, tables.masterSecondary)} secondary_um
     ON secondary_um.ketto_toroku_bango = se.ketto_toroku_bango
     AND nullif(replace(btrim(se.ketto_toroku_bango), '0', ''), '') IS NOT NULL
-  LEFT JOIN ${uniqueMasterSql(env, tables.masterTertiary, strict)} tertiary_um
+  LEFT JOIN ${uniqueMasterSql(env, tables.masterTertiary)} tertiary_um
     ON tertiary_um.ketto_toroku_bango = se.ketto_toroku_bango
     AND nullif(replace(btrim(se.ketto_toroku_bango), '0', ''), '') IS NOT NULL`;
 
@@ -602,7 +610,7 @@ const bloodlineHistoryArmSql = (
     AND ra.keibajo_code = se.keibajo_code
     AND ra.race_bango = se.race_bango
   CROSS JOIN current_race cr
-  ${masterJoinsSql(env, tables, isOverseasEvent(filters))}
+  ${masterJoinsSql(env, tables)}
   ${isOverseasEvent(filters) ? historyProfileJoinSql(env) : ""}
   INNER JOIN target_names tn
     ON ${bloodlineMatchSql(isOverseasEvent(filters))}
@@ -710,7 +718,7 @@ const currentBloodlineCtesSql = (
     se.ketto_toroku_bango,
     ${currentBloodlineSelectSql(usesCurrentProfile(checked))}
   FROM ${tableName(env, current.runnerTable)} se
-  ${masterJoinsSql(env, current, isOverseasEvent(checked))}
+  ${masterJoinsSql(env, current)}
   ${usesCurrentProfile(checked) ? currentProfileJoinSql(env, checked) : ""}
   WHERE ${currentRaceIdentitySql(checked, "se")}
     AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) IS NOT NULL
@@ -754,7 +762,7 @@ SELECT
   se.ketto_toroku_bango,
   ${currentBloodlineSelectSql(false)}
 FROM ${tableName(env, current.runnerTable)} se
-${masterJoinsSql(env, current, false)}
+${masterJoinsSql(env, current)}
 WHERE se.kaisai_nen = '${checked.date.slice(0, 4)}'
   AND se.kaisai_tsukihi = '${checked.date.slice(4)}'
   AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) IS NOT NULL
@@ -878,7 +886,7 @@ const literalBloodlineHistoryArmSql = (
     AND ra.keibajo_code = se.keibajo_code
     AND ra.race_bango = se.race_bango
   CROSS JOIN current_race cr
-  ${masterJoinsSql(env, tables, false)}
+  ${masterJoinsSql(env, tables)}
   WHERE ${similarRaceFilterSql(filters)}
     AND ${rateStartPredicateSql(filters)}
     AND ${trimmedSql("se.ketto_toroku_bango")} IS NOT NULL
