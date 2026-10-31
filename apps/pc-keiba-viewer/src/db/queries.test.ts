@@ -446,7 +446,7 @@ it("getHorseRaceResults excludes empty and all-zero identities for a JRA current
   const queryText = stringifyQuery(queryArg);
   expect(withDbQueryCacheMock.mock.calls[0]?.[0].slice(0, 2)).toStrictEqual([
     "getHorseRaceResults",
-    "v3-mssd",
+    "v4-oversea-times",
   ]);
   expect(collectTableNames(queryArg)[0]).toBe("jvd_se");
   expect(queryText).toMatch(/btrim\(ketto_toroku_bango\) not in \('\s*'\)/u);
@@ -479,6 +479,12 @@ it("getHorseRaceResults joins source-mapped overseas histories without treating 
   expect(queryText).toMatch(/mapping\.source_horse_id as "kettoTorokuBango"/u);
   expect(queryText).toMatch(/btrim\(current_se\.ketto_toroku_bango\) ~ '\s*\^0\+\$\s*'/u);
   expect(queryText).toMatch(/past\.race_date < '\s*20260816\s*'::date/u);
+  expect(queryText).toMatch(
+    /round\(past\.race_time_seconds \* 10\)::int \/ 600\)::text\s*\|\| lpad\(\(round\(past\.race_time_seconds \* 10\)::int % 600\)::text, 3, '0'\)\s*end as "sohaTime"/u,
+  );
+  expect(queryText).toMatch(
+    /lpad\(round\(past\.last_three_furlongs_seconds \* 10\)::int::text, 3, '0'\)\s*end as "kohan3f"/u,
+  );
 });
 
 it("getHorseRaceResults uses NAR runners for the current identity set", async () => {

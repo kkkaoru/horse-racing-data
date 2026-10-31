@@ -131,6 +131,9 @@ export const overseaHorseRaceHistory = pgTable("oversea_horse_race_history", {
   surface: text("surface").notNull(),
   distanceMetres: integer("distance_metres").notNull(),
   going: text("going").notNull(),
+  raceTimeText: text("race_time_text"),
+  raceTimeSeconds: numeric("race_time_seconds"),
+  lastThreeFurlongsSeconds: numeric("last_three_furlongs_seconds"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
 

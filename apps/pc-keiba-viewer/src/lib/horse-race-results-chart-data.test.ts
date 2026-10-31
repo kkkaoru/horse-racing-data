@@ -16,6 +16,7 @@ import {
   HORSE_RACE_CHART_METRIC_LABELS,
   HORSE_RACE_CHART_METRIC_UNITS,
   HORSE_RACE_CHART_METRICS,
+  HORSE_RACE_CHART_TIME_METRICS,
   horseRaceChartPaintForWakuban,
   type HorseRaceChartRunner,
   uniqueSortedDateValues,
@@ -1984,6 +1985,8 @@ describe("horse race results chart data", () => {
       weight: "馬体重",
       weightDelta: "馬体重増減",
       futan: "斤量",
+      raceTime: "走破タイム",
+      last3f: "上がり3F",
     });
   });
 
@@ -1994,7 +1997,28 @@ describe("horse race results chart data", () => {
       weight: "kg",
       weightDelta: "kg",
       futan: "kg",
+      raceTime: "秒",
+      last3f: "秒",
     });
+  });
+
+  it("exposes the time metrics that join the overview only when published", () => {
+    expect(HORSE_RACE_CHART_TIME_METRICS).toStrictEqual(["raceTime", "last3f"]);
+  });
+
+  it("reads race time and closing 3F in seconds and treats blanks as unavailable", () => {
+    expect(
+      getHorseRaceChartMetricValue(buildResult({ kohan3f: "345", sohaTime: "1480" }), "raceTime"),
+    ).toBe(108);
+    expect(
+      getHorseRaceChartMetricValue(buildResult({ kohan3f: "345", sohaTime: "1480" }), "last3f"),
+    ).toBe(34.5);
+    expect(
+      getHorseRaceChartMetricValue(buildResult({ kohan3f: "000", sohaTime: null }), "raceTime"),
+    ).toBeNull();
+    expect(
+      getHorseRaceChartMetricValue(buildResult({ kohan3f: "000", sohaTime: null }), "last3f"),
+    ).toBeNull();
   });
 
   it("formats a UTC date with zero padding", () => {

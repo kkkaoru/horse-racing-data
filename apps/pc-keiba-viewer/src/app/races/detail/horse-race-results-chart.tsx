@@ -23,6 +23,7 @@ import {
   HORSE_RACE_CHART_METRIC_LABELS,
   HORSE_RACE_CHART_METRIC_UNITS,
   HORSE_RACE_CHART_METRICS,
+  HORSE_RACE_CHART_TIME_METRICS,
   uniqueSortedDateValues,
 } from "../../../lib/horse-race-results-chart-data";
 import type {
@@ -226,6 +227,8 @@ const REVERSED_Y_AXIS_BY_METRIC: Record<HorseRaceChartMetric, boolean> = {
   weight: false,
   weightDelta: false,
   futan: false,
+  raceTime: true,
+  last3f: true,
 };
 const Y_AXIS_DOMAIN_BY_METRIC: Record<HorseRaceChartMetric, ChartYAxisDomain> = {
   finish: RANK_AXIS_DOMAIN,
@@ -233,6 +236,8 @@ const Y_AXIS_DOMAIN_BY_METRIC: Record<HorseRaceChartMetric, ChartYAxisDomain> = 
   weight: VALUE_AXIS_DOMAIN,
   weightDelta: VALUE_AXIS_DOMAIN,
   futan: VALUE_AXIS_DOMAIN,
+  raceTime: VALUE_AXIS_DOMAIN,
+  last3f: VALUE_AXIS_DOMAIN,
 };
 // Only the rank panels carry per-race distance + jockey on their points, so only
 // they get the custom tooltip; weight/delta/futan panels keep the default tooltip.
@@ -242,7 +247,11 @@ const METRIC_HAS_RACE_CONTEXT: Record<HorseRaceChartMetric, boolean> = {
   weight: false,
   weightDelta: false,
   futan: false,
+  raceTime: true,
+  last3f: true,
 };
+
+const hasPlottedPoints = (series: HorseRaceChartSeries): boolean => series.points.length > 0;
 
 const getHorseChipLabel = (series: HorseRaceChartSeries): string =>
   `${series.umaban ?? "-"} ${series.bamei}`;
@@ -312,6 +321,8 @@ const buildSeriesListsByMetric = ({
     upcomingWeights,
   }),
   futan: buildHorseRaceChartSeriesList({ metric: "futan", results, runners }),
+  raceTime: buildHorseRaceChartSeriesList({ metric: "raceTime", results, runners }),
+  last3f: buildHorseRaceChartSeriesList({ metric: "last3f", results, runners }),
 });
 
 const uniqueTimeTicksForSeriesList = (
@@ -647,7 +658,7 @@ export const HorseRaceResultsChart = ({
     [results, resolvedMonths],
   );
   const isBanEi = isBanEiKeibajoCode(keibajoCode) || isBanEiKeibajoCode(targetKeibajoCode);
-  const overviewMetrics = isBanEi
+  const baseOverviewMetrics = isBanEi
     ? HORSE_RACE_CHART_BANEI_OVERVIEW_METRICS
     : HORSE_RACE_CHART_METRICS;
   const seriesListsByMetric = useMemo(
@@ -662,6 +673,12 @@ export const HorseRaceResultsChart = ({
       }),
     [combineFutan, filteredResults, runners, targetKeibajoCode, targetRaceDate, upcomingWeights],
   );
+  const overviewMetrics = [
+    ...baseOverviewMetrics,
+    ...HORSE_RACE_CHART_TIME_METRICS.filter((metric) =>
+      seriesListsByMetric[metric].some(hasPlottedPoints),
+    ),
+  ];
   const chipSeriesList = seriesListsByMetric.finish;
   const selectedKetto = selectedHorse ?? chipSeriesList.at(0)?.kettoTorokuBango ?? "";
   // The 馬別相関 view reuses the paddock 近走 chart for the selected horse, feeding

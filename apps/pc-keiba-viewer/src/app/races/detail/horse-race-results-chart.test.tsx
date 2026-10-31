@@ -234,7 +234,7 @@ const chartResult = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   keibajoCode: "05",
   kettoTorokuBango: "2022100001",
   kishumeiRyakusho: "騎手",
-  kohan3f: "378",
+  kohan3f: null,
   kyori: "1800",
   kyosoJokenCode: "005",
   kyosoJokenMeisho: "3歳",
@@ -245,7 +245,7 @@ const chartResult = (overrides: Partial<HorseRaceResult>): HorseRaceResult => ({
   kyosomeiKakkonai: null,
   raceBango: "01",
   seibetsuCode: "1",
-  sohaTime: "1123",
+  sohaTime: null,
   tanshoNinkijun: "02",
   tanshoOdds: "012",
   tenkoCode: "1",
@@ -292,6 +292,21 @@ test("renders the five metric panels simultaneously in the fixed order", () => {
     screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
   ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減", "斤量"]);
   expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(5);
+});
+
+test("adds the race time and closing 3F panels when past runs publish them", () => {
+  render(<HorseRaceResultsChart results={[chartResult({ kohan3f: "345", sohaTime: "1480" })]} />);
+  expect(
+    screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
+  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減", "斤量", "走破タイム", "上がり3F"]);
+  expect(screen.getAllByTestId("line-chart-stub").length).toStrictEqual(7);
+});
+
+test("adds only the race time panel when no past run publishes a closing 3F", () => {
+  render(<HorseRaceResultsChart results={[chartResult({ kohan3f: "000", sohaTime: "1480" })]} />);
+  expect(
+    screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent),
+  ).toStrictEqual(["着順", "人気", "馬体重", "馬体重増減", "斤量", "走破タイム"]);
 });
 
 test("renders the view toggle with the overview mode pressed by default", () => {

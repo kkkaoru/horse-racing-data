@@ -2,10 +2,18 @@
 // Pure data helpers for the race-detail 競走成績グラフ section: they turn the
 // `results` section payload (HorseRaceResult rows) into per-horse chart series.
 import { cleanText } from "./format";
+import { parseEncodedRaceTimeTenths } from "./race-time";
 import type { HorseRaceResult } from "./race-types";
 import { formatRunnerNumber, isBanEiKeibajoCode } from "./runner-format";
 
-export type HorseRaceChartMetric = "finish" | "popularity" | "weight" | "weightDelta" | "futan";
+export type HorseRaceChartMetric =
+  | "finish"
+  | "popularity"
+  | "weight"
+  | "weightDelta"
+  | "futan"
+  | "raceTime"
+  | "last3f";
 
 export interface HorseRaceChartPoint {
   // Raw blinker wearing flag ("blinkerShiyoKubun") for the race this point came
@@ -227,6 +235,10 @@ export const HORSE_RACE_CHART_METRICS: HorseRaceChartMetric[] = [
   "futan",
 ];
 
+// Time panels follow the overview only when some past run publishes the value
+// (overseas histories often have neither).
+export const HORSE_RACE_CHART_TIME_METRICS: HorseRaceChartMetric[] = ["raceTime", "last3f"];
+
 // Ban-ei overview keeps the time-series panels except 斤量, which is replaced by
 // a scatter of finish against the weight/futan relative-value delta.
 export const HORSE_RACE_CHART_BANEI_OVERVIEW_METRICS: HorseRaceChartMetric[] = [
@@ -242,6 +254,8 @@ export const HORSE_RACE_CHART_METRIC_LABELS: Record<HorseRaceChartMetric, string
   weight: "馬体重",
   weightDelta: "馬体重増減",
   futan: "斤量",
+  raceTime: "走破タイム",
+  last3f: "上がり3F",
 };
 
 export const HORSE_RACE_CHART_METRIC_UNITS: Record<HorseRaceChartMetric, string> = {
@@ -250,6 +264,8 @@ export const HORSE_RACE_CHART_METRIC_UNITS: Record<HorseRaceChartMetric, string>
   weight: "kg",
   weightDelta: "kg",
   futan: "kg",
+  raceTime: "秒",
+  last3f: "秒",
 };
 
 const toRaceDate = (result: HorseRaceResult): string => result.kaisaiNen + result.kaisaiTsukihi;
@@ -424,6 +440,18 @@ export const getCombinedWeightValue = (
   return weight + (parseFutan(result) ?? 0);
 };
 
+const TENTHS_PER_SECOND = 10;
+const LAST3F_PATTERN = /^\d{3}$/u;
+
+// JV stores 上がり3F as tenths of a second ("345" = 34.5); "000" and blanks mean unavailable.
+const parseLast3fTenths = (value: string | null | undefined): number | null => {
+  const cleaned = cleanText(value, "");
+  return LAST3F_PATTERN.test(cleaned) && Number(cleaned) > 0 ? Number(cleaned) : null;
+};
+
+const tenthsToSeconds = (tenths: number | null): number | null =>
+  tenths === null ? null : tenths / TENTHS_PER_SECOND;
+
 const METRIC_VALUE_EXTRACTORS: Record<
   HorseRaceChartMetric,
   (result: HorseRaceResult) => number | null
@@ -433,6 +461,8 @@ const METRIC_VALUE_EXTRACTORS: Record<
   weight: (result) => parseWeight(result),
   weightDelta: (result) => parseWeightDelta(result),
   futan: (result) => parseFutan(result),
+  raceTime: (result) => tenthsToSeconds(parseEncodedRaceTimeTenths(result.sohaTime)),
+  last3f: (result) => tenthsToSeconds(parseLast3fTenths(result.kohan3f)),
 };
 
 export const getHorseRaceChartMetricValue = (
@@ -456,7 +486,12 @@ const toDateValue = (raceDate: string): number =>
 
 // Metrics whose past points carry distance + jockey for the tooltip. Weight and
 // weightDelta points leave those fields null.
-const METADATA_METRICS = new Set<HorseRaceChartMetric>(["finish", "popularity"]);
+const METADATA_METRICS = new Set<HorseRaceChartMetric>([
+  "finish",
+  "popularity",
+  "raceTime",
+  "last3f",
+]);
 
 // Metrics that gain a synthetic upcoming-race point. Weight & weightDelta come
 // from the static-runner bataiju (or the realtime weight override); popularity

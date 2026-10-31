@@ -149,6 +149,17 @@ const raceTimeTenthsSql = (column: ReturnType<typeof sql>) => {
   end`;
 };
 
+// Overseas history stores seconds; the result rows carry JV text (MSSD time, 3-digit tenths 3F).
+const overseaSohaTimeSql = sql`case
+    when past.race_time_seconds is null then null
+    else (round(past.race_time_seconds * 10)::int / 600)::text
+      || lpad((round(past.race_time_seconds * 10)::int % 600)::text, 3, '0')
+  end`;
+const overseaKohan3fSql = sql`case
+    when past.last_three_furlongs_seconds is null then null
+    else lpad(round(past.last_three_furlongs_seconds * 10)::int::text, 3, '0')
+  end`;
+
 const trimmedKettoColumn = (alias: string, column: string) =>
   sql`nullif(regexp_replace(${sql.raw(`${alias}.${column}`)}, '^[[:space:]　]+|[[:space:]　]+$', '', 'g'), '')`;
 
@@ -275,7 +286,7 @@ const BAN_EI_WEIGHT_CLASS_SQL =
 const NON_BAN_EI_WEIGHT_CLASS_SQL =
   "case when kg < 400 then 'le399' when kg < 420 then '400-419' when kg < 440 then '420-439' when kg < 460 then '440-459' when kg < 480 then '460-479' when kg < 500 then '480-499' when kg < 520 then '500-519' when kg < 540 then '520-539' else 'ge540' end";
 const CARRIED_WEIGHT_CLASS_STATS_QUERY_VERSION = "v1";
-const HORSE_RACE_RESULTS_QUERY_VERSION = "v3-mssd";
+const HORSE_RACE_RESULTS_QUERY_VERSION = "v4-oversea-times";
 const RATE_PERCENT_DIVISOR = 10;
 const RATE_PERCENT_SCALE = 1000;
 const TIME_SCORE_QUERY_VERSION = "v5-catalog-history-fields";
@@ -2892,13 +2903,13 @@ export const getHorseRaceResults = async (
           end as "kakuteiChakujun",
           null::text as "tanshoOdds",
           null::text as "tanshoNinkijun",
-          null::text as "sohaTime",
+          ${overseaSohaTimeSql} as "sohaTime",
           null::text as "timeSa",
           null::text as "corner1",
           null::text as "corner2",
           null::text as "corner3",
           null::text as "corner4",
-          null::text as "kohan3f",
+          ${overseaKohan3fSql} as "kohan3f",
           null::text as "blinkerShiyoKubun",
           row_number() over (
             partition by mapping.umaban
