@@ -187,6 +187,12 @@ it("builds finish-position horse-level SQL and race-time aggregate SQL without j
   expect(time).toMatch("AS INT) = 1");
   expect(time).toMatch("AS INT) = cr.kyori_int");
   expect(time).toMatch("approx_percentile_cont(race_time, 0.5)");
+  expect(time).toMatch(
+    "nullif(try_cast(nullif(btrim(coalesce(se.kohan_3f, '')), '') AS DOUBLE), 0) AS kohan_3f",
+  );
+  expect(finish).toMatch(
+    "nullif(try_cast(nullif(btrim(coalesce(se.kohan_3f, '')), '') AS DOUBLE), 0) AS kohan_3f",
+  );
   expect(time).toMatch("WHEN cr.kyori_int < 1200 THEN 'sprint'");
   expect(time).not.toMatch("scaled_race_time");
   expect(time).not.toMatch("jsonb_agg");

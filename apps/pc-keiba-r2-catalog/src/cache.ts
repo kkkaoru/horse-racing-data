@@ -102,7 +102,8 @@ const EMPTY_GRADE_MATCH_CACHE_TOKEN = "2";
 const FINISH_DETAILS_CACHE_TOKEN = "1";
 const RACE_ENTITY_CURSOR_CACHE_TOKEN_LENGTH = 64;
 const RACE_ENTITY_HISTORY_CACHE_TOKEN = "object-v2-mssd";
-const RACE_TIME_ENCODING_CACHE_TOKEN = "mssd-v1";
+// v2: JV 000 closing 3F is unpublished (null), not 0.0.
+const RACE_TIME_ENCODING_CACHE_TOKEN = "mssd-v2";
 // v2 excludes zero-sentinel odds/popularity from condition aggregates and
 // correlation rows in both Cache API and KV; v1 numerical values are stale.
 const CORRELATION_CACHE_TOKEN: string = "v2";

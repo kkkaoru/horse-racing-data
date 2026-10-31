@@ -264,6 +264,9 @@ const integerSelect = (expr: string, empty: string): string =>
 export const doubleSelect = (expr: string): string =>
   `try_cast(nullif(btrim(coalesce(${expr}, '')), '') AS DOUBLE)`;
 
+// JV stores an unpublished closing 3F (overseas races) as 000.
+const kohan3fSelect = (expr: string): string => `nullif(${doubleSelect(expr)}, 0)`;
+
 const raceTimeTenthsSelect = (expr: string): string => encodedRaceTimeTenthsSql(doubleSelect(expr));
 
 export const trimmedNameSql = (column: string): string =>
@@ -528,7 +531,7 @@ matched_history AS (
               `CASE WHEN ${venue} THEN ${column.valueExpr} ELSE NULL END AS ${column.valueColumn}`,
           ),
           `CASE WHEN ${winnerWithTime} THEN ${raceTime} ELSE NULL END AS win_race_time`,
-          `CASE WHEN ${winnerWithTime} THEN ${doubleSelect("se.kohan_3f")} ELSE NULL END AS win_kohan_3f`,
+          `CASE WHEN ${winnerWithTime} THEN ${kohan3fSelect("se.kohan_3f")} ELSE NULL END AS win_kohan_3f`,
           `CASE WHEN ${topThree} THEN 1 ELSE 0 END AS top3`,
           `CASE WHEN ${topThree} THEN nullif(${doubleSelect("se.tansho_ninkijun")}, 0) ELSE NULL END AS top3_popularity`,
           `CASE WHEN ${topThree} THEN nullif(${doubleSelect("se.tansho_odds")}, 0) / ${String(CORRELATION_ODDS_SCALE)}.0 ELSE NULL END AS top3_odds`,
@@ -652,7 +655,7 @@ matched_history AS (
     ${trimmedNameSql("se.chokyoshimei_ryakusho")} AS trainer_name,
     ${trimmedNameSql("se.banushimei")} AS owner_name,
     ${doubleSelect("se.soha_time")} AS race_time,
-    ${doubleSelect("se.kohan_3f")} AS kohan_3f,
+    ${kohan3fSelect("se.kohan_3f")} AS kohan_3f,
     coalesce(nullif(btrim(coalesce(ra.kyori, '')), ''), '') AS kyori,
     CASE WHEN ${finishPositionSql("se")} = 1
       AND ${raceTimeTenthsSelect("se.soha_time")} IS NOT NULL
@@ -775,7 +778,7 @@ matched_history AS (
     ${exactHistoryKyoriFilterSql()}`,
         filters: checked,
         selectList: `${raceTimeTenthsSelect("se.soha_time")} AS race_time,
-    ${doubleSelect("se.kohan_3f")} AS kohan_3f`,
+    ${kohan3fSelect("se.kohan_3f")} AS kohan_3f`,
         tables,
       }),
     ),
