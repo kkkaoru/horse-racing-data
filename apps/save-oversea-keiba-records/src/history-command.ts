@@ -11,6 +11,7 @@ import { runPedigreeStore, type PedigreeStoreReport } from "./pedigree-store";
 import { runPostPositions, type PostPositionReport } from "./post-position-store";
 import { runRaceTimeStore, type RaceTimeStoreReport } from "./race-time-store";
 import { runRacingPostTimes, type RacingPostTimesReport } from "./racing-post-times";
+import { runJvRaceTimes, type JvRaceTimesReport } from "./jv-race-times";
 import {
   createHistoryConnection,
   type HistoryConnection,
@@ -54,6 +55,7 @@ export const runHistoryCommand = async (
   | PostPositionReport
   | RaceTimeStoreReport
   | RacingPostTimesReport
+  | JvRaceTimesReport
 > => {
   if (input.argv[0] === "collect" || input.argv[0] === "status" || input.argv[0] === "audit")
     return runHistoryCli(input);
@@ -68,7 +70,8 @@ export const runHistoryCommand = async (
   if (String(input.argv[0]).startsWith("post-positions-")) return runPostPositions(input);
   if (input.argv[0] === "race-times-plan" || input.argv[0] === "race-times-apply")
     return runRaceTimeStore(input);
-  if (String(input.argv[0]).startsWith("racing-post-times-")) return runRacingPostTimes(input);
+  if (String(input.argv[0]).startsWith("racing-post-")) return runRacingPostTimes(input);
+  if (String(input.argv[0]).startsWith("jv-race-times-")) return runJvRaceTimes(input);
   const args: PublicationArguments = publicationArguments(input.argv);
   const connection: HistoryConnection = createHistoryConnection(input.env, args.target);
   try {

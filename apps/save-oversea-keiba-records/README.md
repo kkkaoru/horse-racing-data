@@ -298,6 +298,8 @@ OVERSEA_RACING_POST_PROFILE_PATH=/private/rp.json \
 # Full result pages for runners the day pages do not list (same course and distance only):
 bun run history racing-post-races-fetch /private/missing-times.json /private/racingpost /private/history
 bun run history racing-post-times-apply /private/missing-times.json /private/racingpost /private/history local --confirm-write
+# Official JV runner rows of JRA-sold overseas races (read from local PostgreSQL, measured):
+bun run history jv-race-times-apply production --confirm-write
 ```
 
 Both fill only NULL columns and report differing stored values. `race_time_source` and

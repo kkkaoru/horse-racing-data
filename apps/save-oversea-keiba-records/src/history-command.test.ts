@@ -10,7 +10,13 @@ const ports = vi.hoisted(() => ({
   mirrorProduction: vi.fn(),
   sourceIds: vi.fn(),
   postPositions: vi.fn(),
+  raceTimes: vi.fn(),
+  racingPost: vi.fn(),
+  jvTimes: vi.fn(),
 }));
+vi.mock("./race-time-store", () => ({ runRaceTimeStore: ports.raceTimes }));
+vi.mock("./racing-post-times", () => ({ runRacingPostTimes: ports.racingPost }));
+vi.mock("./jv-race-times", () => ({ runJvRaceTimes: ports.jvTimes }));
 vi.mock("./post-position-store", () => ({ runPostPositions: ports.postPositions }));
 vi.mock("./source-id-mirror", () => ({ runSourceIdMirror: ports.sourceIds }));
 vi.mock("./history-cli", () => ({ runHistoryCli: ports.collect }));
@@ -115,3 +121,18 @@ it.each(["post-positions-fetch", "post-positions-plan", "post-positions-apply"])
     expect(ports.connect).not.toHaveBeenCalled();
   },
 );
+it("routes race-times-plan to the race time store", async () => {
+  await runHistoryCommand({ ...input, argv: ["race-times-plan", "/h", "local"] });
+  expect(ports.raceTimes).toHaveBeenCalledTimes(1);
+  expect(ports.connect).not.toHaveBeenCalled();
+});
+it("routes racing-post-races-fetch to the results-page times", async () => {
+  await runHistoryCommand({ ...input, argv: ["racing-post-races-fetch", "/m", "/c", "/h"] });
+  expect(ports.racingPost).toHaveBeenCalledTimes(1);
+  expect(ports.connect).not.toHaveBeenCalled();
+});
+it("routes jv-race-times-apply to the official JV times", async () => {
+  await runHistoryCommand({ ...input, argv: ["jv-race-times-apply", "local", "--confirm-write"] });
+  expect(ports.jvTimes).toHaveBeenCalledTimes(1);
+  expect(ports.connect).not.toHaveBeenCalled();
+});
