@@ -99,8 +99,33 @@ class FakeTransaction:
         self.table.events.append("set_properties")
 
 
+class FakeSchemaUpdate:
+    def __init__(self, table: FakeTable) -> None:
+        self.table = table
+
+    def __enter__(self) -> FakeSchemaUpdate:
+        return self
+
+    def union_by_name(self, schema: pa.Schema) -> None:
+        self.table.added_schemas.append(schema)
+
+    def __exit__(self, *_exc: object) -> None:
+        merged = pa.schema(
+            list(subject.schema_to_pyarrow(self.table.schema()))
+            + [field for added in self.table.added_schemas for field in added]
+        )
+        normalized = subject.require_primary_key_fields(
+            merged.empty_table(), self.table.table_spec
+        )
+        self.table._schema = subject.build_iceberg_schema(
+            normalized, self.table.table_spec
+        )
+
+
 class FakeTable:
     def __init__(self, data: pa.Table, spec: subject.TableSpec = TEST_SPEC) -> None:
+        self.table_spec = spec
+        self.added_schemas: list[pa.Schema] = []
         normalized = subject.require_primary_key_fields(data, spec)
         self._schema = subject.build_iceberg_schema(normalized, spec)
         self._spec = subject.build_partition_spec(self._schema, spec)
@@ -118,6 +143,9 @@ class FakeTable:
 
     def schema(self):
         return self._schema
+
+    def update_schema(self) -> FakeSchemaUpdate:
+        return FakeSchemaUpdate(self)
 
     def spec(self):
         return self._spec
@@ -339,6 +367,32 @@ class CreateOnlyTests(unittest.TestCase):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_new_nullable_source_columns_are_added_before_conforming(self) -> None:
+        table = FakeTable(sample_data())
+        data = sample_data().append_column(
+            "race_time_text", pa.array([None, "1:48.03"], pa.string())
+        )
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(subject.add_new_source_columns(data, table, TEST_SPEC))
+        conformed = subject.conform_to_table(data, table, TEST_SPEC)
+        self.assertEqual(
+            conformed.column("race_time_text").to_pylist(), [None, "1:48.03"]
+        )
+        self.assertEqual(table.refresh_calls, 1)
+
+    def test_source_missing_a_column_is_not_evolved(self) -> None:
+        table = FakeTable(sample_data())
+        data = (
+            sample_data()
+            .drop_columns(["value"])
+            .append_column("extra", pa.array(["x", "y"]))
+        )
+        self.assertFalse(subject.add_new_source_columns(data, table, TEST_SPEC))
+        self.assertFalse(
+            subject.add_new_source_columns(sample_data(), table, TEST_SPEC)
+        )
+        self.assertEqual(table.added_schemas, [])
+
     def test_table_inventory_contains_only_raw_local_postgresql_tables(self) -> None:
         self.assertEqual(
             list(subject.TABLE_SPECS),

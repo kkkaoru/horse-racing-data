@@ -665,6 +665,19 @@ def iceberg_scope_filter(spec: TableSpec, target_scope: YearScope) -> Any:
     raise ValueError(f"{spec.name}: cannot filter non-date table by year scope")
 
 
+def add_new_source_columns(data: pa.Table, table: Any, spec: TableSpec) -> bool:
+    """Add nullable columns that PostgreSQL gained to the Iceberg table; never drop or rename."""
+    expected = set(schema_to_pyarrow(table.schema()).names)
+    extra = [name for name in data.column_names if name not in expected]
+    if not extra or expected - set(data.column_names):
+        return False
+    with table.update_schema() as update:
+        update.union_by_name(data.select(extra).schema)
+    table.refresh()
+    emit("schema_evolved", table=spec.name, added=sorted(extra))
+    return True
+
+
 def conform_to_table(data: pa.Table, table: Any, spec: TableSpec) -> pa.Table:
     expected = schema_to_pyarrow(table.schema())
     missing = set(expected.names) - set(data.column_names)
@@ -1054,6 +1067,7 @@ def sync_table(
         year_scope=target_scope.label if target_scope else None,
         date=target_date,
     )
+    add_new_source_columns(source_data, table, spec)
     source_data = conform_to_table(source_data, table, spec)
     validate_primary_key(source_data, spec)
     if target_scope is not None:
