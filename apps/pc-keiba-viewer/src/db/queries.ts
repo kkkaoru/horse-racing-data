@@ -274,11 +274,13 @@ const filteredHorseKeyUnions = (
   );
 
 const FRAME_STATS_QUERY_VERSION = "v2-rates";
-const WEIGHT_CLASS_STATS_QUERY_VERSION = "v2";
+const WEIGHT_CLASS_STATS_QUERY_VERSION = "v3-unweighed-null";
 const BAN_EI_BODY_WEIGHT_KG_SQL =
   "case when upper(btrim(se.bataiju)) in ('', '000', 'FFF') then null when upper(btrim(se.bataiju)) ~ '^[0-9A-F]+$' then ('x' || lpad(upper(btrim(se.bataiju)), 8, '0'))::bit(32)::integer else null end";
-const NON_BAN_EI_BODY_WEIGHT_KG_SQL =
-  "nullif(regexp_replace(btrim(se.bataiju), '[^0-9]', '', 'g'), '')::numeric";
+// Flat-race JV body weight: 000 (取消) and 999 (計量不能) are not weights.
+const nonBanEiBodyWeightKgSql = (column: string): string =>
+  `nullif(nullif(nullif(regexp_replace(coalesce(${column}, ''), '[^0-9]', '', 'g'), '')::numeric, 0), 999)`;
+const NON_BAN_EI_BODY_WEIGHT_KG_SQL = nonBanEiBodyWeightKgSql("btrim(se.bataiju)");
 const BAN_EI_WEIGHT_VENUE_SQL = "se.keibajo_code in ('81', '82', '83', '84')";
 const NON_BAN_EI_WEIGHT_VENUE_SQL = "se.keibajo_code not in ('81', '82', '83', '84')";
 const BAN_EI_WEIGHT_CLASS_SQL =
@@ -289,7 +291,7 @@ const CARRIED_WEIGHT_CLASS_STATS_QUERY_VERSION = "v1";
 const HORSE_RACE_RESULTS_QUERY_VERSION = "v4-oversea-times";
 const RATE_PERCENT_DIVISOR = 10;
 const RATE_PERCENT_SCALE = 1000;
-const TIME_SCORE_QUERY_VERSION = "v5-catalog-history-fields";
+const TIME_SCORE_QUERY_VERSION = "v6-unweighed-null";
 const CELL_CONDITION_LABEL_PAIRS = [
   ["005", "1勝クラス"],
   ["010", "2勝クラス"],
@@ -5855,7 +5857,7 @@ export const getTimeScoreRows = cache(
       [
         "getTimeScoreRows",
         isOverseasKeibajoCode(race.keibajoCode)
-          ? "v6-overseas-source-mapping"
+          ? "v7-overseas-unweighed-null"
           : TIME_SCORE_QUERY_VERSION,
         race,
         settings,
@@ -6086,7 +6088,7 @@ export const getTimeScoreRows = cache(
         select
           avg(${raceTimeTenthsSql(sql`se.soha_time`)}) target_race_time,
           avg(nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric) target_last3f,
-          avg(nullif(regexp_replace(coalesce(se.bataiju, ''), '[^0-9]', '', 'g'), '')::numeric) target_body_weight,
+          avg(${sql.raw(nonBanEiBodyWeightKgSql("se.bataiju"))}) target_body_weight,
           avg(nullif(regexp_replace(coalesce(se.futan_juryo, ''), '[^0-9]', '', 'g'), '')::numeric) target_carried_weight,
           avg(nullif(regexp_replace(coalesce(se.time_sa, ''), '[^0-9]', '', 'g'), '')::numeric) target_margin
         from matched_races
@@ -6138,7 +6140,7 @@ export const getTimeScoreRows = cache(
             nullif(regexp_replace(coalesce(ra.kyori, ''), '[^0-9]', '', 'g'), '')::numeric distance,
             ${raceTimeTenthsSql(sql`se.soha_time`)} race_time,
             nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric last3f,
-            nullif(regexp_replace(coalesce(se.bataiju, ''), '[^0-9]', '', 'g'), '')::numeric body_weight,
+            ${sql.raw(nonBanEiBodyWeightKgSql("se.bataiju"))} body_weight,
             nullif(regexp_replace(coalesce(se.futan_juryo, ''), '[^0-9]', '', 'g'), '')::numeric carried_weight,
             nullif(regexp_replace(coalesce(se.time_sa, ''), '[^0-9]', '', 'g'), '')::numeric margin
           from ${jvdSe} se
@@ -6156,7 +6158,7 @@ export const getTimeScoreRows = cache(
             nullif(regexp_replace(coalesce(ra.kyori, ''), '[^0-9]', '', 'g'), '')::numeric distance,
             ${raceTimeTenthsSql(sql`se.soha_time`)} race_time,
             nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric last3f,
-            nullif(regexp_replace(coalesce(se.bataiju, ''), '[^0-9]', '', 'g'), '')::numeric body_weight,
+            ${sql.raw(nonBanEiBodyWeightKgSql("se.bataiju"))} body_weight,
             nullif(regexp_replace(coalesce(se.futan_juryo, ''), '[^0-9]', '', 'g'), '')::numeric carried_weight,
             nullif(regexp_replace(coalesce(se.time_sa, ''), '[^0-9]', '', 'g'), '')::numeric margin
           from ${nvdSe} se

@@ -307,8 +307,13 @@ const parseHorseWeightDelta = (zogenFugo: string | null, zogenSa: string | null)
   return sign * magnitude;
 };
 
-const parseHorseWeight = (bataiju: string | null): number | null =>
-  parseStoredInteger(bataiju, "000");
+// 999 is JV's 計量不能 sentinel, not a weight.
+const UNWEIGHED_BATAIJU = 999;
+
+const parseHorseWeight = (bataiju: string | null): number | null => {
+  const weight = parseStoredInteger(bataiju, "000");
+  return weight === UNWEIGHED_BATAIJU ? null : weight;
+};
 
 // Pull the optional trainer name off a starter row. The optional field plus
 // the row's `extends Record<string, unknown>` index signature widens the

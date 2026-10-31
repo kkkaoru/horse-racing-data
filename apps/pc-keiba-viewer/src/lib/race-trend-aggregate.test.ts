@@ -333,6 +333,10 @@ test("detailFromStarter passes through horse weight and signed delta", () => {
   expect(detail.horseWeightDelta).toStrictEqual(4);
 });
 
+test("detailFromStarter reads the 999 計量不能 sentinel as no weight", () => {
+  expect(detailFromStarter({ ...baseRow, bataiju: "999" }).horseWeight).toBeNull();
+});
+
 test("detailFromStarter handles a negative weight delta", () => {
   expect(
     detailFromStarter({ ...baseRow, zogenFugo: "-", zogenSa: "002" }).horseWeightDelta,

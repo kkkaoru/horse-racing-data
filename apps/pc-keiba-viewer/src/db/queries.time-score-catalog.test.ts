@@ -202,7 +202,7 @@ it("versions the repaired query while keeping race and settings cache key parts"
   await getTimeScoreRows(race, settings);
   const key: readonly unknown[] | undefined = mocks.keys.mock.calls[0]?.[0];
   expect(key?.[0]).toBe("getTimeScoreRows");
-  expect(key?.[1]).toBe("v6-overseas-source-mapping");
+  expect(key?.[1]).toBe("v7-overseas-unweighed-null");
   expect(key?.[2]).toBe(race);
   expect(key?.[3]).toBe(settings);
 });
@@ -622,7 +622,7 @@ it("retains the domestic cache version and incumbent domestic history selection"
     { sourceHorseId: "2021106753", raceDate: "2026-04-26", distanceMetres: 1600 },
   ]);
   const rows = await getTimeScoreRows({ ...race, keibajoCode: "05" }, settings);
-  expect(mocks.keys.mock.calls[0]?.[0]?.[1]).toBe("v5-catalog-history-fields");
+  expect(mocks.keys.mock.calls[0]?.[0]?.[1]).toBe("v6-unweighed-null");
   expect(mocks.overseas).toHaveBeenCalledWith(
     expect.anything(),
     expect.objectContaining({ horseIds: ["2021106753"] }),

@@ -913,11 +913,12 @@ it("getWeightClassStats maps win, quinella, and show rates per body-weight class
   ]);
   const queryText = stringifyQuery(executeMock.mock.calls[0]?.[0]);
   expect(queryText).toMatch(/btrim\(se\.bataiju\)/u);
+  expect(queryText).toMatch(/''\)::numeric, 0\), 999\)/u);
   expect(queryText).toMatch(/when kg < 400 then 'le399'/u);
   expect(queryText).toMatch(/se\.keibajo_code not in \('81', '82', '83', '84'\)/u);
   expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
     "getWeightClassStats",
-    "v2",
+    "v3-unweighed-null",
     PERCLASS_703_RACE,
     settings,
   ]);
@@ -1386,7 +1387,7 @@ it("getTimeScoreRows resolves mapped overseas histories without sharing placehol
   const queryText = stringifyQuery(queryArg);
   expect(withDbQueryCacheMock.mock.calls[0]?.[0].slice(0, 2)).toStrictEqual([
     "getTimeScoreRows",
-    "v5-catalog-history-fields",
+    "v6-unweighed-null",
   ]);
   expect(collectTableNames(queryArg)).toStrictEqual([
     "jvd_se",
