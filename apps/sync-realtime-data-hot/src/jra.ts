@@ -32,11 +32,12 @@ const CHANGE_TIMEOUT_MS = 3_000;
 const CONTENT_PROBE_LENGTH = 128;
 // JRA serves odds pages only to a form POST of `cname`; a GET redirects to an
 // error page that is still HTTP 200, so every page is validated by marker.
-const JRA_ODDS_URL = "https://www.jra.go.jp/JRADB/accessO.html";
+// Overseas races sold by JRA use accessSO.html and pk-prefixed cnames instead.
+const JRA_ODDS_URL_BASE = "https://www.jra.go.jp/JRADB/";
 const HTTP_FETCH_TIMEOUT_MS = 15_000;
 const ODDS_LIST_MARKER = 'id="odds_list"';
-const WIN_ODDS_CNAME_PATTERN = /doAction\('\/JRADB\/accessO\.html', '(pw151ou[^']+)'\)/u;
-const WIN_ODDS_CNAME_PREFIX = "pw151ou";
+const WIN_ODDS_CNAME_PATTERN = /doAction\('\/JRADB\/(accessS?O)\.html', '((pw|pk)151ou[^']+)'\)/u;
+const WIN_ODDS_CNAME_PREFIX_LENGTH = "pw151ou".length;
 const WIN_ODDS_TYPES = new Set<OddsType>(["tansho", "fukusho"]);
 // Increased from 500ms to 10s (task K1-A). The previous `innerHTML({ timeout:
 // 500 })` could win the wait race but lose the read race when JRA upstream
@@ -778,8 +779,13 @@ const fetchJraHtml = async (url: string, cname?: string): Promise<string> => {
   return decodeJraOfficialHtml(new Uint8Array(await response.arrayBuffer()));
 };
 
-const fetchJraOddsPage = async (cname: string): Promise<string> => {
-  const html = await fetchJraHtml(JRA_ODDS_URL, cname);
+interface JraOddsFamily {
+  page: string;
+  prefix: string;
+}
+
+const fetchJraOddsPage = async (cname: string, family: JraOddsFamily): Promise<string> => {
+  const html = await fetchJraHtml(`${JRA_ODDS_URL_BASE}${family.page}.html`, cname);
   if (!html.includes(ODDS_LIST_MARKER)) {
     throw new Error(`JRA odds page ${cname} has no #odds_list.`);
   }
@@ -788,10 +794,15 @@ const fetchJraOddsPage = async (cname: string): Promise<string> => {
 
 // Tab cnames carry a checksum (3連複 also an extra `99`), so they are read from
 // the tab links, filtered to this race so other races' links never match.
-const findOddsTabCname = (winHtml: string, raceBody: string, label: string): string | null =>
+const findOddsTabCname = (
+  winHtml: string,
+  raceBody: string,
+  label: string,
+  family: JraOddsFamily,
+): string | null =>
   winHtml.match(
     new RegExp(
-      `doAction\\('/JRADB/accessO\\.html', '(pw15[3-8]ou${raceBody}[^']*)'\\);">${label}</a>`,
+      `doAction\\('/JRADB/${family.page}\\.html', '(${family.prefix}15[3-8]ou${raceBody}[^']*)'\\);">${label}</a>`,
       "u",
     ),
   )?.[1] ?? null;
@@ -800,16 +811,17 @@ const fetchJraOddsTab = async (
   winHtml: string,
   raceBody: string,
   { label, type }: OddsPageLabel,
+  family: JraOddsFamily,
 ): Promise<OddsData[] | null> => {
   if (WIN_ODDS_TYPES.has(type)) {
     return parseJraOddsByType(type, winHtml);
   }
   try {
-    const cname = findOddsTabCname(winHtml, raceBody, label);
+    const cname = findOddsTabCname(winHtml, raceBody, label, family);
     if (!cname) {
       throw new Error(`JRA ${type} odds tab link was not found.`);
     }
-    return parseJraOddsByType(type, await fetchJraOddsPage(cname));
+    return parseJraOddsByType(type, await fetchJraOddsPage(cname, family));
   } catch (error) {
     console.warn(`Failed to fetch JRA ${type} odds`, error);
     return null;
@@ -822,14 +834,16 @@ export class JraOddsNotOnSaleError extends Error {}
 
 export const fetchJraOddsWithHttp = async (entryUrl: string): Promise<FetchJraOddsResult> => {
   const entryHtml = await fetchJraHtml(entryUrl);
-  const winCname = WIN_ODDS_CNAME_PATTERN.exec(entryHtml)?.[1];
-  if (!winCname) {
+  const winMatch = WIN_ODDS_CNAME_PATTERN.exec(entryHtml);
+  const winCname = winMatch?.[2];
+  if (!winMatch || !winCname) {
     throw new JraOddsNotOnSaleError("JRA odds cname was not found on race entry page.");
   }
-  const winHtml = await fetchJraOddsPage(winCname);
-  const raceBody = winCname.slice(WIN_ODDS_CNAME_PREFIX.length).split("/")[0]!;
+  const family: JraOddsFamily = { page: winMatch[1]!, prefix: winMatch[3]! };
+  const winHtml = await fetchJraOddsPage(winCname, family);
+  const raceBody = winCname.slice(WIN_ODDS_CNAME_PREFIX_LENGTH).split("/")[0]!;
   const rows = await Promise.all(
-    ODDS_PAGE_LABELS.map((page) => fetchJraOddsTab(winHtml, raceBody, page)),
+    ODDS_PAGE_LABELS.map((page) => fetchJraOddsTab(winHtml, raceBody, page, family)),
   );
   const latest: Partial<Record<OddsType, OddsData[]>> = Object.fromEntries(
     ODDS_PAGE_LABELS.flatMap(({ type }, index) => (rows[index] ? [[type, rows[index]]] : [])),

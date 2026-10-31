@@ -991,6 +991,37 @@ it("fetchJraOddsWithHttp walks deba -> win page -> tab pages and parses every be
   vi.unstubAllGlobals();
 });
 
+it("fetchJraOddsWithHttp follows the overseas accessSO odds pages", async () => {
+  const calls: HttpFetchCall[] = [];
+  stubJraHttp(
+    {
+      "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde": `<a href="#" onclick="return doAction('/JRADB/accessSO.html', 'pk151ouS31112026010106Z/FC');">オッズ</a>`,
+      "cname=pk151ouS31112026010106Z%2FFC": `<a href="#" onclick="return doAction('/JRADB/accessSO.html', 'pk154ouS31112026010106Z/0C');">馬連</a><div id="odds_list"><table class="basic narrow-xy tanpuku pop overseas"><tbody>
+<tr><td class="num">1</td><td class="odds_tan">2.3</td><td class="odds_fuku"><span class="inner"><span class="min">1.2</span><span class="cap">-</span><span class="max">1.5</span></span></td></tr>
+</tbody></table></div>`,
+      "cname=pk154ouS31112026010106Z%2F0C": HTTP_UMAREN_HTML,
+    },
+    calls,
+  );
+  const { fetchJraOddsWithHttp } = await import("./jra");
+  const result = await fetchJraOddsWithHttp(
+    "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde",
+  );
+  expect(result.latest.tansho).toStrictEqual([{ combination: "1", odds: 2.3, rank: 1 }]);
+  expect(result.latest.umaren).toStrictEqual([{ combination: "1-2", odds: 200.5, rank: 1 }]);
+  expect(calls[1]).toStrictEqual({
+    body: "cname=pk151ouS31112026010106Z%2FFC",
+    method: "POST",
+    url: "https://www.jra.go.jp/JRADB/accessSO.html",
+  });
+  expect(calls[2]).toStrictEqual({
+    body: "cname=pk154ouS31112026010106Z%2F0C",
+    method: "POST",
+    url: "https://www.jra.go.jp/JRADB/accessSO.html",
+  });
+  vi.unstubAllGlobals();
+});
+
 it("fetchJraOddsWithHttp decodes Shift_JIS pages so Japanese tab labels match", async () => {
   // "馬連" in Shift_JIS is 94 6E 98 41; the rest of the page is ASCII.
   const sjisWinHtml = new Uint8Array([
