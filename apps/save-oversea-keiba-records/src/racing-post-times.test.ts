@@ -198,8 +198,8 @@ it("apply mode matches cached days to archived English names and writes fill-onl
         { ...ROW, source_horse_id: "h4" },
       ]);
     if (path.endsWith("2026-08-08.html")) return DAY_HTML;
-    if (path.includes("horse-h1")) return "<title>ソヴリンティ (Sovereignty) | data</title>";
-    if (path.includes("horse-h2")) return "<title>マグニチュード (Magnitude) | data</title>";
+    if (path.includes("horse-h1")) return "<title>Sovereignty | data</title>";
+    if (path.includes("horse-h2")) return "<title>Magnitude (マグニチュード) | data</title>";
     return "<title>名前なし | data</title>";
   });
   ports.readdir.mockImplementation(async (path: string) => {

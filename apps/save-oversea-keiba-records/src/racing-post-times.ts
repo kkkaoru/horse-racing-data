@@ -75,7 +75,9 @@ const FRACTIONS: ReadonlyMap<string, number> = new Map([
 ]);
 const LENGTHS_PATTERN: RegExp = /^(\d*)([¼½¾]?)l?$/u;
 const NAME_SUFFIX_PATTERN: RegExp = /\s*\([A-Z]{2,3}\)\s*$/u;
-const TITLE_PATTERN: RegExp = /<title>[^(<]*\(([^)<]+)\)/u;
+// Titles read "カナ (English)", "English (カナ)" or just "English"; the Latin part is the name.
+const TITLE_PATTERN: RegExp = /<title>([^(<|]*?)\s*(?:\(([^)<]+)\))?\s*\|/u;
+const LATIN_PATTERN: RegExp = /[A-Za-z]/u;
 const USAGE: string =
   "Use racing-post-times-fetch MISSING_JSON CACHE_DIR, racing-post-times-plan MISSING_JSON CACHE_DIR HISTORY_ROOT TARGET or racing-post-times-apply MISSING_JSON CACHE_DIR HISTORY_ROOT TARGET --confirm-write.";
 
@@ -237,9 +239,12 @@ const englishNames = async (historyRoot: string): Promise<ReadonlyMap<string, st
       );
       const page: string | undefined = pages.toSorted()[0];
       if (page === undefined) return null;
-      const name: string | undefined = TITLE_PATTERN.exec(
+      const title: RegExpExecArray | null = TITLE_PATTERN.exec(
         await readFile(join(historyRoot, directory, "pages", page), "utf8"),
-      )?.[1];
+      );
+      const name: string | undefined = [title?.[1], title?.[2]].find(
+        (part): part is string => part !== undefined && LATIN_PATTERN.test(part),
+      );
       return name === undefined ? null : [directory.replace(/^horse-|-v\d+$/gu, ""), name];
     }),
   );
