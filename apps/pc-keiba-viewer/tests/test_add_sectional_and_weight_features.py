@@ -183,3 +183,18 @@ def test_append_features_sql_does_not_duplicate_existing_features() -> None:
     assert "h.weight_trend_5" not in sql
     assert "h.weight_volatility_5" not in sql
     assert "h.recent_soha_time_per_meter_avg5" in sql
+
+
+def test_stage_history_reads_000_and_999_body_weights_as_missing() -> None:
+    captured: list[str] = []
+
+    class FakeConn:
+        def execute(self, sql: str) -> None:
+            captured.append(sql)
+
+    subject.stage_history(FakeConn(), "20230101", "20231231")
+    body = " ".join(captured)
+    assert (
+        "nullif(nullif(try_cast(nullif(trim(bataiju), '') as double), 0), 999) as bataiju"
+        in body
+    )

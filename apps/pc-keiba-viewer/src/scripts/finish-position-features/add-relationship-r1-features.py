@@ -154,11 +154,11 @@ def safe_bataiju_cast_sql(alias: str) -> str:
     """SQL CASE that safely parses bataiju (text) -> integer.
 
     Mirrors build-relationship-physics-sql.ts safeBataijuCast — non-numeric
-    text becomes NULL instead of raising.
+    text, 000 (scratched) and 999 (計量不能) become NULL instead of raising.
     """
     return (
         f"case when trim(coalesce({alias}.bataiju, '')) ~ '^-?[0-9]+$' "
-        f"then trim({alias}.bataiju)::integer else null end"
+        f"then nullif(nullif(trim({alias}.bataiju)::integer, 0), 999) else null end"
     )
 
 

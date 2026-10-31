@@ -229,3 +229,9 @@ test("buildRelationshipHistoryUpdateSql updates race_finish_position_features", 
     "update race_finish_position_features target",
   );
 });
+
+test("buildRelationshipHistoryUpdateSql reads 000 and 999 (計量不能) body weights as missing", () => {
+  expect(buildRelationshipHistoryUpdateSql("nar")).toMatch(
+    "then nullif(nullif(trim(hn.bataiju::text)::integer, 0), 999)",
+  );
+});

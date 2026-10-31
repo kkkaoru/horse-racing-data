@@ -169,3 +169,9 @@ test("buildWeightUpdateSql joins target and history_agg via full primary key", (
   expect(sql).toContain("target.source = history_agg.source");
   expect(sql).toContain("target.ketto_toroku_bango = history_agg.ketto_toroku_bango");
 });
+
+test("buildWeightUpdateSql reads 000 and 999 (計量不能) body weights as missing", () => {
+  expect(buildWeightUpdateSql("nar")).toMatch(
+    "then nullif(nullif(trim(tn.bataiju::text)::integer, 0), 999)",
+  );
+});

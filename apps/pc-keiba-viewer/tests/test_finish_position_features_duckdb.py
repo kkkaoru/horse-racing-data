@@ -5496,3 +5496,23 @@ def test_parse_args_accepts_skip_v2_features() -> None:
         ["--category", "jra", "--target-date", "20260101", "--skip-v2-features"]
     )
     assert args.skip_v2_features is True
+
+
+def test_body_weight_int_sql_reads_blank_000_and_999_as_missing() -> None:
+    import duckdb
+
+    con = duckdb.connect(":memory:")
+    rows = con.execute(
+        f"""
+        with v(bataiju) as (values ('480'), (' 472 '), ('999'), ('000'), (''), (NULL))
+        select bataiju, {subject.body_weight_int_sql("bataiju")} as parsed from v
+        """
+    ).fetchall()
+    con.close()
+    parsed_map = {row[0]: row[1] for row in rows}
+    assert parsed_map["480"] == 480
+    assert parsed_map[" 472 "] == 472
+    assert parsed_map["999"] is None
+    assert parsed_map["000"] is None
+    assert parsed_map[""] is None
+    assert parsed_map[None] is None

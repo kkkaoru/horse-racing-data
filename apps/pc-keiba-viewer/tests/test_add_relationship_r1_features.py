@@ -1326,3 +1326,19 @@ def test_main_runs_end_to_end_with_stubbed_pg(
     assert horse_map["horse_b"][1] == pytest.approx(54.0 / 460.0, rel=1e-6)
     # horse_b has no past races -> past_speed_kg_normalized_avg5 is NULL
     assert horse_map["horse_b"][3] is None
+
+
+def test_safe_bataiju_cast_sql_reads_000_and_999_as_missing_in_duckdb() -> None:
+    con = duckdb.connect(":memory:")
+    sql = subject.safe_bataiju_cast_sql("v")
+    rows = con.execute(
+        f"""
+        with v(bataiju) as (values ('480'), ('999'), ('000'))
+        select bataiju, {sql} as parsed from v
+        """
+    ).fetchall()
+    con.close()
+    parsed_map = {row[0]: row[1] for row in rows}
+    assert parsed_map["480"] == 480
+    assert parsed_map["999"] is None
+    assert parsed_map["000"] is None

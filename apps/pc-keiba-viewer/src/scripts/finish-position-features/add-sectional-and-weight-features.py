@@ -122,7 +122,8 @@ def stage_history(
         f"""
         create or replace temp table bataiju_hist as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
-               try_cast(nullif(trim(bataiju), '') as double) as bataiju
+               -- 000 (scratched) and 999 (計量不能) are not weights.
+               nullif(nullif(try_cast(nullif(trim(bataiju), '') as double), 0), 999) as bataiju
         from pg.jvd_se
         where (kaisai_nen || kaisai_tsukihi) between '{from_date}' and '{to_date}'
           and kaisai_nen between '{from_date[:4]}' and '{to_date[:4]}'

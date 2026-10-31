@@ -308,3 +308,9 @@ test("buildRelationshipPhysicsUpdateSql casts kyori to numeric for arithmetic sa
   const sql = buildRelationshipPhysicsUpdateSql("jra");
   expect(sql.includes("rec.kyori::numeric as kyori")).toStrictEqual(true);
 });
+
+test("buildRelationshipPhysicsUpdateSql reads 000 and 999 (計量不能) body weights as missing", () => {
+  expect(buildRelationshipPhysicsUpdateSql("nar")).toMatch(
+    "then nullif(nullif(trim(tn.bataiju::text)::integer, 0), 999)",
+  );
+});

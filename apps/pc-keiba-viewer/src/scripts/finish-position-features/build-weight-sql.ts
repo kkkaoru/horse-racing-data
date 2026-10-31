@@ -68,7 +68,7 @@ const bataijuJoinClause = (
 
 const decimalBataijuCast = (alias: string): string => `case
     when trim(coalesce(${alias}.bataiju::text, '')) ~ '^-?[0-9]+$'
-      then trim(${alias}.bataiju::text)::integer
+      then nullif(nullif(trim(${alias}.bataiju::text)::integer, 0), 999)
     else null
   end`;
 

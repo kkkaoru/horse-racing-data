@@ -40,6 +40,16 @@ class DuckDBConnectionLike(Protocol):
     def execute(self, query: str) -> object: ...
 
 
+def body_weight_int_sql(expr: str) -> str:
+    """Body weight in kg, NULL when blank, 000 (scratched) or 999 (計量不能).
+
+    No flat-race weight is 0 or 999 kg, so the sentinels never reach averages
+    such as weight_avg_5. Ban-ei weights are hex ("3E7" would be 999 kg), so an
+    all-digit 999 never comes from ban-ei.
+    """
+    return f"nullif(nullif(try_cast(nullif(trim({expr}), '') as int), 0), 999)"
+
+
 def _load_resource_defaults() -> tuple[Callable[[], int], Callable[[], str]]:
     import importlib
 
@@ -897,7 +907,7 @@ def _rec_select_from_ban_ei(
       babajotai_code_shiba, babajotai_code_dirt,
       try_cast(nullif(trim(cast(tansho_ninkijun as varchar)), '') as int) as tansho_ninkijun,
       try_cast(nullif(trim(cast(tansho_odds as varchar)), '') as double) / 10 as tansho_odds,
-      try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju,
+      {body_weight_int_sql('cast(bataiju as varchar)')} as bataiju,
       try_cast(nullif(trim(cast(seibetsu_code as varchar)), '') as int) as seibetsu_code,
       try_cast(nullif(trim(cast(barei as varchar)), '') as int) as barei
     from {from_source}
@@ -938,7 +948,7 @@ def _rec_select_from_ban_ei(
       ra.babajotai_code_shiba, ra.babajotai_code_dirt,
       try_cast(nullif(trim(se.tansho_ninkijun), '') as int) as tansho_ninkijun,
       try_cast(nullif(trim(se.tansho_odds), '') as double) / 10 as tansho_odds,
-      try_cast(nullif(trim(se.bataiju), '') as int) as bataiju,
+      {body_weight_int_sql('se.bataiju')} as bataiju,
       try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code,
       try_cast(nullif(trim(se.barei), '') as int) as barei
     from pg.nvd_se se
@@ -1053,7 +1063,7 @@ def _rec_select_from_se_ra(
       ) as tansho_odds,
       coalesce(
         rt.bataiju_realtime,
-        try_cast(nullif(trim(se.bataiju), '') as int)
+        {body_weight_int_sql('se.bataiju')}
       ) as bataiju,
       try_cast(nullif(trim(se.seibetsu_code), '') as int) as seibetsu_code,
       try_cast(nullif(trim(se.barei), '') as int) as barei
@@ -1602,7 +1612,7 @@ def stage_se_table(
         f"""
         create or replace temp table {table} as
         select kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, ketto_toroku_bango,
-               try_cast(nullif(trim(bataiju), '') as int) as bataiju,
+               {body_weight_int_sql('bataiju')} as bataiju,
                cast(zogen_sa as varchar) as zogen_sa,
                cast(zogen_fugo as varchar) as zogen_fugo
         from {from_source}
@@ -4233,13 +4243,13 @@ def materialize_se_lookup(con: duckdb.DuckDBPyConnection) -> int:
         create or replace temp table se_lookup as
         select 'jra' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
                ketto_toroku_bango,
-               try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju,
+               {body_weight_int_sql('cast(bataiju as varchar)')} as bataiju,
                {signed_zogen_sa_sql("zogen_fugo", "zogen_sa")} as zogen_sa
         from jra_se where ketto_toroku_bango is not null
         union all
         select 'nar' as source, kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango,
                ketto_toroku_bango,
-               try_cast(nullif(trim(cast(bataiju as varchar)), '') as int) as bataiju,
+               {body_weight_int_sql('cast(bataiju as varchar)')} as bataiju,
                {signed_zogen_sa_sql("zogen_fugo", "zogen_sa")} as zogen_sa
         from nar_se where ketto_toroku_bango is not null
         """
