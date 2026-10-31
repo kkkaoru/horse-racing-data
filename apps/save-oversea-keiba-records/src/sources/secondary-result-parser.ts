@@ -67,7 +67,7 @@ const SPACE_PATTERN = /\s+/gu;
 const DATE_PATTERN = /^(\d{4})\/(\d{2})\/(\d{2})$/u;
 const DISTANCE_PATTERN = /^(\D+?)(\d+)$/u;
 const TRAILING_DISTANCE_PATTERN = /(\d+)$/u;
-const INTEGER_PATTERN = /^\d+$/u;
+const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/u;
 
 const clean = (value: string): string =>
   value
@@ -137,7 +137,9 @@ const personDistance = (
 const finish = (html: string): { finishPosition: number | null; finishPositionText: string } => {
   const finishPositionText = clean(html);
   return {
-    finishPosition: INTEGER_PATTERN.test(finishPositionText) ? Number(finishPositionText) : null,
+    finishPosition: POSITIVE_INTEGER_PATTERN.test(finishPositionText)
+      ? Number(finishPositionText)
+      : null,
     finishPositionText,
   };
 };

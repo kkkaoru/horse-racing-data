@@ -241,3 +241,12 @@ it("uses deterministic field ordering for database candidate membership", () => 
 it("converts empty source collections without inventing data", () => {
   expect(historyRowsToInput([])).toStrictEqual({ horses: [], people: [] });
 });
+it("publishes a source finish of 0 as an unavailable placing with its text", () => {
+  const result = prepareHistoryArchive(
+    { ...state, rows: [{ ...row, finishPosition: 0, finishPositionText: "0" }] },
+    plan,
+  );
+  expect(result.input.people).toStrictEqual([
+    { ...row, finishPosition: null, finishPositionText: "0" },
+  ]);
+});

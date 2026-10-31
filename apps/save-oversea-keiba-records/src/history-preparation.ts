@@ -39,6 +39,10 @@ const isSourcePartial = (row: HistorySourceRow): boolean =>
       (row.sourceHorseId === null && (row.horseName === null || row.horseName.trim() === ""))
     : row.jockeyName.trim() === "";
 
+// The source prints finish "0" for a runner without a placing; keep the text, drop the number.
+const withoutZeroFinish = (row: HistorySourceRow): HistorySourceRow =>
+  row.finishPosition === 0 ? { ...row, finishPosition: null } : row;
+
 const naturalKey = (row: HistorySourceRow): string =>
   "personKind" in row
     ? JSON.stringify([
@@ -68,8 +72,9 @@ export const prepareHistoryArchive = (
 ): PreparedHistoryArchive => {
   verifyHistoryArchive(state, plan);
   state.rows.forEach((row: HistorySourceRow): void => assertScope(row, plan));
-  const partial: readonly HistorySourceRow[] = state.rows.filter(isSourcePartial);
-  const eligible: readonly HistorySourceRow[] = state.rows.filter(
+  const rows: readonly HistorySourceRow[] = state.rows.map(withoutZeroFinish);
+  const partial: readonly HistorySourceRow[] = rows.filter(isSourcePartial);
+  const eligible: readonly HistorySourceRow[] = rows.filter(
     (row: HistorySourceRow): boolean => !isSourcePartial(row),
   );
   const distinct: Map<string, HistorySourceRow> = new Map();

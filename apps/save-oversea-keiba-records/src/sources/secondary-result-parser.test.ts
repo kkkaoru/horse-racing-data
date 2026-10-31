@@ -200,3 +200,12 @@ test("rejects missing or malformed result structures", () => {
     }),
   ).toThrow("missing cell 99");
 });
+
+test("parses a published finish of 0 as no placing", () => {
+  expect(
+    parseSecondaryHorseResults(html(row("0")), "H100", profile).map((result) => [
+      result.finishPosition,
+      result.finishPositionText,
+    ]),
+  ).toStrictEqual([[null, "0"]]);
+});
