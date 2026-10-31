@@ -4489,6 +4489,28 @@ it("results payload uses Catalog rows and skips Neon history", async () => {
   expect(getHorseRaceResultsMock).not.toHaveBeenCalled();
 });
 
+it("results payload falls back to Neon when Catalog has not received the carded field", async () => {
+  getRaceDetailMock.mockResolvedValue(JRA_RACE);
+  getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);
+  fetchHorseRaceResultsFromCatalogMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([{ umaban: "03" }]);
+
+  const payload = await getDetailSectionPayload("results", {
+    day: "28",
+    keibajoCode: "06",
+    month: "12",
+    query: {},
+    raceNumber: "11",
+    raceSource: "jra",
+    year: "2025",
+  });
+
+  expect(payload).toMatchObject({
+    results: [{ umaban: "03" }],
+    type: "results",
+  });
+});
+
 it("results payload falls back to Neon when Catalog binding is missing", async () => {
   getRaceDetailMock.mockResolvedValue(JRA_RACE);
   getRaceRunnersMock.mockResolvedValue([OVERSEAS_RUNNER]);

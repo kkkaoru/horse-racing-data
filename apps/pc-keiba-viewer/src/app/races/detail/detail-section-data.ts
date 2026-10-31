@@ -1810,8 +1810,12 @@ const loadDetailSectionPayload = async (
           sourceScope: resultsSourceScope,
           year,
         });
+    // Catalog rows always include the current runners, so an empty read for a
+    // carded field means the entry has not reached Catalog yet: use PostgreSQL.
+    const catalogLagging =
+      catalogResults !== null && catalogResults.length === 0 && runners.length > 0;
     const storedResults =
-      catalogResults === null
+      catalogResults === null || catalogLagging
         ? await getHorseRaceResults(
             raceSource,
             year,
