@@ -1454,6 +1454,88 @@ it("accepts a names-only pedigree presentation without invented rates", async ()
   expect(response.headers.get("X-Win-Rate-Heatmap-Cache")).toBe("HIT");
 });
 
+it("rejects a cached heatmap with no horse record for a raced field", async () => {
+  const runners = [{ bamei: "古馬", barei: "05", kettoTorokuBango: "2021101353", umaban: "01" }];
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getRaceRunnersMock.mockResolvedValue(runners);
+  getCachedWinRateHeatmapPayloadMock.mockResolvedValue({
+    bloodlineRows: [],
+    presentation: {
+      version: 1,
+      rows: [
+        {
+          cells: {
+            horse: { name: "古馬", starts: null },
+            sire: { name: "" },
+            damSire: { name: "" },
+          },
+        },
+      ],
+      combinedBloodlineRows: [],
+      displays: {},
+    },
+    runners,
+    type: "win-rate-heatmap",
+    weightChangeClassStats: [],
+  });
+  const response = await GET(
+    new Request(
+      "https://example.com/api/races/2026/10/31/05/11/sections/win-rate-heatmap?__cacheProbe=1",
+    ),
+    {
+      params: Promise.resolve({
+        day: "31",
+        keibajoCode: "05",
+        month: "10",
+        raceNumber: "11",
+        section: "win-rate-heatmap",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(503);
+  expect(response.headers.get("X-Win-Rate-Heatmap-Cache")).toBe("MISS");
+});
+
+it("accepts a cached heatmap with horse records for a raced field", async () => {
+  const runners = [{ bamei: "古馬", barei: "05", kettoTorokuBango: "2021101353", umaban: "01" }];
+  getRaceSourceByRouteMock.mockResolvedValue("jra");
+  getRaceRunnersMock.mockResolvedValue(runners);
+  getCachedWinRateHeatmapPayloadMock.mockResolvedValue({
+    bloodlineRows: [],
+    presentation: {
+      version: 1,
+      rows: [
+        {
+          cells: { horse: { name: "古馬", starts: 3 }, sire: { name: "" }, damSire: { name: "" } },
+        },
+      ],
+      combinedBloodlineRows: [],
+      displays: {},
+    },
+    runners,
+    type: "win-rate-heatmap",
+    weightChangeClassStats: [],
+  });
+  const response = await GET(
+    new Request(
+      "https://example.com/api/races/2026/10/31/05/11/sections/win-rate-heatmap?__cacheProbe=1",
+    ),
+    {
+      params: Promise.resolve({
+        day: "31",
+        keibajoCode: "05",
+        month: "10",
+        raceNumber: "11",
+        section: "win-rate-heatmap",
+        year: "2026",
+      }),
+    },
+  );
+  expect(response.status).toBe(204);
+  expect(response.headers.get("X-Win-Rate-Heatmap-Cache")).toBe("HIT");
+});
+
 it("answers a heatmap cache probe miss with 503 and no body", async () => {
   getRaceSourceByRouteMock.mockResolvedValue("jra");
   getCachedWinRateHeatmapPayloadMock.mockResolvedValue(null);

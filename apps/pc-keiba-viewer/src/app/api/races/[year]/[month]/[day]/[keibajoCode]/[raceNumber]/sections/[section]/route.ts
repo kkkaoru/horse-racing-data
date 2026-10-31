@@ -96,6 +96,9 @@ const INTERNAL_AUTH_HEADER = "x-pc-keiba-internal-token";
 
 const FINISH_PREDICTION_BROWSER_CACHE_CONTROL = "private, no-cache, max-age=0, must-revalidate";
 
+// JV barei of a horse that must already have started (2yo fields may be all debutants).
+const MIN_RACED_BAREI = 3;
+
 const HTTP_STATUS_NO_CONTENT = 204;
 const HTTP_STATUS_METHOD_NOT_ALLOWED = 405;
 const HEATMAP_SECTION_UNAVAILABLE = "unavailable";
@@ -318,7 +321,20 @@ const isHeatmapCacheReady = (
         (typeof runner.damSireName === "string" && runner.damSireName.trim() !== ""),
     ) ||
     payload.presentation === undefined ||
-    payload.presentation.rows.some((row) => row.cells.sire.name || row.cells.damSire.name));
+    payload.presentation.rows.some((row) => row.cells.sire.name || row.cells.damSire.name)) &&
+  hasHorseHistoryWhenExpected(payload.presentation, currentRunners);
+
+// A field with a runner aged 3+ has raced before, so a presentation without any
+// horse record was built from an empty results read and must be rebuilt.
+// shortcut: all-2yo fields are trusted (新馬 has no history), check them by race class if they ever stick empty.
+const hasHorseHistoryWhenExpected = (
+  presentation: WinRateHeatmapSectionPayload["presentation"],
+  currentRunners: Parameters<typeof buildWinRateHeatmapRunnerSignature>[0],
+): boolean =>
+  presentation === undefined ||
+  presentation.rows.length === 0 ||
+  !currentRunners.some((runner) => Number(runner.barei) >= MIN_RACED_BAREI) ||
+  presentation.rows.some((row) => row.cells.horse.starts !== null);
 
 const loadHeatmapSectionPayload = async (
   params: Parameters<typeof getDetailSectionPayload>[1],

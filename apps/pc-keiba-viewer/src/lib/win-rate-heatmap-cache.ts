@@ -93,6 +93,7 @@ export interface WinRateHeatmapSectionPayload {
 
 export interface WinRateHeatmapRunnerIdentity {
   bamei?: unknown;
+  barei?: unknown;
   bataiju?: unknown;
   chokyoshimeiRyakusho?: unknown;
   damSireName?: unknown;
