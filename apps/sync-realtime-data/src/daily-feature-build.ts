@@ -343,7 +343,7 @@ export const buildDailyFeatureSelectSql = (options: DailyFeatureBuildOptions): s
       case when corner_2 ~ '^[0-9]+$' then nullif(corner_2, '00')::integer else null end as corner_2,
       case when corner_3 ~ '^[0-9]+$' then nullif(corner_3, '00')::integer else null end as corner_3,
       case when corner_4 ~ '^[0-9]+$' then nullif(corner_4, '00')::integer else null end as corner_4,
-      case when bataiju ~ '^[0-9]+$' then nullif(bataiju, '000')::integer else null end as bataiju,
+      case when bataiju ~ '^[0-9]+$' then nullif(nullif(bataiju, '000'), '999')::integer else null end as bataiju,
       nullif(btrim(coalesce(zogen_fugo, '')), '') as zogen_fugo,
       case when zogen_sa ~ '^[0-9]+$' then nullif(zogen_sa, '000')::integer else null end as zogen_sa
     from raw_rows

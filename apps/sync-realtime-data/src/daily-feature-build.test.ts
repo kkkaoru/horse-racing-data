@@ -290,3 +290,10 @@ it("probeDailyRaceEntriesFreshness coerces empty rows to a zero-count probe", as
   );
   expect(result).toStrictEqual({ latestUpdatedAt: null, rowCount: 0 });
 });
+
+it("buildDailyFeatureSelectSql reads 000 and 999 (計量不能) body weights as missing", async () => {
+  const { buildDailyFeatureSelectSql } = await import("./daily-feature-build");
+  expect(buildDailyFeatureSelectSql({ fromDate: "20261101" })).toMatch(
+    "then nullif(nullif(bataiju, '000'), '999')::integer else null end as bataiju",
+  );
+});
