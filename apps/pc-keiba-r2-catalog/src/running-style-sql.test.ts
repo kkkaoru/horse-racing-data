@@ -26,6 +26,7 @@ it("builds partition-pruned JRA raw Iceberg SQL with the production feature CTEs
   expect(sql).toMatch("left join pc_keiba.jvd_um um");
   expect(sql).not.toMatch(/\busing\s*\(/i);
   expect(sql).toMatch("hc.source = t.source");
+  expect(sql).toMatch("try_cast(nullif(nullif(se.bataiju, '000'), '999') AS INT) AS bataiju");
   expect(sql).not.toMatch(/nvd_(?:se|ra|um)/u);
   expect(sql).toMatch("kaisai_nen = '2021' AND kaisai_tsukihi >= '0715'");
   expect(sql).not.toMatch("concat(kaisai_nen, kaisai_tsukihi) >= '20210715'");

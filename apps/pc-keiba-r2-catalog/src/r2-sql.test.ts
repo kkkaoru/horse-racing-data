@@ -670,3 +670,42 @@ it("counts active runners per race inside the single runner scan", async () => {
     instance.closeSync();
   }
 });
+
+it("reads 000 and 999 (計量不能) body weights as missing", async () => {
+  const instance = await DuckDBInstance.create(":memory:");
+  const connection = await instance.connect();
+  try {
+    await connection.run("CREATE MACRO btrim(value) AS trim(value)");
+    await connection.run("CREATE SCHEMA pc_keiba");
+    await connection.run(`CREATE TABLE pc_keiba.nvd_se (kaisai_nen VARCHAR, kaisai_tsukihi VARCHAR,
+      keibajo_code VARCHAR, race_bango VARCHAR, ketto_toroku_bango VARCHAR, wakuban VARCHAR,
+      umaban VARCHAR, bamei VARCHAR, seibetsu_code VARCHAR, barei VARCHAR, futan_juryo VARCHAR,
+      kishumei_ryakusho VARCHAR, chokyoshimei_ryakusho VARCHAR, banushimei VARCHAR,
+      kakutei_chakujun VARCHAR, tansho_ninkijun VARCHAR, tansho_odds VARCHAR, soha_time VARCHAR,
+      time_sa VARCHAR, kohan_3f VARCHAR, corner_1 VARCHAR, corner_2 VARCHAR, corner_3 VARCHAR,
+      corner_4 VARCHAR, bataiju VARCHAR, zogen_fugo VARCHAR, zogen_sa VARCHAR)`);
+    await connection.run(`CREATE TABLE pc_keiba.nvd_ra (kaisai_nen VARCHAR, kaisai_tsukihi VARCHAR,
+      keibajo_code VARCHAR, race_bango VARCHAR, kyosomei_hondai VARCHAR, kyosomei_fukudai VARCHAR,
+      hasso_jikoku VARCHAR, track_code VARCHAR, grade_code VARCHAR, kyoso_shubetsu_code VARCHAR,
+      juryo_shubetsu_code VARCHAR, kyoso_joken_code VARCHAR, babajotai_code_shiba VARCHAR,
+      babajotai_code_dirt VARCHAR, kyori VARCHAR, shusso_tosu VARCHAR)`);
+    await connection.run(`INSERT INTO pc_keiba.nvd_se (kaisai_nen, kaisai_tsukihi, keibajo_code,
+      race_bango, ketto_toroku_bango, umaban, kakutei_chakujun, bataiju) VALUES
+      ('2026', '0715', '44', '01', '2020100001', '01', '01', '480'),
+      ('2026', '0715', '44', '01', '2020100002', '02', '02', '999'),
+      ('2026', '0715', '44', '01', '2020100003', '03', '03', '000')`);
+    await connection.run(`INSERT INTO pc_keiba.nvd_ra (kaisai_nen, kaisai_tsukihi, keibajo_code,
+      race_bango, kyori, shusso_tosu) VALUES ('2026', '0715', '44', '01', '1200', '03')`);
+    const result = await connection.runAndReadAll(
+      buildRaceFeaturesQuery(env(), { date: "20260715", source: "nar" }),
+    );
+    expect(result.getRowObjectsJson().map((row) => [row.umaban, row.bataiju])).toStrictEqual([
+      [1, 480],
+      [2, null],
+      [3, null],
+    ]);
+  } finally {
+    connection.closeSync();
+    instance.closeSync();
+  }
+});

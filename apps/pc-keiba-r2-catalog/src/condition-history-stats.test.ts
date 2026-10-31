@@ -69,7 +69,7 @@ it("unions JRA and NAR frame history when venue matching is off", () => {
 it("builds one flat-race weight SQL classifying body, carried and change per history row", () => {
   const sql = buildConditionWeightClassStatsQuery({ env: config, filters: jraFilters });
   expect(sql).toMatch(
-    "CASE WHEN try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT) > 0 THEN try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT) ELSE NULL END AS body_weight",
+    "CASE WHEN try_cast(nullif(nullif(btrim(coalesce(se.bataiju, '')), '000'), '999') AS INT) > 0 THEN try_cast(nullif(nullif(btrim(coalesce(se.bataiju, '')), '000'), '999') AS INT) ELSE NULL END AS body_weight",
   );
   expect(sql).toMatch("AS carried_weight");
   expect(sql).toMatch("/ 10.0");

@@ -214,6 +214,12 @@ it("builds one bounded window query for multiple warm entities", () => {
   ).toThrow("entityBucket is malformed");
 });
 
+it("reads 000 and 999 (計量不能) body weights as missing in entity histories", () => {
+  expect(buildRaceEntityHistoryQuery(env, filters("horse"), target, null)).toMatch(
+    /nullif\(nullif\(.*se\.bataiju.*, '000'\), '999'\) AS INT\) AS horse_weight/u,
+  );
+});
+
 it("builds bounded N+1 history queries for all canonical entity columns", () => {
   expect(buildRaceEntityHistoryQuery(env, filters("horse"), target, null)).toMatch(
     /se\.ketto_toroku_bango/u,

@@ -505,7 +505,7 @@ const historySelect = ({
   ${trimSql("se.umaban")} AS horse_number,
   ${trimSql("se.wakuban")} AS frame_number,
   try_cast(nullif(${trimSql("se.futan_juryo")}, '000') AS FLOAT) / 10.0 AS carried_weight,
-  try_cast(nullif(${trimSql("se.bataiju")}, '000') AS INT) AS horse_weight,
+  try_cast(nullif(nullif(${trimSql("se.bataiju")}, '000'), '999') AS INT) AS horse_weight,
   CASE
     WHEN ${trimSql("se.zogen_sa")} IS NULL OR ${trimSql("se.zogen_sa")} = '000' THEN NULL
     WHEN ${trimSql("se.zogen_fugo")} = '-' THEN -try_cast(${trimSql("se.zogen_sa")} AS INT)

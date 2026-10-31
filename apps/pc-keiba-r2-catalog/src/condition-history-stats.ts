@@ -102,7 +102,7 @@ const NON_BAN_EI_VENUE_SQL: string = `AND ${NON_BAN_EI_VENUE_CONDITION}`;
 const CORRELATION_ODDS_SCALE: number = 10;
 const TRIMMED_BODY_WEIGHT_SQL: string = "upper(btrim(coalesce(se.bataiju, '')))";
 const DECIMAL_BODY_WEIGHT_SQL: string =
-  "try_cast(nullif(btrim(coalesce(se.bataiju, '')), '000') AS INT)";
+  "try_cast(nullif(nullif(btrim(coalesce(se.bataiju, '')), '000'), '999') AS INT)";
 const CARRIED_WEIGHT_SQL: string =
   "try_cast(nullif(btrim(coalesce(se.futan_juryo, '')), '') AS DOUBLE) / 10.0";
 const TRIMMED_WEIGHT_CHANGE_SQL: string = "upper(btrim(coalesce(se.zogen_sa, '')))";

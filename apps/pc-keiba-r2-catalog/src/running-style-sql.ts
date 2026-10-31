@@ -221,7 +221,7 @@ const normalisedRecSelect = (
     ra.babajotai_code_dirt,
     try_cast(nullif(se.tansho_ninkijun, '00') AS INT) AS tansho_ninkijun,
     try_cast(nullif(se.tansho_odds, '0000') AS DOUBLE) / 10.0 AS tansho_odds,
-    try_cast(nullif(se.bataiju, '000') AS INT) AS bataiju,
+    try_cast(nullif(nullif(se.bataiju, '000'), '999') AS INT) AS bataiju,
     try_cast(nullif(ra.zenhan_3f, '000') AS DOUBLE) / 10.0 AS zenhan_3f,
     ra.tenko_code
   FROM ${runnerCte} se

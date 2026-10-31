@@ -304,7 +304,8 @@ const normalisedFeatureSelect = (config: RawSourceConfig): string => {
   try_cast(nullif(se.corner_2, '00') AS INT) AS corner_2,
   try_cast(nullif(se.corner_3, '00') AS INT) AS corner_3,
   try_cast(nullif(se.corner_4, '00') AS INT) AS corner_4,
-  try_cast(nullif(se.bataiju, '000') AS INT) AS bataiju,
+  -- 000 (scratched) and 999 (計量不能) are not weights.
+  try_cast(nullif(nullif(se.bataiju, '000'), '999') AS INT) AS bataiju,
   nullif(btrim(coalesce(se.zogen_fugo, '')), '') AS zogen_fugo,
   try_cast(nullif(se.zogen_sa, '000') AS INT) AS zogen_sa
 FROM ${config.prefix}_se se
