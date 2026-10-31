@@ -1450,6 +1450,7 @@ it("getRaceTimeStats keeps placeholder runners but blocks cross-race horse histo
   expect(queryText).toMatch(/< 1200 then 'sprint'/u);
   expect(queryText).toMatch(/< 1600 then 'mile'/u);
   expect(queryText).not.toMatch(/extended_sprint/u);
+  expect(queryText).toMatch(/'\[\^0-9\]', '', 'g'\), ''\)::numeric, 0\) as kohan_3f/u);
 });
 
 it("getTimeScoreRows matches past races with cell classification predicates", async () => {

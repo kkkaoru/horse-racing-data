@@ -565,3 +565,19 @@ it("plots real production clocks without fabricating missing 3F and preserves al
   );
   expect(view?.references).toStrictEqual([]);
 });
+
+it("draws the race-time par lines on the race-date view when 3F is missing", () => {
+  const rows = buildClockAnalysisRows({ ...productionFixture, includeMissingKohan: true });
+  const view = buildScatterView(rows, {
+    ...clockParFromRaceTimeStats(null),
+    averageRaceTime: 686,
+    fastestRaceTime: 682,
+    medianRaceTime: 686,
+  });
+  expect(view?.xAxisTitle).toBe("レース日");
+  expect(view?.references.map((line) => line.label)).toStrictEqual([
+    "最速レースタイム 1:08.2",
+    "平均レースタイム 1:08.6",
+    "中央値レースタイム 1:08.6",
+  ]);
+});

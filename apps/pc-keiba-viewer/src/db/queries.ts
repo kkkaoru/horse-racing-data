@@ -130,7 +130,7 @@ import {
 
 const BLOODLINE_STATS_QUERY_VERSION = "v5";
 const ENTITY_RESULTS_QUERY_VERSION = "v2-mssd";
-const RACE_TIME_STATS_QUERY_VERSION = "v2-mssd";
+const RACE_TIME_STATS_QUERY_VERSION = "v3-kohan-zero";
 
 const compareSameVenueRaceNumbers = (left: RaceListItem, right: RaceListItem): number =>
   left.raceBango.localeCompare(right.raceBango);
@@ -6486,7 +6486,8 @@ export const getRaceTimeStats = cache(
           se.tansho_odds,
           se.soha_time encoded_race_time,
           ${raceTimeTenthsSql(sql`se.soha_time`)} as race_time,
-          nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric as kohan_3f
+          -- JV stores an unpublished closing 3F (overseas races) as 000.
+          nullif(nullif(regexp_replace(coalesce(se.kohan_3f, ''), '[^0-9]', '', 'g'), '')::numeric, 0) as kohan_3f
         from matched_races
         join ${runnerTable} se
           on se.kaisai_nen = matched_races.kaisai_nen

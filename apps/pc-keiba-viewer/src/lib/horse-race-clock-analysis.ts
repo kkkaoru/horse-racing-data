@@ -38,6 +38,12 @@ export interface ClockAnalysisRow {
   umaban: string;
 }
 
+interface RaceTimeParSpec {
+  kind: "fastestTime" | "averageTime" | "medianTime";
+  name: string;
+  value: number | null;
+}
+
 export interface ClockPar {
   averageKohan3f: number | null;
   averageRaceTime: number | null;
@@ -515,7 +521,7 @@ export const buildScatterView = (
       (row): row is ClockAnalysisRow & { kohan3fTenths: number } => row.kohan3fTenths !== null,
     )
     .toSorted(compareClockRows);
-  if (plotted.length < rows.length) return buildDateTimeView(rows);
+  if (plotted.length < rows.length) return buildDateTimeView(rows, par);
   const xValues = [
     ...plotted.map((row) => row.kohan3fTenths),
     ...optionalParValues(par.averageKohan3f, par.fastestKohan3f, par.medianKohan3f),
@@ -620,10 +626,35 @@ export const buildScatterView = (
   };
 };
 
-const buildDateTimeView = (rows: ClockAnalysisRow[]): ClockScatterView => {
+const raceTimeReferences = (
+  par: ClockPar,
+  yScale: (value: number) => number,
+): ClockReferenceLine[] => {
+  const specs: RaceTimeParSpec[] = [
+    { kind: "fastestTime", name: "最速レースタイム", value: par.fastestRaceTime },
+    { kind: "averageTime", name: "平均レースタイム", value: par.averageRaceTime },
+    { kind: "medianTime", name: "中央値レースタイム", value: par.medianRaceTime },
+  ];
+  return specs.flatMap((spec) =>
+    spec.value === null
+      ? []
+      : placedReference({
+          kind: spec.kind,
+          label: `${spec.name} ${formatRaceTimeTenthsLabel(spec.value)}`,
+          orientation: "horizontal",
+          value: yScale(spec.value),
+        }),
+  );
+};
+
+// Overseas histories rarely publish a closing 3F, so this view keeps only the race-time par lines.
+const buildDateTimeView = (rows: ClockAnalysisRow[], par: ClockPar): ClockScatterView => {
   const plotted = rows.toSorted(compareClockRows);
   const xDomain = paddedDomain(plotted.map((row) => row.dateValue));
-  const yDomain = paddedDomain(plotted.map((row) => row.scaledTimeTenths));
+  const yDomain = paddedDomain([
+    ...plotted.map((row) => row.scaledTimeTenths),
+    ...optionalParValues(par.averageRaceTime, par.fastestRaceTime, par.medianRaceTime),
+  ]);
   const xScale = scaleLinear().domain(xDomain).range([PLOT.left, PLOT.right]);
   const yScale = scaleLinear().domain([yDomain[1], yDomain[0]]).range([PLOT.bottom, PLOT.top]);
   return {
@@ -642,7 +673,7 @@ const buildDateTimeView = (rows: ClockAnalysisRow[]): ClockScatterView => {
         formatRaceTimeTenthsLabel(row.scaledTimeTenths),
       ),
     ),
-    references: [],
+    references: raceTimeReferences(par, yScale),
     title: "走破タイムの推移",
     xAxisTitle: "レース日",
     xTicks: axisTicks(
