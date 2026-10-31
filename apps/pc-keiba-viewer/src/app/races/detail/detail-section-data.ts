@@ -1613,6 +1613,17 @@ const buildRunningStyleBucketSectionPayload = async (
 const heatmapStatsYears = (years: number | null): number =>
   years === null ? HEATMAP_STATS_YEARS_FALLBACK : years;
 
+const catalogStatsYears = (
+  params: DetailSectionParams,
+  settings: SimilarRaceStatsSettings,
+  prefix: string,
+): number =>
+  settings.includeRaceTitle &&
+  !isOverseasKeibajoCode(params.keibajoCode) &&
+  getStatsQueryParam(params.query, prefix, "statsYears") === undefined
+    ? NAMED_RACE_HEATMAP_STATS_YEARS
+    : heatmapStatsYears(settings.years);
+
 const buildWinRateHeatmapCatalogQuery = (
   params: DetailSectionParams,
   settings: SimilarRaceStatsSettings,
@@ -1640,12 +1651,7 @@ const buildWinRateHeatmapCatalogQuery = (
     raceNumber: params.raceNumber,
     source,
     year: params.year,
-    years:
-      settings.includeRaceTitle &&
-      !isOverseasKeibajoCode(params.keibajoCode) &&
-      getStatsQueryParam(params.query, "similar", "statsYears") === undefined
-        ? NAMED_RACE_HEATMAP_STATS_YEARS
-        : heatmapStatsYears(settings.years),
+    years: catalogStatsYears(params, settings, "similar"),
   };
   return includeOwner ? { ...query, includeOwner: true } : query;
 };
@@ -1692,7 +1698,7 @@ const loadConditionHistoryCatalogStats = async (
       raceNumber: params.raceNumber,
       source,
       year: params.year,
-      years: heatmapStatsYears(settings.years),
+      years: catalogStatsYears(params, settings, "analysis"),
     });
   } catch (error) {
     if (isOverseasKeibajoCode(params.keibajoCode)) throw error;
