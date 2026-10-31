@@ -209,3 +209,33 @@ export const parseSecondaryPersonResults = (
       going: clean(requiredCell(values, fields.going)) || null,
     };
   });
+
+export interface SecondaryRaceTimeIndexes {
+  readonly time: number;
+  readonly lastThreeFurlongs: number;
+}
+
+export interface SecondaryHorseRaceTime {
+  readonly sourceRaceId: string;
+  readonly raceTimeText: string;
+  readonly lastThreeFurlongsText: string;
+}
+
+// Time and closing-3F cells of each result row, keyed by race; blank cells stay blank.
+export const parseSecondaryHorseRaceTimes = (
+  html: string,
+  profile: SecondaryResultMarkupProfile,
+  indexes: SecondaryRaceTimeIndexes,
+): SecondaryHorseRaceTime[] =>
+  tableRows(html, profile.tableMarker).map((row) => {
+    const values = cells(row);
+    return {
+      sourceRaceId: requiredId(
+        requiredCell(values, profile.horseFields.raceName),
+        profile.racePathPrefix,
+        "race ID",
+      ),
+      raceTimeText: clean(requiredCell(values, indexes.time)),
+      lastThreeFurlongsText: clean(requiredCell(values, indexes.lastThreeFurlongs)),
+    };
+  });

@@ -9,6 +9,7 @@ import { runSourceIdMirror, type SourceIdMirrorReport } from "./source-id-mirror
 import { runEventEntities, type EventEntitiesReport } from "./event-entities";
 import { runPedigreeStore, type PedigreeStoreReport } from "./pedigree-store";
 import { runPostPositions, type PostPositionReport } from "./post-position-store";
+import { runRaceTimeStore, type RaceTimeStoreReport } from "./race-time-store";
 import {
   createHistoryConnection,
   type HistoryConnection,
@@ -50,6 +51,7 @@ export const runHistoryCommand = async (
   | EventEntitiesReport
   | PedigreeStoreReport
   | PostPositionReport
+  | RaceTimeStoreReport
 > => {
   if (input.argv[0] === "collect" || input.argv[0] === "status" || input.argv[0] === "audit")
     return runHistoryCli(input);
@@ -62,6 +64,8 @@ export const runHistoryCommand = async (
   if (input.argv[0] === "pedigree-plan" || input.argv[0] === "pedigree-apply")
     return runPedigreeStore(input);
   if (String(input.argv[0]).startsWith("post-positions-")) return runPostPositions(input);
+  if (input.argv[0] === "race-times-plan" || input.argv[0] === "race-times-apply")
+    return runRaceTimeStore(input);
   const args: PublicationArguments = publicationArguments(input.argv);
   const connection: HistoryConnection = createHistoryConnection(input.env, args.target);
   try {

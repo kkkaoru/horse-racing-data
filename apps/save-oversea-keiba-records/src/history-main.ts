@@ -6,6 +6,7 @@ import type { SourceIdMirrorReport } from "./source-id-mirror";
 import type { EventEntitiesReport } from "./event-entities";
 import type { PedigreeStoreReport } from "./pedigree-store";
 import type { PostPositionReport } from "./post-position-store";
+import type { RaceTimeStoreReport } from "./race-time-store";
 
 try {
   const result:
@@ -14,7 +15,8 @@ try {
     | SourceIdMirrorReport
     | EventEntitiesReport
     | PedigreeStoreReport
-    | PostPositionReport = await runHistoryCommand({
+    | PostPositionReport
+    | RaceTimeStoreReport = await runHistoryCommand({
     argv: Bun.argv.slice(2),
     env: process.env,
     runtime: createHistoryCliRuntime(),
