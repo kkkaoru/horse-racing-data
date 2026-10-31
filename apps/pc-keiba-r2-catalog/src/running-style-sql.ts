@@ -288,7 +288,9 @@ export const buildRunningStyleFeaturesQuery = (
     ${umabanPredicate(filters.umaban)}`;
   const historySe = tableName(env, source.runnerTable);
   const historyRa = tableName(env, source.raceTable);
-  const master = tableName(env, source.masterTable);
+  // One row per horse: R2 SQL multiplied multi-year history rows through a
+  // plain master join (see uniqueMasterSql in win-rate-heatmap-stats.ts).
+  const master = `(SELECT ketto_toroku_bango, max(ketto_joho_01b) AS ketto_joho_01b, max(ketto_joho_05b) AS ketto_joho_05b FROM ${tableName(env, source.masterTable)} GROUP BY ketto_toroku_bango)`;
   return `WITH history_se AS (
   SELECT${runnerColumns}
   FROM ${historySe}

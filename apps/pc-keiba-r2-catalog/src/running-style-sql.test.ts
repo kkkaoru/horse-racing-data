@@ -23,7 +23,9 @@ it("builds partition-pruned JRA raw Iceberg SQL with the production feature CTEs
   );
   expect(sql.match(/FROM pc_keiba\.jvd_se/gu)).toHaveLength(2);
   expect(sql.match(/FROM pc_keiba\.jvd_ra/gu)).toHaveLength(2);
-  expect(sql).toMatch("left join pc_keiba.jvd_um um");
+  expect(sql).toMatch(
+    "FROM pc_keiba.jvd_um GROUP BY ketto_toroku_bango) um on um.ketto_toroku_bango",
+  );
   expect(sql).not.toMatch(/\busing\s*\(/i);
   expect(sql).toMatch("hc.source = t.source");
   expect(sql).toMatch("try_cast(nullif(nullif(se.bataiju, '000'), '999') AS INT) AS bataiju");
@@ -66,7 +68,9 @@ it("separates NAR and ban-ei scans while keeping raw row source nar", () => {
     true,
   );
   expect(nar).toMatch("FROM pc_keiba.nvd_se");
-  expect(nar).toMatch("left join pc_keiba.nvd_um um");
+  expect(nar).toMatch(
+    "FROM pc_keiba.nvd_um GROUP BY ketto_toroku_bango) um on um.ketto_toroku_bango",
+  );
   expect(nar).not.toMatch(/jvd_(?:se|ra|um)/u);
   expect(nar.match(/keibajo_code <> '83'/gu)).toHaveLength(4);
   expect(banEi.match(/keibajo_code = '83'/gu)).toHaveLength(8);
