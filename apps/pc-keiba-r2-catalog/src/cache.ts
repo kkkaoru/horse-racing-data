@@ -145,9 +145,9 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     // v4: jvd_um gained the horses registered since 2026-09 (DIFN ingestion), so
     // earlier bodies lack those runners' bloodline rows.
     // v5: history pedigree joins no longer triple-count multi-year runs.
-    // v7: domestic bloodline cells read the same course across every class.
+    // v8: bloodline cells read past editions of the race again (v7 reverted).
     // v6: 騎手枠別 counts the jockey's own 3-year record from that frame.
-    url.pathname = "/v7/win-rate-heatmap-stats";
+    url.pathname = "/v8/win-rate-heatmap-stats";
     if (/^[A-Z][0-9A-Z]$/u.test(descriptor.keibajoCode))
       url.searchParams.set("overseasInputs", "source-mapping-v1");
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);

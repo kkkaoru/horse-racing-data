@@ -829,28 +829,11 @@ export const buildArcBloodlineLabelsQuery = (
   return `WITH ${currentBloodlineCtesSql(env, checked)} SELECT umaban, category, name FROM current_bloodlines`;
 };
 
-// Domestic bloodline cells read the same course (venue, distance, surface,
-// turn) across every class: past editions of a named race leave a sire with
-// one or two starts. Overseas events keep their own title rule.
-export const bloodlineScopeFilters = (
-  filters: WinRateHeatmapStatsFilters,
-): WinRateHeatmapStatsFilters =>
-  isOverseasEvent(filters)
-    ? filters
-    : {
-        ...filters,
-        includeAge: false,
-        includeClass: false,
-        includeConditionKey: false,
-        includeGrade: false,
-        includeRaceTitle: false,
-      };
-
 export const buildWinRateHeatmapBloodlineQuery = (
   env: R2SqlCatalogConfig,
   filters: WinRateHeatmapStatsFilters,
 ): string => {
-  const checked = validateFilters(bloodlineScopeFilters(filters));
+  const checked = validateFilters(filters);
   return `
 WITH ${currentRaceCteSql(env, checked)},
 ${currentBloodlineCtesSql(env, checked)},
@@ -942,7 +925,7 @@ export const buildWinRateHeatmapLiteralBloodlineQuery = (
   filters: WinRateHeatmapStatsFilters,
   entries: ReadonlyArray<DayBloodlineEntry>,
 ): string => {
-  const checked = validateFilters(bloodlineScopeFilters(filters));
+  const checked = validateFilters(filters);
   if (usesCurrentProfile(checked)) throw new Error("Current-profile races need current_entries");
   const input: LiteralBloodlineInput = {
     kettoTorokuBangos: entries.map((entry) => entry.kettoTorokuBango),

@@ -16,7 +16,6 @@ import {
   normaliseDayBloodlineRow,
   sqlStringLiteral,
   usesDayKnownBloodlineCount,
-  bloodlineScopeFilters,
   buildWinRateHeatmapSimilarQuery,
   cellRouterDistanceBandFilterSql,
   currentRaceIdentitySql,
@@ -1160,28 +1159,4 @@ it("reads exact Arc display labels without historical name aggregation", () => {
     }),
   ).toMatch(/SELECT umaban, category, name FROM current_bloodlines$/u);
   expect(() => buildArcBloodlineLabelsQuery(config, jraFilters)).toThrow("exact Arc");
-});
-
-it("scopes domestic bloodline cells to the same course across every class", () => {
-  const scoped = bloodlineScopeFilters({
-    ...jraFilters,
-    includeAge: true,
-    includeClass: true,
-    includeConditionKey: true,
-    includeGrade: true,
-    includeRaceTitle: true,
-  });
-  expect([
-    scoped.includeAge,
-    scoped.includeClass,
-    scoped.includeConditionKey,
-    scoped.includeGrade,
-    scoped.includeRaceTitle,
-    scoped.includeVenue,
-    scoped.includeDistance,
-  ]).toStrictEqual([false, false, false, false, false, true, true]);
-  expect(
-    bloodlineScopeFilters({ ...jraFilters, keibajoCode: "A4", includeRaceTitle: true })
-      .includeRaceTitle,
-  ).toBe(true);
 });
