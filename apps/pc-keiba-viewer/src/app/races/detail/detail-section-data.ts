@@ -297,6 +297,9 @@ const RATE_STATS_FALLBACK_TIMEOUT_MS = 6_000;
 const OVERSEAS_BLOODLINE_MINIMUM_STARTS = 20;
 const OVERSEAS_SIMILAR_STATS_MINIMUM_STARTS = 20;
 const HEATMAP_STATS_YEARS_FALLBACK = 10;
+// Past editions of a named race are one row a year; 30 years reaches the
+// Catalog's earliest JV history (1998) for races such as 天皇賞（秋）.
+const NAMED_RACE_HEATMAP_STATS_YEARS = 30;
 
 type ConditionAnalysisStats = [
   RaceTimeStats,
@@ -1637,7 +1640,12 @@ const buildWinRateHeatmapCatalogQuery = (
     raceNumber: params.raceNumber,
     source,
     year: params.year,
-    years: heatmapStatsYears(settings.years),
+    years:
+      settings.includeRaceTitle &&
+      !isOverseasKeibajoCode(params.keibajoCode) &&
+      getStatsQueryParam(params.query, "similar", "statsYears") === undefined
+        ? NAMED_RACE_HEATMAP_STATS_YEARS
+        : heatmapStatsYears(settings.years),
   };
   return includeOwner ? { ...query, includeOwner: true } : query;
 };

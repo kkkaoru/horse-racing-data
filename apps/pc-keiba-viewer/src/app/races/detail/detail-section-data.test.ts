@@ -3966,7 +3966,7 @@ it("assembles heatmap payload from Catalog stats, results, and condition section
     raceNumber: "11",
     source: "jra",
     year: "2025",
-    years: 10,
+    years: 30,
   });
 });
 
