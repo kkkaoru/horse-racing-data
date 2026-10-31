@@ -286,6 +286,9 @@ const RACE_HTML = `<script id="data">${JSON.stringify({
   props: {
     race: {
       details: { winningTime: "1m 47.91s" },
+      analysis: {
+        paragraphs: [[{ value: "Closing 3f sectional: 37.60 (102.4%); winner 37.00 (104.1%)." }]],
+      },
       runners: [
         { outcomeCode: "1", horseName: "Sovereignty", beatenDistanceToWinner: "" },
         { outcomeCode: "7", horseName: "White Abarrio", beatenDistanceToWinner: "17¾" },
@@ -334,6 +337,7 @@ it("candidateRaceLinks lists same course and distance results for an unlisted ru
 it("parseRacingPostRace reads every finisher of a full result page", () => {
   expect(parseRacingPostRace(RACE_HTML, PROFILE)).toStrictEqual({
     winnerTime: "1m 47.91s",
+    winnerClosingThree: "37.0",
     runners: [
       { position: "1st", horseName: "Sovereignty", distanceToWinner: "" },
       { position: "7", horseName: "White Abarrio", distanceToWinner: "17¾" },
@@ -394,4 +398,16 @@ it("races-fetch mode requests the full results of unlisted runners and apply use
   });
   expect(report.estimated).toBe(1);
   expect(ports.applyRaceTimeRows.mock.calls[0]?.[0].rows[0].raceTimeText).toBe("1:51.46");
+  expect(ports.applyRaceTimeRows.mock.calls[0]?.[0].rows[0].lastThreeFurlongsSeconds).toBeNull();
+});
+
+it("matchRacingPostTime keeps the winner's published closing 3f as measured", () => {
+  expect(
+    matchRacingPostTime(ROW, "Sovereignty", [{ ...RACE, winnerClosingThree: "37.0" }])
+      ?.lastThreeFurlongsSeconds,
+  ).toBe("37.0");
+  expect(
+    matchRacingPostTime(ROW, "Magnitude", [{ ...RACE, winnerClosingThree: "37.0" }])
+      ?.lastThreeFurlongsSeconds,
+  ).toBeNull();
 });

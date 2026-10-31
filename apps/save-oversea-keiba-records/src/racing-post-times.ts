@@ -21,6 +21,7 @@ export interface RacingPostRunner {
 }
 export interface RacingPostRace {
   readonly winnerTime: string | null;
+  readonly winnerClosingThree?: string | null;
   readonly runners: readonly RacingPostRunner[];
   readonly courseKey?: string;
   readonly countryCode?: string;
@@ -104,6 +105,10 @@ const METRES_PER_YARD: number = 0.9144;
 const DISTANCE_TOLERANCE_METRES: number = 110;
 const RACE_ID_PATTERN: RegExp = /\/(\d+)$/u;
 const WINNER_OUTCOME: string = "1";
+// The analysis states a race's closing 3f sectional and the winner's own one ("…; winner 37.00").
+const WINNER_CLOSING_THREE_PATTERN: RegExp =
+  /Closing 3f sectional: [\d.]+ \([^)]*\); winner (\d{2}\.\d+)/u;
+const CLOSING_DECIMALS: number = 1;
 // netkeiba venue labels and the result courses they cover; country labels match any course there.
 const VENUE_COURSES: ReadonlyMap<string, readonly string[]> = new Map([
   ["ドーヴィル", ["deauville"]],
@@ -233,7 +238,7 @@ export const matchRacingPostTime = (
     sourceRaceId: row.source_race_id,
     raceTimeText: timeText(seconds),
     raceTimeSeconds: seconds.toFixed(TIME_DECIMALS),
-    lastThreeFurlongsSeconds: null,
+    lastThreeFurlongsSeconds: winnerRow ? (first.race.winnerClosingThree ?? null) : null,
     raceTimeSource: "racingpost",
     raceTimeKind: winnerRow ? "measured" : "estimated",
   };
@@ -375,8 +380,12 @@ export const parseRacingPostRace = (html: string, profile: RacingPostProfile): R
   const runners: unknown = dig(result, ["runners"]);
   assert(Array.isArray(runners), "Race result data has no runners.");
   const winningTime: unknown = dig(result, ["details", "winningTime"]);
+  const closing: string | undefined = WINNER_CLOSING_THREE_PATTERN.exec(
+    JSON.stringify(dig(result, ["analysis"]) ?? ""),
+  )?.[1];
   return {
     winnerTime: typeof winningTime === "string" ? winningTime : null,
+    winnerClosingThree: closing === undefined ? null : Number(closing).toFixed(CLOSING_DECIMALS),
     runners: runners.filter(isRaceRunner).map((runner) => ({
       position: String(runner.outcomeCode) === WINNER_OUTCOME ? "1st" : String(runner.outcomeCode),
       horseName: runner.horseName,

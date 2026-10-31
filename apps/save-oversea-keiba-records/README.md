@@ -307,7 +307,7 @@ Both fill only NULL columns and report differing stored values. `race_time_sourc
 runner's time is `estimated` as winner time + cumulative margin × 0.2 s per length. The day
 pages list only the first three finishers; `racing-post-races-fetch` adds the full result pages
 of the same course and distance (netkeiba venue labels are mapped to courses in the code), which
-list every finisher. No sectionals are published, so no closing 3F is ever estimated. The chart site with sectionals sits behind a
+list every finisher. A result page whose analysis states the winner's own closing 3f sectional ("Closing 3f sectional: … winner 37.00") gives that winner's closing 3F; nothing else is used, so every stored closing 3F is a published (measured) value and none is estimated. The chart site with sectionals sits behind a
 bot challenge and is not used. Sync `oversea_horse_race_history` to the Catalog afterwards.
 
 ### Explicit production source-id mirroring
