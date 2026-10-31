@@ -1,7 +1,10 @@
 // This file runs with Bun and Vitest. The filesystem, proxy and database writer are mocked.
 import { beforeEach, expect, it, vi } from "vitest";
 import {
+  candidateRaceLinks,
   marginLengths,
+  parseRacingPostRace,
+  raceDistanceMetres,
   matchRacingPostTime,
   normaliseHorseName,
   overseasDates,
@@ -33,6 +36,8 @@ const PROFILE = {
   dayUrlTemplate: "https://results.test/day/{DATE}",
   dataScriptId: "data",
   racesPath: ["props", "groups"],
+  raceUrlOrigin: "https://results.test",
+  raceResultPath: ["props", "race"],
 };
 const ENV = { OVERSEA_RACING_POST_PROFILE_PATH: "/private/rp.json" };
 const RACE: RacingPostRace = {
@@ -52,6 +57,7 @@ const ROW: MissingTimeRow = {
   d: "2026-08-08",
   venue: "サラトガ",
   finish_position: 2,
+  distance_metres: 1800,
 };
 const JRA_ROW: MissingTimeRow = { ...ROW, d: "2020-08-23", venue: "2小倉4" };
 const UNPLACED_ROW: MissingTimeRow = { ...ROW, d: "2026-07-01", finish_position: null };
@@ -265,4 +271,127 @@ it("rejects bad arguments and an incomplete or missing profile", async () => {
   await expect(
     runRacingPostTimes({ argv: ["racing-post-times-fetch", "/m.json", "/cache"], env: ENV }),
   ).rejects.toThrow("The results profile is incomplete.");
+});
+
+const DAY_RACE: RacingPostRace = {
+  winnerTime: "1m 47.91s",
+  runners: [{ position: "1st", horseName: "Sovereignty", distanceToWinner: null }],
+  courseKey: "saratoga",
+  countryCode: "USA",
+  distance: "1m1f",
+  runnersCount: 7,
+  fullResultLink: "/results/445/saratoga/2026-08-08/926195",
+};
+const RACE_HTML = `<script id="data">${JSON.stringify({
+  props: {
+    race: {
+      details: { winningTime: "1m 47.91s" },
+      runners: [
+        { outcomeCode: "1", horseName: "Sovereignty", beatenDistanceToWinner: "" },
+        { outcomeCode: "7", horseName: "White Abarrio", beatenDistanceToWinner: "17¾" },
+        { note: "not a runner" },
+      ],
+    },
+  },
+})}</script>`;
+
+it("raceDistanceMetres reads miles, furlongs and yards", () => {
+  expect(raceDistanceMetres("1m1f")).toBeCloseTo(1810.512);
+  expect(raceDistanceMetres("7½f")).toBeCloseTo(1508.76);
+  expect(raceDistanceMetres("1m110y")).toBeCloseTo(1709.928);
+  expect(raceDistanceMetres("")).toBeNull();
+  expect(raceDistanceMetres(undefined)).toBeNull();
+  expect(raceDistanceMetres("about a mile")).toBeNull();
+});
+
+it("candidateRaceLinks lists same course and distance results for an unlisted runner", () => {
+  expect(
+    candidateRaceLinks({ ...ROW, finish_position: 7 }, "White Abarrio", [DAY_RACE]),
+  ).toStrictEqual([
+    { date: "2026-08-08", raceId: "926195", link: "/results/445/saratoga/2026-08-08/926195" },
+  ]);
+  expect(candidateRaceLinks(ROW, "Sovereignty", [DAY_RACE])).toStrictEqual([]);
+  expect(
+    candidateRaceLinks({ ...ROW, finish_position: 9 }, "White Abarrio", [DAY_RACE]),
+  ).toStrictEqual([]);
+  expect(
+    candidateRaceLinks({ ...ROW, distance_metres: 1400 }, "White Abarrio", [DAY_RACE]),
+  ).toStrictEqual([]);
+  expect(
+    candidateRaceLinks({ ...ROW, venue: "アメリカ" }, "White Abarrio", [
+      DAY_RACE,
+      { ...DAY_RACE, countryCode: "GB", fullResultLink: "/results/1/ascot/2026-08-08/1" },
+      { ...DAY_RACE, fullResultLink: undefined },
+    ]),
+  ).toStrictEqual([
+    { date: "2026-08-08", raceId: "926195", link: "/results/445/saratoga/2026-08-08/926195" },
+  ]);
+  expect(
+    candidateRaceLinks({ ...ROW, venue: "ロンシャン" }, "White Abarrio", [DAY_RACE]),
+  ).toStrictEqual([]);
+});
+
+it("parseRacingPostRace reads every finisher of a full result page", () => {
+  expect(parseRacingPostRace(RACE_HTML, PROFILE)).toStrictEqual({
+    winnerTime: "1m 47.91s",
+    runners: [
+      { position: "1st", horseName: "Sovereignty", distanceToWinner: "" },
+      { position: "7", horseName: "White Abarrio", distanceToWinner: "17¾" },
+    ],
+  });
+  expect(() => parseRacingPostRace("<html></html>", PROFILE)).toThrow(
+    "Race result page has no data script.",
+  );
+  expect(() => parseRacingPostRace('<script id="data">{"props":{}}</script>', PROFILE)).toThrow(
+    "Race result data has no runners.",
+  );
+  expect(
+    parseRacingPostRace(
+      '<script id="data">{"props":{"race":{"details":{},"runners":[]}}}</script>',
+      PROFILE,
+    ).winnerTime,
+  ).toBeNull();
+});
+
+it("races-fetch mode requests the full results of unlisted runners and apply uses them", async () => {
+  const dayHtml = `<script id="data">${JSON.stringify({ props: { groups: [{ races: [DAY_RACE] }] } })}</script>`;
+  ports.readFile.mockImplementation(async (path: string) => {
+    if (path === "/private/rp.json") return JSON.stringify(PROFILE);
+    if (path === "/m.json") return JSON.stringify([{ ...ROW, finish_position: 7 }]);
+    if (path === "/cache/2026-08-08.html") return dayHtml;
+    if (path.endsWith("926195.html")) return RACE_HTML;
+    return "<title>White Abarrio | data</title>";
+  });
+  ports.readdir.mockImplementation(async (path: string) => {
+    if (path === "/history") return ["horse-h1"];
+    if (path === "/cache/races/2026-08-08") return ["926195.html", "1.rejected.html"];
+    return ["a.html"];
+  });
+  ports.access.mockImplementation(async (path: string) => {
+    if (path !== "/cache/2026-08-08.html") throw new Error("ENOENT");
+  });
+  const fetchImpl = vi.fn(
+    async (_url: string, _init: RequestInit) => new Response(RACE_HTML, { status: 200 }),
+  );
+  const fetched = await runRacingPostTimes({
+    argv: ["racing-post-races-fetch", "/m.json", "/cache", "/history"],
+    env: ENV,
+    fetchImpl,
+    sleep: vi.fn(async () => undefined),
+  });
+  expect(fetched.candidates).toBe(1);
+  expect(fetchImpl.mock.calls.map(([url]) => String(url))).toStrictEqual([
+    "https://reverse-proxy.api.kkk4oru.com/playwright?url=https%3A%2F%2Fresults.test%2Fresults%2F445%2Fsaratoga%2F2026-08-08%2F926195",
+  ]);
+  expect(ports.writeFile).toHaveBeenCalledWith("/cache/races/2026-08-08/926195.html", RACE_HTML, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  ports.access.mockResolvedValue(undefined);
+  const report = await runRacingPostTimes({
+    argv: ["racing-post-times-plan", "/m.json", "/cache", "/history", "local"],
+    env: ENV,
+  });
+  expect(report.estimated).toBe(1);
+  expect(ports.applyRaceTimeRows.mock.calls[0]?.[0].rows[0].raceTimeText).toBe("1:51.46");
 });

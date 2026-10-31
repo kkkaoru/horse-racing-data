@@ -295,14 +295,17 @@ OVERSEA_RACE_TIME_PROFILE_PATH=/private/race-time.json \
 # proxy requests every 6 s, cached days are never refetched; a challenge page stops the run).
 OVERSEA_RACING_POST_PROFILE_PATH=/private/rp.json \
   bun run history racing-post-times-fetch /private/missing-times.json /private/racingpost
+# Full result pages for runners the day pages do not list (same course and distance only):
+bun run history racing-post-races-fetch /private/missing-times.json /private/racingpost /private/history
 bun run history racing-post-times-apply /private/missing-times.json /private/racingpost /private/history local --confirm-write
 ```
 
 Both fill only NULL columns and report differing stored values. `race_time_source` and
 `race_time_kind` record the origin: a winner's published time is `measured`; a placed
-runner's time is `estimated` as winner time + cumulative margin × 0.2 s per length. Those
-pages list only the first three finishers and publish no sectionals, so other runners keep
-no time and no closing 3F is ever estimated. The chart site with sectionals sits behind a
+runner's time is `estimated` as winner time + cumulative margin × 0.2 s per length. The day
+pages list only the first three finishers; `racing-post-races-fetch` adds the full result pages
+of the same course and distance (netkeiba venue labels are mapped to courses in the code), which
+list every finisher. No sectionals are published, so no closing 3F is ever estimated. The chart site with sectionals sits behind a
 bot challenge and is not used. Sync `oversea_horse_race_history` to the Catalog afterwards.
 
 ### Explicit production source-id mirroring

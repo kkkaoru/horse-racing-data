@@ -3,7 +3,7 @@
 // The winner's published time is measured; a placed runner's time is estimated from its margin.
 import assert from "node:assert/strict";
 import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { HISTORY_PROXY_ORIGIN } from "./history-proxy";
 import { applyRaceTimeRows, type RaceTimeRow, type RaceTimeStorePlan } from "./race-time-store";
 
@@ -11,6 +11,8 @@ export interface RacingPostProfile {
   readonly dayUrlTemplate: string;
   readonly dataScriptId: string;
   readonly racesPath: readonly string[];
+  readonly raceUrlOrigin: string;
+  readonly raceResultPath: readonly string[];
 }
 export interface RacingPostRunner {
   readonly position: string;
@@ -20,6 +22,21 @@ export interface RacingPostRunner {
 export interface RacingPostRace {
   readonly winnerTime: string | null;
   readonly runners: readonly RacingPostRunner[];
+  readonly courseKey?: string;
+  readonly countryCode?: string;
+  readonly distance?: string;
+  readonly runnersCount?: number;
+  readonly fullResultLink?: string;
+}
+export interface RacingPostRaceRunner {
+  readonly outcomeCode: string;
+  readonly horseName: string;
+  readonly beatenDistanceToWinner: string | null;
+}
+export interface RacingPostRaceLink {
+  readonly date: string;
+  readonly raceId: string;
+  readonly link: string;
 }
 export interface MissingTimeRow {
   readonly source_horse_id: string;
@@ -27,6 +44,7 @@ export interface MissingTimeRow {
   readonly d: string;
   readonly venue: string;
   readonly finish_position: number | null;
+  readonly distance_metres: number;
 }
 export interface RacingPostTimesInput {
   readonly argv: readonly string[];
@@ -78,8 +96,64 @@ const NAME_SUFFIX_PATTERN: RegExp = /\s*\([A-Z]{2,3}\)\s*$/u;
 // Titles read "カナ (English)", "English (カナ)" or just "English"; the Latin part is the name.
 const TITLE_PATTERN: RegExp = /<title>([^(<|]*?)\s*(?:\(([^)<]+)\))?\s*\|/u;
 const LATIN_PATTERN: RegExp = /[A-Za-z]/u;
+const RACE_DISTANCE_PATTERN: RegExp = /^(?:(\d+)m)?(?:(\d*)([¼½¾]?)f)?(?:(\d+)y)?$/u;
+const METRES_PER_MILE: number = 1609.344;
+const METRES_PER_FURLONG: number = 201.168;
+const METRES_PER_YARD: number = 0.9144;
+// Half a furlong: netkeiba rounds overseas distances to the nearest 100 m.
+const DISTANCE_TOLERANCE_METRES: number = 110;
+const RACE_ID_PATTERN: RegExp = /\/(\d+)$/u;
+const WINNER_OUTCOME: string = "1";
+// netkeiba venue labels and the result courses they cover; country labels match any course there.
+const VENUE_COURSES: ReadonlyMap<string, readonly string[]> = new Map([
+  ["ドーヴィル", ["deauville"]],
+  ["アケダクト", ["aqueduct", "belmont-at-the-big-a"]],
+  ["サンクルー", ["saint-cloud"]],
+  ["ピムリコ", ["pimlico"]],
+  ["パリロンシャン", ["longchamp"]],
+  ["ニューマーケット", ["newmarket", "newmarket-july"]],
+  ["グッドウッド", ["goodwood"]],
+  ["サラトガ", ["saratoga"]],
+  ["ウィンザー", ["windsor"]],
+  ["キーンランド", ["keeneland"]],
+  ["アスコット", ["ascot"]],
+  ["サンタアニタパー", ["santa-anita"]],
+  ["メイダン", ["meydan"]],
+  ["チャーチルダウン", ["churchill-downs"]],
+  ["レパーズタウン", ["leopardstown"]],
+  ["シャンティイ", ["chantilly"]],
+  ["ヘイドックパーク", ["haydock"]],
+  ["ニューベリー", ["newbury"]],
+  ["カラ", ["curragh"]],
+  ["デルマー", ["del-mar"]],
+  ["ミュンヘン", ["munich"]],
+  ["フェアグラウンズ", ["fair-grounds"]],
+  ["タンパベイダウン", ["tampa-bay-downs"]],
+  ["ガルフストリーム", ["gulfstream-park"]],
+  ["オークローンパー", ["oaklawn-park"]],
+  ["サンダウン", ["sandown"]],
+  ["ヨーク", ["york"]],
+  ["ケルン", ["cologne"]],
+  ["ドンカスター", ["doncaster"]],
+  ["チェスター", ["chester"]],
+  ["シャティン", ["sha-tin"]],
+  ["モンマスパーク", ["monmouth-park"]],
+  ["ウッドバイン", ["woodbine"]],
+  ["ベルモントパーク", ["belmont-park", "belmont-at-the-big-a"]],
+  ["キングアブドゥル", ["king-abdulaziz"]],
+  ["ランドウィック", ["randwick"]],
+  ["フレミントン", ["flemington"]],
+  ["エプソム", ["epsom"]],
+]);
+const VENUE_COUNTRIES: ReadonlyMap<string, string> = new Map([
+  ["アメリカ", "USA"],
+  ["イギリス", "GB"],
+  ["アイルランド", "IRE"],
+  ["イタリア", "ITY"],
+  ["カタール", "QA"],
+]);
 const USAGE: string =
-  "Use racing-post-times-fetch MISSING_JSON CACHE_DIR, racing-post-times-plan MISSING_JSON CACHE_DIR HISTORY_ROOT TARGET or racing-post-times-apply MISSING_JSON CACHE_DIR HISTORY_ROOT TARGET --confirm-write.";
+  "Use racing-post-times-fetch MISSING_JSON CACHE_DIR, racing-post-races-fetch MISSING_JSON CACHE_DIR HISTORY_ROOT, racing-post-times-plan MISSING_JSON CACHE_DIR HISTORY_ROOT TARGET or racing-post-times-apply MISSING_JSON CACHE_DIR HISTORY_ROOT TARGET --confirm-write.";
 
 export const normaliseHorseName = (name: string): string =>
   name
@@ -173,7 +247,11 @@ const isProfile = (value: unknown): value is RacingPostProfile =>
   "dataScriptId" in value &&
   typeof value.dataScriptId === "string" &&
   "racesPath" in value &&
-  Array.isArray(value.racesPath);
+  Array.isArray(value.racesPath) &&
+  "raceUrlOrigin" in value &&
+  typeof value.raceUrlOrigin === "string" &&
+  "raceResultPath" in value &&
+  Array.isArray(value.raceResultPath);
 
 const loadProfile = async (env: RacingPostTimesInput["env"]): Promise<RacingPostProfile> => {
   const path: string | undefined = env[PROFILE_ENV];
@@ -197,21 +275,25 @@ const exists = (path: string): Promise<boolean> =>
     () => false,
   );
 
-const fetchDays = async (
-  dates: readonly string[],
-  cacheDir: string,
+interface PageRequest {
+  readonly url: string;
+  readonly path: string;
+}
+
+const fetchPages = async (
+  pages: readonly PageRequest[],
   profile: RacingPostProfile,
   { fetchImpl = fetch, sleep = Bun.sleep }: Pick<RacingPostTimesInput, "fetchImpl" | "sleep">,
 ): Promise<{ fetched: number; blocked: boolean }> => {
-  await mkdir(cacheDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
-  const missing: string[] = [];
-  for (const date of dates) {
-    if (!(await exists(join(cacheDir, `${date}.html`)))) missing.push(date);
+  const missing: PageRequest[] = [];
+  for (const page of pages) {
+    if (!(await exists(page.path))) missing.push(page);
   }
-  for (const [index, date] of missing.entries()) {
+  for (const [index, page] of missing.entries()) {
     if (index > 0) await sleep(REQUEST_INTERVAL_MS);
+    await mkdir(dirname(page.path), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
     const proxy: URL = new URL("/playwright", HISTORY_PROXY_ORIGIN);
-    proxy.searchParams.set("url", profile.dayUrlTemplate.replaceAll("{DATE}", date));
+    proxy.searchParams.set("url", page.url);
     const response: Response = await fetchImpl(proxy.href, {
       redirect: "manual",
       signal: AbortSignal.timeout(PROXY_TIMEOUT_MS),
@@ -219,12 +301,88 @@ const fetchDays = async (
     const html: string = await response.text();
     // A challenge or error page stops the run; protection is never worked around.
     if (response.status !== SUCCESS_STATUS || !html.includes(`id="${profile.dataScriptId}"`)) {
-      await writeFile(join(cacheDir, `${date}.rejected.html`), html, { mode: PRIVATE_FILE_MODE });
+      await writeFile(page.path.replace(/\.html$/u, ".rejected.html"), html, {
+        mode: PRIVATE_FILE_MODE,
+      });
       return { fetched: index, blocked: true };
     }
-    await writeFile(join(cacheDir, `${date}.html`), html, { flag: "wx", mode: PRIVATE_FILE_MODE });
+    await writeFile(page.path, html, { flag: "wx", mode: PRIVATE_FILE_MODE });
   }
   return { fetched: missing.length, blocked: false };
+};
+
+const dayRequests = (
+  dates: readonly string[],
+  cacheDir: string,
+  profile: RacingPostProfile,
+): PageRequest[] =>
+  dates.map((date) => ({
+    url: profile.dayUrlTemplate.replaceAll("{DATE}", date),
+    path: join(cacheDir, `${date}.html`),
+  }));
+
+export const raceDistanceMetres = (text: string | undefined): number | null => {
+  const match: RegExpExecArray | null = RACE_DISTANCE_PATTERN.exec(text ?? "");
+  if (match === null || !text) return null;
+  return (
+    Number(match[1] ?? "0") * METRES_PER_MILE +
+    (Number(match[2] || "0") + (FRACTIONS.get(match[3] ?? "") ?? 0)) * METRES_PER_FURLONG +
+    Number(match[4] ?? "0") * METRES_PER_YARD
+  );
+};
+
+const courseMatches = (venue: string, race: RacingPostRace): boolean =>
+  VENUE_COURSES.get(venue)?.includes(String(race.courseKey)) ??
+  VENUE_COUNTRIES.get(venue) === race.countryCode;
+
+const distanceMatches = (row: MissingTimeRow, race: RacingPostRace): boolean =>
+  Math.abs((raceDistanceMetres(race.distance) ?? 0) - row.distance_metres) <=
+  DISTANCE_TOLERANCE_METRES;
+
+// Full results of the same course and distance on that day, for a runner the day page does not list.
+export const candidateRaceLinks = (
+  row: MissingTimeRow,
+  englishName: string,
+  races: readonly RacingPostRace[],
+): RacingPostRaceLink[] =>
+  matchRacingPostTime(row, englishName, races) !== null
+    ? []
+    : races
+        .filter(
+          (race) =>
+            race.fullResultLink !== undefined &&
+            (race.runnersCount ?? 0) >= Number(row.finish_position) &&
+            courseMatches(row.venue, race) &&
+            distanceMatches(row, race),
+        )
+        .map((race) => ({
+          date: row.d,
+          raceId: String(RACE_ID_PATTERN.exec(String(race.fullResultLink))?.[1]),
+          link: String(race.fullResultLink),
+        }));
+
+const isRaceRunner = (value: unknown): value is RacingPostRaceRunner =>
+  typeof value === "object" && value !== null && "outcomeCode" in value && "horseName" in value;
+
+// A full result page as a race of the day page shape: the winner's outcome is "1".
+export const parseRacingPostRace = (html: string, profile: RacingPostProfile): RacingPostRace => {
+  const start: number = html.indexOf(`id="${profile.dataScriptId}"`);
+  assert(start >= 0, "Race result page has no data script.");
+  const result: unknown = dig(
+    JSON.parse(html.slice(html.indexOf(">", start) + 1, html.indexOf("</script>", start))),
+    profile.raceResultPath,
+  );
+  const runners: unknown = dig(result, ["runners"]);
+  assert(Array.isArray(runners), "Race result data has no runners.");
+  const winningTime: unknown = dig(result, ["details", "winningTime"]);
+  return {
+    winnerTime: typeof winningTime === "string" ? winningTime : null,
+    runners: runners.filter(isRaceRunner).map((runner) => ({
+      position: String(runner.outcomeCode) === WINNER_OUTCOME ? "1st" : String(runner.outcomeCode),
+      horseName: runner.horseName,
+      distanceToWinner: runner.beatenDistanceToWinner,
+    })),
+  };
 };
 
 // English names come from the titles of the horse pages archived by `history collect`.
@@ -251,32 +409,91 @@ const englishNames = async (historyRoot: string): Promise<ReadonlyMap<string, st
   return new Map(pairs.filter((pair): pair is [string, string] => pair !== null));
 };
 
-const matchAll = async (
+const candidateRows = (rows: readonly MissingTimeRow[]): MissingTimeRow[] => {
+  const dates: ReadonlySet<string> = new Set(overseasDates(rows));
+  return rows.filter((row) => dates.has(row.d) && row.finish_position !== null);
+};
+
+const readRaces = async (
+  directory: string,
+  profile: RacingPostProfile,
+): Promise<RacingPostRace[]> =>
+  (await exists(directory))
+    ? Promise.all(
+        (await readdir(directory))
+          .filter((name) => name.endsWith(".html") && !name.endsWith(".rejected.html"))
+          .map(async (name) =>
+            parseRacingPostRace(await readFile(join(directory, name), "utf8"), profile),
+          ),
+      )
+    : [];
+
+// Cached full result pages come first: they list every finisher, the day page only the first three.
+const loadDays = async (
+  dates: readonly string[],
+  cacheDir: string,
+  profile: RacingPostProfile,
+): Promise<ReadonlyMap<string, RacingPostRace[]>> => {
+  const days: Map<string, RacingPostRace[]> = new Map();
+  for (const date of dates) {
+    const path: string = join(cacheDir, `${date}.html`);
+    if (await exists(path)) {
+      days.set(date, [
+        ...(await readRaces(join(cacheDir, "races", date), profile)),
+        ...parseRacingPostDay(await readFile(path, "utf8"), profile),
+      ]);
+    }
+  }
+  return days;
+};
+
+interface MatchContext {
+  readonly candidates: readonly MissingTimeRow[];
+  readonly names: ReadonlyMap<string, string>;
+  readonly days: ReadonlyMap<string, RacingPostRace[]>;
+}
+
+const matchContext = async (
   rows: readonly MissingTimeRow[],
   cacheDir: string,
   historyRoot: string,
   profile: RacingPostProfile,
-): Promise<{ matched: RaceTimeRow[]; candidates: number }> => {
-  const dates: ReadonlySet<string> = new Set(overseasDates(rows));
-  const candidates: MissingTimeRow[] = rows.filter(
-    (row) => dates.has(row.d) && row.finish_position !== null,
-  );
-  const names: ReadonlyMap<string, string> = await englishNames(historyRoot);
-  const days: Map<string, RacingPostRace[]> = new Map();
-  for (const date of dates) {
-    const path: string = join(cacheDir, `${date}.html`);
-    if (await exists(path))
-      days.set(date, parseRacingPostDay(await readFile(path, "utf8"), profile));
-  }
-  const matched: RaceTimeRow[] = candidates.flatMap((row) => {
+): Promise<MatchContext> => ({
+  candidates: candidateRows(rows),
+  names: await englishNames(historyRoot),
+  days: await loadDays(overseasDates(rows), cacheDir, profile),
+});
+
+const namedRows = ({ candidates, names, days }: MatchContext) =>
+  candidates.flatMap((row) => {
     const name: string | undefined = names.get(row.source_horse_id);
     const races: RacingPostRace[] | undefined = days.get(row.d);
-    const hit: RaceTimeRow | null =
-      name === undefined || races === undefined ? null : matchRacingPostTime(row, name, races);
+    return name === undefined || races === undefined ? [] : [{ row, name, races }];
+  });
+
+const matchRows = (context: MatchContext): RaceTimeRow[] =>
+  namedRows(context).flatMap(({ row, name, races }) => {
+    const hit: RaceTimeRow | null = matchRacingPostTime(row, name, races);
     return hit === null ? [] : [hit];
   });
-  return { matched, candidates: candidates.length };
-};
+
+const raceRequests = (
+  context: MatchContext,
+  cacheDir: string,
+  profile: RacingPostProfile,
+): PageRequest[] => [
+  ...new Map(
+    namedRows(context)
+      .flatMap(({ row, name, races }) => candidateRaceLinks(row, name, races))
+      .map((race): [string, PageRequest] => [
+        race.raceId,
+        {
+          url: `${profile.raceUrlOrigin}${race.link}`,
+          path: join(cacheDir, "races", race.date, `${race.raceId}.html`),
+        },
+      ]),
+  ).values(),
+];
 
 export const runRacingPostTimes = async (
   input: RacingPostTimesInput,
@@ -285,7 +502,8 @@ export const runRacingPostTimes = async (
     | string
     | undefined
   )[] = input.argv;
-  const fetchOnly: boolean = action === "racing-post-times-fetch" && input.argv.length === 3;
+  const fetchDaysOnly: boolean = action === "racing-post-times-fetch" && input.argv.length === 3;
+  const fetchRaces: boolean = action === "racing-post-races-fetch" && input.argv.length === 4;
   const plan: boolean = action === "racing-post-times-plan" && input.argv.length === 5;
   const apply: boolean =
     action === "racing-post-times-apply" &&
@@ -294,7 +512,8 @@ export const runRacingPostTimes = async (
   assert(
     missingPath !== undefined &&
       cacheDir !== undefined &&
-      (fetchOnly ||
+      (fetchDaysOnly ||
+        (fetchRaces && historyRoot !== undefined) ||
         ((plan || apply) &&
           historyRoot !== undefined &&
           (target === "local" || target === "production"))),
@@ -311,17 +530,26 @@ export const runRacingPostTimes = async (
     filled: 0,
     conflicts: [],
   };
-  if (fetchOnly) {
-    const result = await fetchDays(dates, cacheDir, profile, input);
+  if (fetchDaysOnly || fetchRaces) {
+    const pages: PageRequest[] = fetchDaysOnly
+      ? dayRequests(dates, cacheDir, profile)
+      : raceRequests(
+          await matchContext(rows, cacheDir, String(historyRoot), profile),
+          cacheDir,
+          profile,
+        );
+    const result = await fetchPages(pages, profile, input);
     return {
       status: result.blocked ? "blocked" : "complete",
       operation: "fetched",
       days: dates.length,
       fetched: result.fetched,
       ...empty,
+      candidates: pages.length,
     };
   }
-  const { matched, candidates } = await matchAll(rows, cacheDir, String(historyRoot), profile);
+  const context: MatchContext = await matchContext(rows, cacheDir, String(historyRoot), profile);
+  const matched: RaceTimeRow[] = matchRows(context);
   const stored: RaceTimeStorePlan = await applyRaceTimeRows({
     env: input.env,
     target: target === "production" ? "production" : "local",
@@ -333,10 +561,10 @@ export const runRacingPostTimes = async (
     operation: apply ? "applied" : "planned",
     days: dates.length,
     fetched: 0,
-    candidates,
+    candidates: context.candidates.length,
     measured: matched.filter((row) => row.raceTimeKind === "measured").length,
     estimated: matched.filter((row) => row.raceTimeKind === "estimated").length,
-    unmatched: candidates - matched.length,
+    unmatched: context.candidates.length - matched.length,
     filled: stored.fills.length,
     conflicts: stored.conflicts,
   };
