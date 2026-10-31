@@ -23,6 +23,8 @@ export interface RaceTimeRow {
   readonly raceTimeText: string | null;
   readonly raceTimeSeconds: string | null;
   readonly lastThreeFurlongsSeconds: string | null;
+  readonly raceTimeSource: string;
+  readonly raceTimeKind: "measured" | "estimated";
 }
 export interface StoredRaceTime {
   readonly sourceHorseId: string;
@@ -65,6 +67,8 @@ const UPDATE_SQL: string = `UPDATE oversea_horse_race_history SET
   race_time_text = COALESCE(race_time_text, NULLIF($4, '')),
   race_time_seconds = COALESCE(race_time_seconds, NULLIF($5, '')::numeric),
   last_three_furlongs_seconds = COALESCE(last_three_furlongs_seconds, NULLIF($6, '')::numeric),
+  race_time_source = CASE WHEN race_time_text IS NULL AND $4 <> '' THEN $7 ELSE race_time_source END,
+  race_time_kind = CASE WHEN race_time_text IS NULL AND $4 <> '' THEN $8 ELSE race_time_kind END,
   updated_at = now()
 WHERE source = $1 AND source_horse_id = $2 AND source_race_id = $3
   AND ((race_time_text IS NULL AND $4 <> '') OR (last_three_furlongs_seconds IS NULL AND $6 <> ''))`;
@@ -89,6 +93,8 @@ export const raceTimeRow = (sourceHorseId: string, time: SecondaryHorseRaceTime)
     lastThreeFurlongsSeconds: LAST_THREE_PATTERN.test(time.lastThreeFurlongsText)
       ? time.lastThreeFurlongsText
       : null,
+    raceTimeSource: SOURCE,
+    raceTimeKind: "measured",
   };
 };
 
@@ -217,6 +223,8 @@ const writeFills = async (
         row.raceTimeText ?? "",
         row.raceTimeSeconds ?? "",
         row.lastThreeFurlongsSeconds ?? "",
+        row.raceTimeSource,
+        row.raceTimeKind,
       ]);
     }
     const readback: RaceTimeStorePlan = planRaceTimeStore(rows, await selectExisting(client, rows));
@@ -240,6 +248,34 @@ const writeFills = async (
 const uniqueRows = (rows: readonly RaceTimeRow[]): RaceTimeRow[] => [
   ...new Map(rows.toReversed().map((row) => [rowKey(row), row])).values(),
 ];
+
+export interface RaceTimeApplyInput {
+  readonly env: RaceTimeStoreInput["env"];
+  readonly target: "local" | "production";
+  readonly rows: readonly RaceTimeRow[];
+  readonly apply: boolean;
+}
+
+// Plans (or applies, fill-only in one locked transaction) parsed rows against one target.
+export const applyRaceTimeRows = async ({
+  env,
+  target,
+  rows,
+  apply,
+}: RaceTimeApplyInput): Promise<RaceTimeStorePlan> => {
+  if (rows.length === 0) return planRaceTimeStore(rows, []);
+  const pool: TargetPool = createTargetPool(
+    target === "local" ? localHistoryEnvironment(env) : env,
+    target,
+  );
+  try {
+    return apply
+      ? await writeFills(pool, rows)
+      : planRaceTimeStore(rows, await selectExisting(pool.pool, rows));
+  } finally {
+    await pool.pool.end();
+  }
+};
 
 export const runRaceTimeStore = async ({
   argv,
@@ -265,29 +301,18 @@ export const runRaceTimeStore = async ({
       )
     ).flat(),
   );
-  const pool: TargetPool = createTargetPool(
-    target === "local" ? localHistoryEnvironment(env) : env,
+  const plan: RaceTimeStorePlan = await applyRaceTimeRows({ env, target, rows, apply });
+  return {
+    status: "complete",
+    operation: apply ? "applied" : "planned",
     target,
-  );
-  try {
-    const plan: RaceTimeStorePlan =
-      apply && rows.length > 0
-        ? await writeFills(pool, rows)
-        : planRaceTimeStore(rows, rows.length === 0 ? [] : await selectExisting(pool.pool, rows));
-    return {
-      status: "complete",
-      operation: apply ? "applied" : "planned",
-      target,
-      archivedHorses: new Set(directories.map((name) => HORSE_DIRECTORY_PATTERN.exec(name)?.[1]))
-        .size,
-      parsedRaces: rows.length,
-      withTime: rows.filter((row) => row.raceTimeText !== null).length,
-      withLastThreeFurlongs: rows.filter((row) => row.lastThreeFurlongsSeconds !== null).length,
-      filled: plan.fills.length,
-      unmatched: plan.unmatched,
-      conflicts: plan.conflicts,
-    };
-  } finally {
-    await pool.pool.end();
-  }
+    archivedHorses: new Set(directories.map((name) => HORSE_DIRECTORY_PATTERN.exec(name)?.[1]))
+      .size,
+    parsedRaces: rows.length,
+    withTime: rows.filter((row) => row.raceTimeText !== null).length,
+    withLastThreeFurlongs: rows.filter((row) => row.lastThreeFurlongsSeconds !== null).length,
+    filled: plan.fills.length,
+    unmatched: plan.unmatched,
+    conflicts: plan.conflicts,
+  };
 };

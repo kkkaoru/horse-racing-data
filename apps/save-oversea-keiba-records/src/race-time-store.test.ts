@@ -5,6 +5,7 @@ import {
   raceTimeRow,
   raceTimeSeconds,
   runRaceTimeStore,
+  type RaceTimeRow,
 } from "./race-time-store";
 
 const ports = vi.hoisted(() => ({
@@ -77,17 +78,21 @@ it("raceTimeRow keeps only well-formed values", () => {
     raceTimeText: null,
     raceTimeSeconds: null,
     lastThreeFurlongsSeconds: null,
+    raceTimeSource: "netkeiba",
+    raceTimeKind: "measured",
   });
 });
 
 it("planRaceTimeStore fills empty columns, reports differing ones and counts unmatched races", () => {
-  const parsed = [
+  const parsed: RaceTimeRow[] = [
     {
       sourceHorseId: "h1",
       sourceRaceId: "r1",
       raceTimeText: "1:48.03",
       raceTimeSeconds: "108.03",
       lastThreeFurlongsSeconds: "35.1",
+      raceTimeSource: "netkeiba",
+      raceTimeKind: "measured",
     },
     {
       sourceHorseId: "h1",
@@ -95,6 +100,8 @@ it("planRaceTimeStore fills empty columns, reports differing ones and counts unm
       raceTimeText: "1:50.00",
       raceTimeSeconds: "110.00",
       lastThreeFurlongsSeconds: "36.0",
+      raceTimeSource: "netkeiba",
+      raceTimeKind: "measured",
     },
     {
       sourceHorseId: "h1",
@@ -102,6 +109,8 @@ it("planRaceTimeStore fills empty columns, reports differing ones and counts unm
       raceTimeText: null,
       raceTimeSeconds: null,
       lastThreeFurlongsSeconds: null,
+      raceTimeSource: "netkeiba",
+      raceTimeKind: "measured",
     },
   ];
   const plan = planRaceTimeStore(parsed, [
@@ -127,6 +136,8 @@ it("planRaceTimeStore reports a differing closing time", () => {
         raceTimeText: null,
         raceTimeSeconds: null,
         lastThreeFurlongsSeconds: "35.1",
+        raceTimeSource: "netkeiba",
+        raceTimeKind: "measured",
       },
     ],
     [
@@ -215,6 +226,8 @@ it("runRaceTimeStore applies fills in one locked transaction with a readback", a
     "1:48.03",
     "108.03",
     "35.1",
+    "netkeiba",
+    "measured",
   ]);
   expect(ports.release).toHaveBeenCalledTimes(1);
 });

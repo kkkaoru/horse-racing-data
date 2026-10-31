@@ -285,6 +285,26 @@ transaction with a readback. A horse whose page has no pedigree table is skipped
 (a source gap, never filled). A stored row that differs is kept as-is and only
 reported in `conflicts`. Sync `oversea_horse_pedigree` to the Catalog afterwards.
 
+### Race times and closing 3F
+
+```sh
+# netkeiba (archived horse pages; measured values only). Private cell indexes:
+OVERSEA_RACE_TIME_PROFILE_PATH=/private/race-time.json \
+  bun run history race-times-apply /private/history local --confirm-write
+# Overseas gaps from the secondary results-by-date pages (private profile; serial
+# proxy requests every 6 s, cached days are never refetched; a challenge page stops the run).
+OVERSEA_RACING_POST_PROFILE_PATH=/private/rp.json \
+  bun run history racing-post-times-fetch /private/missing-times.json /private/racingpost
+bun run history racing-post-times-apply /private/missing-times.json /private/racingpost /private/history local --confirm-write
+```
+
+Both fill only NULL columns and report differing stored values. `race_time_source` and
+`race_time_kind` record the origin: a winner's published time is `measured`; a placed
+runner's time is `estimated` as winner time + cumulative margin × 0.2 s per length. Those
+pages list only the first three finishers and publish no sectionals, so other runners keep
+no time and no closing 3F is ever estimated. The chart site with sectionals sits behind a
+bot challenge and is not used. Sync `oversea_horse_race_history` to the Catalog afterwards.
+
 ### Explicit production source-id mirroring
 
 ```sh
