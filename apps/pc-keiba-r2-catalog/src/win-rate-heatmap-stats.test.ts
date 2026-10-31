@@ -217,6 +217,18 @@ it("adds jockey-in-frame matching to similar SQL when includeJockeyFrame is enab
   expect(sql).toMatch("coalesce(stats.frame, '') = coalesce(cp.frame, '')");
 });
 
+it("counts 騎手枠別 from the jockey's own 3-year record at any venue", () => {
+  const sql = buildWinRateHeatmapSimilarQuery(config, {
+    ...jraFilters,
+    includeJockeyFrame: true,
+  });
+  const arm = sql.slice(sql.indexOf("ON tn.kind = 'jockeyFrame'"), sql.indexOf("stats AS ("));
+  expect(arm).toMatch("AND lpad(btrim(coalesce(se.wakuban, '')), 2, '0') = tn.frame");
+  expect(arm).toMatch("concat(se.kaisai_nen, se.kaisai_tsukihi) >= '20230715'");
+  expect(arm).not.toMatch("ra.keibajo_code");
+  expect(sql.match(/UNION ALL\n/gu)?.length).toBe(3);
+});
+
 it("filters similar history by current-race grade and track when those flags are on", () => {
   const sql = buildWinRateHeatmapSimilarQuery(config, {
     ...jraFilters,

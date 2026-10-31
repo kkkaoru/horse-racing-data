@@ -58,6 +58,7 @@ const EMPTY_FINISH_COUNTS: FinishCounts = { places: 0, shows: 0, starts: 0, wins
 const RACE_TITLE_GRADE_CODES = "('A', 'F')";
 const LISTED_OR_HIGHER_GRADE_CODES = "('A', 'B', 'C', 'D', 'F', 'G', 'H', 'L', 'S')";
 const UNGRADED_OPEN_JOKEN_CODE = "999";
+const JOCKEY_FRAME_YEARS = 3;
 export const BAN_EI_KEIBAJO_CODES: ReadonlyArray<string> = ["81", "82", "83", "84"];
 const CELL_CONDITION_LABEL_PAIRS: ReadonlyArray<readonly [string, string]> = [
   ["005", "1勝クラス"],
@@ -652,8 +653,9 @@ const similarHistoryArmSql = (
       AND ${namedOrUnknownSql("se.banushimei")} = tn.name
     )`
       : "";
+  // Domestic 騎手枠別 reads the jockey's own record (jockeyFrameHistoryArmSql).
   const jockeyFrameMatchSql =
-    includeJockeyFrameEnabled(filters) === true
+    includeJockeyFrameEnabled(filters) === true && usesOverseasGate(filters)
       ? ` OR (
       tn.kind = 'jockeyFrame'
       AND ${namedOrUnknownSql("se.kishumei_ryakusho")} = tn.name
@@ -686,6 +688,25 @@ const similarHistoryArmSql = (
   WHERE ${similarRaceFilterSql(filters)}
     AND ${rateStartPredicateSql(filters)}`;
 };
+
+// 騎手枠別 denominator: every start of the jockey from that frame over the past
+// JOCKEY_FRAME_YEARS, at any venue, not the current race's similar history.
+const jockeyFrameHistoryArmSql = (
+  env: R2SqlCatalogConfig,
+  filters: WinRateHeatmapStatsFilters,
+  tables: CatalogTableSet,
+): string => `SELECT
+    tn.kind,
+    tn.name,
+    coalesce(tn.frame, '') AS frame,
+    ${rateFinishPositionSql(filters)} AS finish_position
+  FROM ${tableName(env, tables.runnerTable)} se
+  INNER JOIN target_people tn
+    ON tn.kind = 'jockeyFrame'
+    AND ${namedOrUnknownSql("se.kishumei_ryakusho")} = tn.name
+    AND ${paddedTrackCodeSql("se.wakuban")} = tn.frame
+  WHERE ${historyDateSql({ ...filters, years: JOCKEY_FRAME_YEARS }, "se")}
+    AND ${rateStartPredicateSql(filters)}`;
 
 const aggregateSelectSql = (groupColumns: string): string =>
   `SELECT
@@ -1038,7 +1059,14 @@ target_people AS (
 ),
 matched_history AS (
   ${unionHistorySql(
-    historyTables(checked).map((tables) => similarHistoryArmSql(env, checked, tables)),
+    historyTables(checked).flatMap((tables) =>
+      withFrame && !usesOverseasGate(checked)
+        ? [
+            similarHistoryArmSql(env, checked, tables),
+            jockeyFrameHistoryArmSql(env, checked, tables),
+          ]
+        : [similarHistoryArmSql(env, checked, tables)],
+    ),
   )}
 ),
 stats AS (
