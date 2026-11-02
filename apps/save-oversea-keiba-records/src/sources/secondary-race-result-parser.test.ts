@@ -97,6 +97,14 @@ it("keeps a malformed published age unknown instead of guessing", () => {
   ).toBe(0);
 });
 
+it("keeps a blank published sex and age unknown", () => {
+  const [runner] = parseSecondaryRaceResult(
+    page(WINNER.replace("<td>セ5</td>", "<td> </td>")),
+    PROFILE,
+  ).runners;
+  expect([runner?.sex, runner?.age]).toStrictEqual(["", 0]);
+});
+
 it("rejects a page without a verifiable header", () => {
   expect(() => parseSecondaryRaceResult(page(WINNER, "Course 芝左 1600m"), PROFILE)).toThrow(
     "Race result header could not be verified.",

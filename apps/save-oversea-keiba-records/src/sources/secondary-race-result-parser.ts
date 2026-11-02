@@ -123,14 +123,16 @@ const parseRunner = (
   );
   const fields: SecondaryRaceResultFieldIndexes = profile.fields;
   const horseCell: string = requiredCell(values, fields.horseName);
-  const sexAge: RegExpExecArray | null = SEX_AGE_PATTERN.exec(
-    clean(requiredCell(values, fields.sexAge)),
-  );
-  if (sexAge === null) throw new Error("Race result row has invalid sex and age.");
+  const sexAgeText: string = clean(requiredCell(values, fields.sexAge));
+  // Some older pages leave sex/age blank for part of the field; keep it unknown ("" / 0).
+  const sexAge: RegExpExecArray | null = SEX_AGE_PATTERN.exec(sexAgeText);
+  if (sexAge === null && sexAgeText !== "")
+    throw new Error("Race result row has invalid sex and age.");
   const finishPositionText: string = clean(requiredCell(values, fields.finishPosition));
   const jockeyCell: string = requiredCell(values, fields.jockey);
   const trainerCell: string = requiredCell(values, fields.trainer);
-  const sex: string = String(sexAge[1]);
+  const sex: string = sexAge === null ? "" : String(sexAge[1]);
+  const ageText: string = sexAge === null ? "" : String(sexAge[2]);
   return {
     finishPosition: INTEGER_PATTERN.test(finishPositionText) ? Number(finishPositionText) : null,
     finishPositionText,
@@ -141,7 +143,7 @@ const parseRunner = (
     sourceHorseId: sourceId(horseCell, profile.horsePathPrefix),
     sex: SEX_LABELS.get(sex) ?? sex,
     // A malformed published age (e.g. "145") is kept unknown (0 → JV "00"), never guessed.
-    age: String(sexAge[2]).length <= MAX_AGE_DIGITS ? Number(sexAge[2]) : 0,
+    age: ageText !== "" && ageText.length <= MAX_AGE_DIGITS ? Number(ageText) : 0,
     weightCarriedKg:
       optionalNumber(requiredCell(values, fields.weightCarried), DECIMAL_PATTERN) ?? 0,
     jockeyName: clean(jockeyCell),
