@@ -31,13 +31,13 @@ const assertScope = (row: HistorySourceRow, plan: HistoryArchivePlan): void => {
   if (!matches) throw new Error("History archive contains a different source entity.");
 };
 
-// Observed source gaps: a missing finish, runner, race number (person rows) or rider (horse rows).
+// Observed source gaps: a missing finish, runner, race number (person rows) or rider/distance (horse rows).
 const isSourcePartial = (row: HistorySourceRow): boolean =>
   "personKind" in row
     ? row.finishPositionText.trim() === "" ||
       row.raceNumber.trim() === "" ||
       (row.sourceHorseId === null && (row.horseName === null || row.horseName.trim() === ""))
-    : row.jockeyName.trim() === "";
+    : row.jockeyName.trim() === "" || row.distanceMetres === null;
 
 // The source prints finish "0" for a runner without a placing; keep the text, drop the number.
 const withoutZeroFinish = (row: HistorySourceRow): HistorySourceRow =>

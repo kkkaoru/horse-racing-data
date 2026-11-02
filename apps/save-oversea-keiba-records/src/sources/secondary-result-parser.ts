@@ -38,7 +38,7 @@ export interface SecondaryHorseResult {
   readonly jockeyName: string;
   readonly sourceJockeyId: string | null;
   readonly surface: string;
-  readonly distanceMetres: number;
+  readonly distanceMetres: number | null;
   readonly going: string;
 }
 
@@ -67,6 +67,7 @@ const SPACE_PATTERN = /\s+/gu;
 const DATE_PATTERN = /^(\d{4})\/(\d{2})\/(\d{2})$/u;
 const DISTANCE_PATTERN = /^(\D+?)(\d+)$/u;
 const TRAILING_DISTANCE_PATTERN = /(\d+)$/u;
+const SURFACE_ONLY_PATTERN = /^\D{1,2}$/u;
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/u;
 
 const clean = (value: string): string =>
@@ -115,9 +116,12 @@ const raceDate = (html: string): string => {
   return `${match[1]}-${match[2]}-${match[3]}`;
 };
 
-const distance = (html: string): { surface: string; distanceMetres: number } => {
+// A surface printed without a distance (e.g. "芝") is a source gap: kept, distance unavailable.
+const distance = (html: string): { surface: string; distanceMetres: number | null } => {
   const value = clean(html);
   const match = DISTANCE_PATTERN.exec(value);
+  if (match === null && SURFACE_ONLY_PATTERN.test(value))
+    return { surface: value, distanceMetres: null };
   if (match === null) throw new Error(`Secondary result row has invalid distance: ${value}`);
   return { surface: match[1] ?? "", distanceMetres: Number(match[2]) };
 };

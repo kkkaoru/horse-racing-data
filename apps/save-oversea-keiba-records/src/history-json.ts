@@ -81,8 +81,7 @@ export const isHistorySourceRow = (value: unknown): value is HistorySourceRow =>
   return (
     strings(value, HORSE_TEXT) &&
     nonnegativeInteger(value.raceDaySequence) &&
-    typeof value.distanceMetres === "number" &&
-    Number.isFinite(value.distanceMetres) &&
+    nullableNumber(value.distanceMetres) &&
     nullableText(value.sourceJockeyId)
   );
 };

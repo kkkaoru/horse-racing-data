@@ -142,6 +142,12 @@ test("preserves a missing person-result surface as null", () => {
   ).toThrow("invalid distance");
 });
 
+test("keeps a horse result whose source prints a surface without a distance", () => {
+  expect(
+    parseSecondaryHorseResults(html(row().replace("Turf1600", "芝")), "H100", profile)[0],
+  ).toMatchObject({ surface: "芝", distanceMetres: null });
+});
+
 test("allows a horse result without a rider identity", () => {
   const noRider = row().replace('<a href="/rider/J100/">Rider A</a>', "Rider A");
   expect(parseSecondaryHorseResults(html(noRider), "H100", profile)[0]?.sourceJockeyId).toBeNull();

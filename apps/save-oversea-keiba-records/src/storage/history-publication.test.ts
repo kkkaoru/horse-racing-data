@@ -284,6 +284,7 @@ it.each([
   { jockeyName: " " },
   { surface: " " },
   { sourceJockeyId: " " },
+  { distanceMetres: null },
 ])("rejects invalid required horse fields %j", (patch) => {
   expect(() => buildHistoryStatements({ horses: [{ ...horse, ...patch }], people: [] })).toThrow(
     "Horse history has invalid required fields.",

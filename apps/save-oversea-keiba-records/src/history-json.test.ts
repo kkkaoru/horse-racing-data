@@ -219,7 +219,7 @@ it.each([
   { ...person, distanceMetres: "1800" },
   { ...horse, venue: null },
   { ...horse, raceDaySequence: 0.5 },
-  { ...horse, distanceMetres: null },
+  { ...horse, distanceMetres: "1800" },
   { ...horse, sourceJockeyId: 1 },
 ])("rejects invalid source row shape %j", (value) => {
   expect(isHistorySourceRow(value)).toBe(false);

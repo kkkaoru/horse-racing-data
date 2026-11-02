@@ -147,6 +147,37 @@ it("preserves a horse row without a published rider outside publication", () => 
   expect(result.sourcePartialRows).toStrictEqual([horseRow]);
   expect(result.input.horses).toHaveLength(1);
 });
+it("keeps a horse row without a published distance as source-partial", () => {
+  const horsePlan: HistoryArchivePlan = { ...plan, kind: "horse", sourceId: "horse1" };
+  const horseRow = {
+    sourceHorseId: "horse1",
+    sourceRaceId: "race1",
+    raceDate: "2025-06-27",
+    venue: "Venue",
+    raceDaySequence: 1,
+    raceName: "Race",
+    sourceRaceUrl: "https://example.test/event/race1",
+    finishPosition: 1,
+    finishPositionText: "1",
+    jockeyName: "Rider",
+    sourceJockeyId: null,
+    surface: "芝",
+    distanceMetres: null,
+    going: "稍",
+  };
+  const result = prepareHistoryArchive(
+    {
+      ...state,
+      planDigest: historyPlanDigest(horsePlan),
+      rows: [horseRow, { ...horseRow, sourceRaceId: "race2", distanceMetres: 2800 }],
+      publishedCount: 2,
+      checkpoint: { ...state.checkpoint, processedRows: 2 },
+    },
+    horsePlan,
+  );
+  expect(result.sourcePartialRows).toStrictEqual([horseRow]);
+  expect(result.input.horses).toHaveLength(1);
+});
 it("accepts a published horse name when no source horse ID is available", () => {
   const result = prepareHistoryArchive({ ...state, rows: [{ ...row, sourceHorseId: null }] }, plan);
   expect(result.input.people).toHaveLength(1);

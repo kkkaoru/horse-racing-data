@@ -112,6 +112,7 @@ const validateHorse = (row: SecondaryHorseResult): void => {
   if (
     !validId(row.sourceHorseId) ||
     !positiveInteger(row.raceDaySequence) ||
+    row.distanceMetres === null ||
     !positiveInteger(row.distanceMetres) ||
     row.venue.trim() === "" ||
     row.jockeyName.trim() === "" ||
