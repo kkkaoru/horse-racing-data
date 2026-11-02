@@ -12,6 +12,7 @@ import { runPostPositions, type PostPositionReport } from "./post-position-store
 import { runRaceTimeStore, type RaceTimeStoreReport } from "./race-time-store";
 import { runRacingPostTimes, type RacingPostTimesReport } from "./racing-post-times";
 import { runJvRaceTimes, type JvRaceTimesReport } from "./jv-race-times";
+import { runJraCardRaceTimes, type JraCardRaceTimesReport } from "./jra-card-race-times";
 import {
   createHistoryConnection,
   type HistoryConnection,
@@ -56,6 +57,7 @@ export const runHistoryCommand = async (
   | RaceTimeStoreReport
   | RacingPostTimesReport
   | JvRaceTimesReport
+  | JraCardRaceTimesReport
 > => {
   if (input.argv[0] === "collect" || input.argv[0] === "status" || input.argv[0] === "audit")
     return runHistoryCli(input);
@@ -72,6 +74,7 @@ export const runHistoryCommand = async (
     return runRaceTimeStore(input);
   if (String(input.argv[0]).startsWith("racing-post-")) return runRacingPostTimes(input);
   if (String(input.argv[0]).startsWith("jv-race-times-")) return runJvRaceTimes(input);
+  if (String(input.argv[0]).startsWith("jra-card-race-times-")) return runJraCardRaceTimes(input);
   const args: PublicationArguments = publicationArguments(input.argv);
   const connection: HistoryConnection = createHistoryConnection(input.env, args.target);
   try {

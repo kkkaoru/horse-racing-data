@@ -302,6 +302,22 @@ bun run history racing-post-times-apply /private/missing-times.json /private/rac
 bun run history jv-race-times-apply production --confirm-write
 ```
 
+The official JRA overseas card (fetched for `save`) lists each current runner's last four
+races with that horse's time. Read it first, so JRA is the primary source of the current runners'
+times; the card markup lives in a private profile (`runnerStart`, `pastRunStart`,
+`horseNumberPattern`, `datePattern`, `finishPattern`, `timePattern`, `lastThreeFurlongsPattern`):
+
+```sh
+OVERSEA_JRA_CARD_RACE_TIME_PROFILE_PATH=/private/jra-card-race-time.json \
+  bun run history jra-card-race-times-apply /private/cards/jra-07.utf8.html 2026 1103 B6 07 local --confirm-write
+```
+
+Runners map to netkeiba horses through the race's local `oversea_runner_source_id` rows, and a
+past run fills a stored history row only when exactly one row of that horse has the same date.
+The card prints a beaten runner's time as the winner's time plus the margin, so only a winner's
+time is `measured`; the others are `estimated` (`race_time_source` = `jra`). The card leaves
+closing 3F of overseas races empty, so none is invented.
+
 Both fill only NULL columns and report differing stored values. `race_time_source` and
 `race_time_kind` record the origin: a winner's published time is `measured`; a placed
 runner's time is `estimated` as winner time + cumulative margin × 0.2 s per length. The day
