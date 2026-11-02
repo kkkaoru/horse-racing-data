@@ -58,7 +58,7 @@ it("rejects duplicates and oversized mappings", () => {
     "Invalid overseas source mapping",
   );
   expect(() =>
-    parseOverseasRunnerMappings(Array.from({ length: 19 }, () => fixture.mappings[0])),
+    parseOverseasRunnerMappings(Array.from({ length: 41 }, () => fixture.mappings[0])),
   ).toThrow("Too many overseas source mappings");
 });
 it("qualifies arbitrary overseas race keys without touching domestic cards", () => {

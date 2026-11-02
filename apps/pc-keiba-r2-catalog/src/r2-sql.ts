@@ -22,7 +22,8 @@ const DATE_PATTERN = /^\d{8}$/u;
 const CODE_PATTERN = /^\d{2}$/u;
 const KETTO_TOROKU_BANGO_PATTERN = /^\d{10}$/u;
 const MIN_UMABAN: number = 1;
-const MAX_UMABAN: number = 18;
+// Overseas fields exceed the domestic 18 (Melbourne Cup 24, Grand National 40).
+const MAX_UMABAN: number = 40;
 // R2 SQL sometimes never answers a query that normally returns within
 // seconds, and far more often under concurrent load: on 2026-10-17 four
 // concurrent heatmap bloodline queries lost 25-50% of runs to a 60s timeout,
@@ -76,7 +77,7 @@ const RUNNER_COLUMNS = `
 const RUNNER_ENTRY_COUNT_COLUMN: string = `
     count(CASE
       WHEN nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL
-        AND try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) BETWEEN 1 AND 18
+        AND try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) BETWEEN 1 AND 40
       THEN 1 END
     ) OVER (PARTITION BY kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango) AS entry_count`;
 
@@ -185,7 +186,7 @@ const freshSourceConfig = (source: FreshRaceEntryFilters["source"]): RawSourceCo
 
 const freshActivePredicates = (): string[] => [
   "nullif(btrim(coalesce(ketto_toroku_bango, '')), '') IS NOT NULL",
-  "try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) BETWEEN 1 AND 18",
+  "try_cast(nullif(btrim(coalesce(umaban, '')), '') AS INT) BETWEEN 1 AND 40",
   "coalesce(btrim(ijo_kubun_code), '0') NOT IN ('1', '2')",
 ];
 
@@ -315,7 +316,7 @@ INNER JOIN ${config.prefix}_ra ra
   AND ra.keibajo_code = se.keibajo_code
   AND ra.race_bango = se.race_bango
 WHERE nullif(btrim(coalesce(se.ketto_toroku_bango, '')), '') IS NOT NULL
-  AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) BETWEEN 1 AND 18
+  AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) BETWEEN 1 AND 40
   AND try_cast(nullif(ra.kyori, '') AS INT) IS NOT NULL
   AND try_cast(nullif(ra.shusso_tosu, '') AS INT) IS NOT NULL
   AND try_cast(nullif(ra.keibajo_code, '') AS INT) IS NOT NULL

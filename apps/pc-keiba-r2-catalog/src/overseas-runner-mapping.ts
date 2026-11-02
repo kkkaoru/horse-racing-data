@@ -7,7 +7,7 @@ export interface OverseasRunnerMapping {
   gateNumber: number | null;
 }
 const PROVIDER_ID: RegExp = /^(?!0+$)[A-Za-z0-9]+$/u;
-const UMABAN: RegExp = /^(0[1-9]|1[0-8])$/u;
+const UMABAN: RegExp = /^(0[1-9]|[1-3][0-9]|40)$/u;
 
 export const isOverseasRunnerRace = (input: RaceRunnersReadInput): boolean =>
   input.source === "jra" && /^[A-Z][0-9A-Z]$/u.test(input.keibajoCode);
@@ -22,10 +22,10 @@ WHERE race_source = '${input.source}' AND source = 'netkeiba'
   AND keibajo_code = '${input.keibajoCode}'
   AND race_bango = '${input.raceBango}'
 ORDER BY umaban ASC
-LIMIT 19`;
+LIMIT 41`;
 
 export const parseOverseasRunnerMappings = (rows: unknown[]): OverseasRunnerMapping[] => {
-  if (rows.length > 18) throw new Error("Too many overseas source mappings");
+  if (rows.length > 40) throw new Error("Too many overseas source mappings");
   const seen: Set<string> = new Set();
   return rows.map((row) => {
     if (typeof row !== "object" || row === null || Array.isArray(row))

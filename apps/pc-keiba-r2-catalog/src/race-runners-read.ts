@@ -87,12 +87,13 @@ const IDENTIFIER: RegExp = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const DATE: RegExp = /^\d{8}$/u;
 const VENUE_CODE: RegExp = /^[0-9A-Z]{2}$/u;
 const RACE_NUMBER: RegExp = /^\d{2}$/u;
-const UMABAN: RegExp = /^(0[1-9]|1[0-8])$/u;
+const UMABAN: RegExp = /^(0[1-9]|[1-3][0-9]|40)$/u;
 const IDENTITY_COLUMN_COUNT: number = 8;
 const RUNNER_COLUMN_COUNT: number = 28;
 const ASCII_EDGE_SPACES: RegExp = /^ +| +$/gu;
-const MAX_RUNNERS: number = 18;
-const MAX_IDENTITIES: number = 19;
+// Overseas fields exceed the domestic 18 (Melbourne Cup 24, Grand National 40).
+const MAX_RUNNERS: number = 40;
+const MAX_IDENTITIES: number = 41;
 
 const validDate = (date: string): boolean => {
   if (!DATE.test(date)) return false;
@@ -130,7 +131,7 @@ export const buildRaceRunnersReadSql = (input: RaceRunnersReadInput): string => 
   const masterTable: string = input.source === "jra" ? "jvd_um" : "nvd_um";
   // Provisional JV rows coexist with confirmed rows for the same umaban. The
   // catalog mirror carries the same flag as ijo_kubun_code, and R2 SQL has no
-  // `~` operator, so the 01-18 window uses a numeric cast instead of a regex.
+  // `~` operator, so the 01-40 window uses a numeric cast instead of a regex.
   const provisionalFilter: string =
     input.source === "jra"
       ? "\n  AND coalesce(btrim(se.ijo_kubun_code), '0') NOT IN ('1', '2')"
@@ -161,7 +162,7 @@ WHERE se.kaisai_nen = '${input.date.slice(0, 4)}'
   AND se.kaisai_tsukihi = '${input.date.slice(4)}'
   AND se.keibajo_code = '${input.keibajoCode}'
   AND se.race_bango = '${input.raceBango}'${provisionalFilter}
-  AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) BETWEEN 1 AND 18
+  AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) BETWEEN 1 AND ${MAX_RUNNERS}
   AND nullif(btrim(coalesce(se.ketto_toroku_bango, '')), '') IS NOT NULL
 ORDER BY try_cast(nullif(se.umaban, '') AS INT) ASC, se.ketto_toroku_bango ASC
 LIMIT ${MAX_RUNNERS + 1}`;

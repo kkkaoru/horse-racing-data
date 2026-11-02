@@ -89,12 +89,12 @@ it("builds a JRA runner read with the provisional filter and bloodline join", ()
   expect(sql).toMatch("um.ketto_joho_01b AS sire_name");
   expect(sql).toMatch("AND coalesce(btrim(se.ijo_kubun_code), '0') NOT IN ('1', '2')");
   expect(sql).toMatch(
-    "AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) BETWEEN 1 AND 18",
+    "AND try_cast(nullif(btrim(coalesce(se.umaban, '')), '') AS INT) BETWEEN 1 AND 40",
   );
   expect(sql).toMatch(
     "ORDER BY try_cast(nullif(se.umaban, '') AS INT) ASC, se.ketto_toroku_bango ASC",
   );
-  expect(sql).toMatch("LIMIT 19");
+  expect(sql).toMatch("LIMIT 41");
   expect(sql).not.toMatch("regexp_replace");
   expect(sql).not.toMatch("oversea_runner_identity");
 });
@@ -166,7 +166,7 @@ it("builds the overseas identity read for JRA only", () => {
   expect(sql).toMatch("FROM pc_keiba.oversea_runner_identity");
   expect(sql).toMatch("WHERE race_source = 'jra'");
   expect(sql).toMatch("AND keibajo_code = '06'");
-  expect(sql).toMatch("LIMIT 19");
+  expect(sql).toMatch("LIMIT 41");
   expect(() => buildRaceRunnersIdentitySql(NAR)).toThrow(
     "Overseas identities exist for JRA races only",
   );
@@ -245,7 +245,7 @@ it("returns an empty runner list without identities for NAR", async () => {
 });
 
 it.each([
-  [{ ...runnerRow(), umaban: "19" }, "Invalid race runner umaban"],
+  [{ ...runnerRow(), umaban: "41" }, "Invalid race runner umaban"],
   [{ ...runnerRow(), umaban: "00" }, "Invalid race runner umaban"],
   [{ ...runnerRow(), ketto_toroku_bango: "" }, "Invalid race runner horse identity"],
   [{ ...runnerRow(), wakuban: 1 }, "Missing or invalid race runner field"],
@@ -277,7 +277,7 @@ it("rejects duplicate, unordered and oversized runner lists", async () => {
     readRaceRunners({
       input: JRA,
       query: async () =>
-        Array.from({ length: 19 }, (_unused, index) =>
+        Array.from({ length: 41 }, (_unused, index) =>
           runnerRow({
             umaban: String(index + 1).padStart(2, "0"),
             ketto_toroku_bango: `20211067${String(index).padStart(2, "0")}`,
