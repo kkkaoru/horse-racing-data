@@ -1013,7 +1013,7 @@ export const getRaceRunners = cache(
             -- Overseas starters can have genuine published numbers without a JV horse ID.
             -- Keep domestic/provisional exclusions and prefer a confirmed identity if present.
             and se.data_kubun <> '1'
-            and se.umaban ~ '^(0[1-9]|1[0-8])$'
+            and se.umaban ~ '^(0[1-9]|[1-3][0-9]|40)$'
             and se.ketto_toroku_bango ~ '^[0-9]{10}$'
             and (
               se.ketto_toroku_bango <> '0000000000'
@@ -3976,7 +3976,7 @@ export const getRaceTrainings = cache(
           and keibajo_code = ${keibajoCode}
           and race_bango = ${raceNumber}
           and data_kubun <> '1'
-          and umaban ~ '^(0[1-9]|1[0-8])$'
+          and umaban ~ '^(0[1-9]|[1-3][0-9]|40)$'
           and ketto_toroku_bango ~ '^[0-9]{10}$'
           and ketto_toroku_bango <> '0000000000'
       ),

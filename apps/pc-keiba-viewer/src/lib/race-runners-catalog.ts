@@ -68,9 +68,10 @@ const IDENTITY_FIELDS: readonly string[] = [
 const TIMEOUT_MS: number = 35_000;
 const ENDPOINT: string = "https://pc-keiba-r2-catalog.internal/v1/race-runners";
 const FAILURE: string = "Catalog race runners unavailable";
-const UMABAN: RegExp = /^(0[1-9]|1[0-8])$/u;
-const MAX_RUNNERS: number = 18;
-const MAX_IDENTITIES: number = 19;
+const UMABAN: RegExp = /^(0[1-9]|[1-3][0-9]|40)$/u;
+// Overseas fields exceed the domestic 18 (Melbourne Cup 24, Grand National 40).
+const MAX_RUNNERS: number = 40;
+const MAX_IDENTITIES: number = 41;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);

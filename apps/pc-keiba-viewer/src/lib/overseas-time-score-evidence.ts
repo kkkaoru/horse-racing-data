@@ -31,7 +31,7 @@ export const hasOverseasTimeScoreEvidence = (body: string): boolean => {
       if (
         !isRecord(runner) ||
         typeof runner.umaban !== "string" ||
-        !/^(0[1-9]|1[0-8])$/u.test(runner.umaban)
+        !/^(0[1-9]|[1-3][0-9]|40)$/u.test(runner.umaban)
       )
         return false;
       // Missing mappings are incomplete inputs, not a complete no-history result.

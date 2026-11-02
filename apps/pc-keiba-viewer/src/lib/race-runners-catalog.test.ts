@@ -86,6 +86,16 @@ it("leaves runners without an identity untouched", async () => {
   ).resolves.toStrictEqual([runner]);
 });
 
+it("reads an overseas field larger than the domestic 18", async () => {
+  const runners: Runner[] = Array.from({ length: 24 }, (_unused, index) => ({
+    ...runner,
+    umaban: String(index + 1).padStart(2, "0"),
+  }));
+  await expect(
+    readCatalogRaceRunners(bindingFor({ runners, identities: [] }).binding, query),
+  ).resolves.toStrictEqual(runners);
+});
+
 it("fails closed when the binding is unavailable", async () => {
   await expect(readCatalogRaceRunners(undefined, query)).rejects.toThrow(
     "Catalog race runners unavailable",
@@ -97,7 +107,7 @@ it.each([
   { body: { runners: [runner], identities: [] }, init: { status: 200, headers: {} } },
   { body: { runners: "nope", identities: [] } },
   { body: { runners: [runner] } },
-  { body: { runners: [{ ...runner, umaban: "19" }], identities: [] } },
+  { body: { runners: [{ ...runner, umaban: "41" }], identities: [] } },
   { body: { runners: [{ ...runner, kettoTorokuBango: "" }], identities: [] } },
   { body: { runners: [{ ...runner, bamei: 1 }], identities: [] } },
   { body: { runners: [{ ...runner, extra: "1" }], identities: [] } },
@@ -106,9 +116,9 @@ it.each([
   { body: { runners: [], identities: [{ ...identity, extra: 1 }] } },
   {
     body: {
-      runners: Array.from({ length: 19 }, (_unused, index) => ({
+      runners: Array.from({ length: 41 }, (_unused, index) => ({
         ...runner,
-        umaban: String((index % 18) + 1).padStart(2, "0"),
+        umaban: String((index % 40) + 1).padStart(2, "0"),
       })),
       identities: [],
     },
