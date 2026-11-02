@@ -10,6 +10,7 @@ import type { RaceTimeStoreReport } from "./race-time-store";
 import type { RacingPostTimesReport } from "./racing-post-times";
 import type { JvRaceTimesReport } from "./jv-race-times";
 import type { JraCardRaceTimesReport } from "./jra-card-race-times";
+import type { MissingRaceTimesReport } from "./missing-race-times";
 
 try {
   const result:
@@ -22,7 +23,8 @@ try {
     | RaceTimeStoreReport
     | RacingPostTimesReport
     | JvRaceTimesReport
-    | JraCardRaceTimesReport = await runHistoryCommand({
+    | JraCardRaceTimesReport
+    | MissingRaceTimesReport = await runHistoryCommand({
     argv: Bun.argv.slice(2),
     env: process.env,
     runtime: createHistoryCliRuntime(),

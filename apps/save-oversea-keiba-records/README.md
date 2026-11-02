@@ -293,6 +293,8 @@ OVERSEA_RACE_TIME_PROFILE_PATH=/private/race-time.json \
   bun run history race-times-apply /private/history local --confirm-write
 # Overseas gaps from the secondary results-by-date pages (private profile; serial
 # proxy requests every 6 s, cached days are never refetched; a challenge page stops the run).
+# Stored history races of one meeting's runners that still have no time (local, read-only):
+bun run history missing-race-times 2026 1103 B6 /private/missing-times.json
 OVERSEA_RACING_POST_PROFILE_PATH=/private/rp.json \
   bun run history racing-post-times-fetch /private/missing-times.json /private/racingpost
 # Full result pages for runners the day pages do not list (same course and distance only):

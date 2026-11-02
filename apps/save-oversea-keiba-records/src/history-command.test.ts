@@ -14,11 +14,13 @@ const ports = vi.hoisted(() => ({
   racingPost: vi.fn(),
   jvTimes: vi.fn(),
   jraCardTimes: vi.fn(),
+  missingTimes: vi.fn(),
 }));
 vi.mock("./race-time-store", () => ({ runRaceTimeStore: ports.raceTimes }));
 vi.mock("./racing-post-times", () => ({ runRacingPostTimes: ports.racingPost }));
 vi.mock("./jv-race-times", () => ({ runJvRaceTimes: ports.jvTimes }));
 vi.mock("./jra-card-race-times", () => ({ runJraCardRaceTimes: ports.jraCardTimes }));
+vi.mock("./missing-race-times", () => ({ runMissingRaceTimes: ports.missingTimes }));
 vi.mock("./post-position-store", () => ({ runPostPositions: ports.postPositions }));
 vi.mock("./source-id-mirror", () => ({ runSourceIdMirror: ports.sourceIds }));
 vi.mock("./history-cli", () => ({ runHistoryCli: ports.collect }));
@@ -139,6 +141,11 @@ it("routes jra-card-race-times-plan to the JRA card times", async () => {
     argv: ["jra-card-race-times-plan", "/c.html", "2026", "1103", "B6", "07", "local"],
   });
   expect(ports.jraCardTimes).toHaveBeenCalledTimes(1);
+  expect(ports.connect).not.toHaveBeenCalled();
+});
+it("routes missing-race-times to the missing time listing", async () => {
+  await runHistoryCommand({ ...input, argv: ["missing-race-times", "2026", "1103", "B6", "/o"] });
+  expect(ports.missingTimes).toHaveBeenCalledTimes(1);
   expect(ports.connect).not.toHaveBeenCalled();
 });
 it("routes jv-race-times-apply to the official JV times", async () => {
