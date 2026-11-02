@@ -124,9 +124,13 @@ const normalizeJockeyName = (text: string): string =>
 
 const normalizeHorseNumber = (value: string): string => String(Number(value));
 
+// Domestic JRA fields stop at 18, but JRA-sold overseas races are larger (Melbourne Cup 24,
+// Grand National 40).
+const MAX_HORSE_NUMBER = 40;
+
 const isValidHorseNumber = (value: string): boolean => {
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 18;
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= MAX_HORSE_NUMBER;
 };
 
 const isValidFrameNumber = (value: string): boolean => {

@@ -626,6 +626,15 @@ it("parseJraOddsByType tansho skips cancelled rows and rows lacking odds/num", (
   expect(result).toStrictEqual([{ combination: "2", odds: 4.6, rank: 1 }]);
 });
 
+it("parseJraOddsByType tansho keeps overseas horse numbers above 18", () => {
+  expect(
+    parseJraOddsByType(
+      "tansho",
+      `<table class="tanpuku"><tr><td class="num">24</td><td></td><td></td><td class="odds_tan"><strong>31.0</strong></td></tr></table>`,
+    ),
+  ).toStrictEqual([{ combination: "24", odds: 31, rank: 1 }]);
+});
+
 it("parseJraOddsByType fukusho skips rows missing horseNumber, fukusho cell, or numeric values", () => {
   const result = parseJraOddsByType(
     "fukusho",
