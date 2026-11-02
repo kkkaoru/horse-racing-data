@@ -38,6 +38,9 @@ const ANCHOR_PATTERN = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/giu;
 const JAPANESE_DATE_PATTERN = /(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/u;
 const JAPAN_POST_TIME_PATTERN =
   /日本時間\s*(\d{1,2})月\s*(\d{1,2})日(?:（[^）]*）|\([^)]*\))?\s*(\d{1,2})時\s*(\d{2})分/u;
+// Meeting pages list the betting open time (also 日本時間) before the labelled post time.
+const LABELLED_JAPAN_POST_TIME_PATTERN =
+  /発走予定時刻\s*日本時間\s*(\d{1,2})月\s*(\d{1,2})日(?:（[^）]*）|\([^)]*\))?\s*(\d{1,2})時\s*(\d{2})分/u;
 const GRADE_SUFFIX_PATTERN = /(?:G|JPN)\d$/iu;
 const RACE_NAME_PUNCTUATION_PATTERN = /[\s・･（）()]/gu;
 const KING_GEORGE_ROMAN_NUMERAL_PATTERN = /VI(?=世)/giu;
@@ -214,8 +217,9 @@ export const parseJraOverseasRacePage = (
   html: string,
   input: JraOverseasRaceResolverInput,
 ): JraOverseasRaceResolution | null => {
-  const pageText = normalizeText(html);
-  const postTime = pageText.match(JAPAN_POST_TIME_PATTERN);
+  const pageText = normalizeText(html.replace(/<!--[\s\S]*?-->/gu, " "));
+  const postTime =
+    pageText.match(LABELLED_JAPAN_POST_TIME_PATTERN) ?? pageText.match(JAPAN_POST_TIME_PATTERN);
   if (!postTime?.[1] || !postTime[2] || !postTime[3] || !postTime[4]) {
     return null;
   }

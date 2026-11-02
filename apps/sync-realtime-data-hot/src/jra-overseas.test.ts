@@ -321,6 +321,26 @@ it("parseJraOverseasRacePage extracts a split 発走予定時刻 block from the 
   });
 });
 
+it("parseJraOverseasRacePage skips the betting open time and commented-out times before the labelled post time", () => {
+  expect(
+    parseJraOverseasRacePage(
+      `
+        <div class="cell cap">発売時間</div>
+        <div class="break">日本時間11月3日（祝日・火曜）</div>
+        <div class="break">7時00分から発走予定時刻2分前（ネット馬券購入のみ）</div>
+        <div class="cap">発走予定時刻</div>
+        <div class="line">日本時間11月3日（祝日・火曜）13時00分</div>
+        <!-- <div class="line">日本時間<strong>11月2日（日曜）<span>7時25分</span></strong></div> -->
+        <a href="/JRADB/accessSD.html?CNAME=pk01dde0110820260101071/06">出馬表</a>
+      `,
+      { kaisaiNen: "2026", kaisaiTsukihi: "1103", kyosomeiHondai: "メルボルンカップ" },
+    ),
+  ).toStrictEqual({
+    debaUrl: "https://www.jra.go.jp/JRADB/accessSD.html?CNAME=pk01dde0110820260101071/06",
+    raceStartAtJst: "2026-11-03T13:00:00+09:00",
+  });
+});
+
 it("createJraOverseasRaceResolver matches ジャックルマロワ賞 from the official annual list", async () => {
   vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
     const url =
