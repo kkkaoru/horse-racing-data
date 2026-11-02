@@ -872,7 +872,7 @@ export const getRaceRunners = cache(
     return withDbQueryCache(
       [
         /^[A-Z][0-9A-Z]$/u.test(keibajoCode)
-          ? "getRaceRunners-overseas-v4-source-mapping"
+          ? "getRaceRunners-overseas-v5-up-to-40-runners"
           : "getRaceRunners",
         source,
         year,

@@ -416,7 +416,7 @@ it("getRaceRunners admits named overseas unknown-JV starters only without a conf
   executeMock.mockResolvedValue({ rows: [] });
   await getRaceRunners("jra", "2026", "09", "19", "A4", "05");
   expect(withDbQueryCacheMock.mock.calls[0]?.[0]).toStrictEqual([
-    "getRaceRunners-overseas-v4-source-mapping",
+    "getRaceRunners-overseas-v5-up-to-40-runners",
     "jra",
     "2026",
     "09",
