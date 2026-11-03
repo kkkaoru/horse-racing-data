@@ -1160,3 +1160,16 @@ it("reads exact Arc display labels without historical name aggregation", () => {
   ).toMatch(/SELECT umaban, category, name FROM current_bloodlines$/u);
   expect(() => buildArcBloodlineLabelsQuery(config, jraFilters)).toThrow("exact Arc");
 });
+
+it("deduplicates overseas bloodline history with min = max instead of count(DISTINCT)", () => {
+  const sql = buildWinRateHeatmapBloodlineQuery(config, {
+    ...jraFilters,
+    date: "20261103",
+    keibajoCode: "B6",
+    raceBango: "07",
+  });
+  expect(sql).toMatch(
+    "HAVING min(finish_position) = max(finish_position) AND min(name) = max(name)",
+  );
+  expect(sql).not.toMatch("count(DISTINCT finish_position)");
+});

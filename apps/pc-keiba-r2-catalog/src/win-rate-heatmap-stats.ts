@@ -848,10 +848,12 @@ ${isOverseasEvent(checked) ? "raw_history" : "matched_history"} AS (
 ),
 ${
   isOverseasEvent(checked)
-    ? `matched_history AS (
+    ? // min = max keeps single-valued groups like count(DISTINCT) = 1, which R2 SQL refused
+      // with "scan budget exceeded" for the Melbourne Cup (2026-11-03).
+      `matched_history AS (
   SELECT kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban, category, min(name) AS name, min(finish_position) AS finish_position
   FROM raw_history GROUP BY kaisai_nen, kaisai_tsukihi, keibajo_code, race_bango, umaban, category
-  HAVING count(DISTINCT finish_position) = 1 AND count(DISTINCT name) = 1
+  HAVING min(finish_position) = max(finish_position) AND min(name) = max(name)
 ),`
     : ""
 }
