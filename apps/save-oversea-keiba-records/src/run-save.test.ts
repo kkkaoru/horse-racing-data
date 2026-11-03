@@ -9,6 +9,7 @@ import {
   createMasterLookupRunnerFromExecutor,
   parseSaveCliArgs,
   runSave,
+  withJraGates,
   type LoggerPort,
   type RunSavePorts,
   type SaveQueryOutcome,
@@ -20,8 +21,28 @@ import {
   type SecondarySourceMarkupProfile,
 } from "./sources/secondary-source-parser";
 import type { FileReadPort, HtmlFetchPort } from "./sources/source-loader";
+import type { ParsedRunner } from "./types";
 
 const JRA_RACECARD_ID: string = "pk01dde0110420260101051";
+const JRA_GATE_RUNNER: ParsedRunner = {
+  horseNumber: 1,
+  gate: 1,
+  horseName: "Runner",
+  sex: "牡",
+  age: 4,
+  coatColour: "鹿",
+  weightCarriedKg: 57,
+  jockeyAbbrev: "",
+  trainerAbbrev: "",
+  trainerCountry: "",
+  owner: "",
+  winOdds: null,
+  popularity: null,
+  formRecord: "",
+  sire: "",
+  dam: "",
+  damsire: "",
+};
 const SECONDARY_RACE_ID: string = "20260725A605";
 const VENUE_CODE: string = "A6";
 const RACE_NUMBER: string = "05";
@@ -1879,4 +1900,44 @@ test("runSave --apply marks a newly scratched runner 取消 inside the write tra
       .filter((statement) => statement.values[4] === "スクラッチホース")
       .map((statement) => statement.text.split(" ").slice(0, 2).join(" ")),
   ).toStrictEqual(["UPDATE oversea_runner_source_id", "UPDATE jvd_se"]);
+});
+
+test("withJraGates takes the JRA card stall for the source-id gate when it publishes one", () => {
+  expect(
+    withJraGates(
+      [
+        {
+          horseNumber: 6,
+          gate: 8,
+          horseName: "A",
+          horseId: "h6",
+          jockeyId: null,
+          trainerId: null,
+          trainerAffiliation: null,
+        },
+        {
+          horseNumber: 9,
+          gate: 6,
+          horseName: "B",
+          horseId: "h9",
+          jockeyId: null,
+          trainerId: null,
+          trainerAffiliation: null,
+        },
+        {
+          horseNumber: null,
+          gate: 3,
+          horseName: "C",
+          horseId: "hx",
+          jockeyId: null,
+          trainerId: null,
+          trainerAffiliation: null,
+        },
+      ],
+      [
+        { ...JRA_GATE_RUNNER, horseNumber: 6, gate: 7 },
+        { ...JRA_GATE_RUNNER, horseNumber: 3, gate: 0 },
+      ],
+    ).map((runner) => runner.gate),
+  ).toStrictEqual([7, 6, 3]);
 });

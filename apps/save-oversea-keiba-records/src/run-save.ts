@@ -491,6 +491,24 @@ const toJraReconcileRunner = (runner: ParsedJraRace["runners"][number]): JraReco
   damsire: runner.damsire,
 });
 
+// The JRA card is authoritative for stalls: on race day it renumbers them after a scratch
+// before the secondary card does, so its gate replaces the secondary one when published.
+export const withJraGates = (
+  runners: readonly SecondarySourceRunner[],
+  jraRunners: readonly ParsedJraRace["runners"][number][],
+): SecondarySourceRunner[] => {
+  const jraGates: ReadonlyMap<number, number> = new Map(
+    jraRunners
+      .filter((runner) => runner.gate > 0)
+      .map((runner): [number, number] => [runner.horseNumber, runner.gate]),
+  );
+  return runners.map((runner) => ({
+    ...runner,
+    gate:
+      (runner.horseNumber === null ? undefined : jraGates.get(runner.horseNumber)) ?? runner.gate,
+  }));
+};
+
 const normalizeRunnerName = (value: string): string => value.normalize("NFKC").replace(/\s+/gu, "");
 
 const buildUniqueJraRunnerNameMap = (
@@ -870,7 +888,7 @@ export const runSave = async (input: RunSaveInput): Promise<RunSaveResult> => {
   });
 
   const overseaPlan: OverseaRunnerPersistPlan = planOverseaRunnerPersist({
-    runners: secondaryParsed.runners,
+    runners: withJraGates(secondaryParsed.runners, jraRace.runners),
     raceDate: jraRace.date,
     venueCode: args.venueCode,
     raceNumber: args.raceNumber,
