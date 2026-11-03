@@ -293,6 +293,16 @@ const CONDITION_ANALYSIS_RELAX_KEYS: ReadonlyArray<ConditionAnalysisRelaxKey> = 
   "includeMonthWindow",
 ];
 
+const TITLE_ONLY_CELL_FLAGS: FinishPredictionDimensionFlags = {
+  condition: false,
+  distance: false,
+  grade: false,
+  keibajo: false,
+  kyosoJoken: false,
+  kyosoShubetsu: false,
+  raceName: true,
+  track: false,
+};
 const RATE_STATS_FALLBACK_TIMEOUT_MS = 6_000;
 const OVERSEAS_BLOODLINE_MINIMUM_STARTS = 20;
 const OVERSEAS_SIMILAR_STATS_MINIMUM_STARTS = 20;
@@ -803,6 +813,16 @@ const getClassConditionLabel = (race: RaceDetail): string | null => {
 
 const isListedOrHigher = (race: RaceDetail): boolean => isListedOrHigherGradeCode(race.gradeCode);
 
+const hasExplicitAnalysisCell = (query: DetailSectionParams["query"]): boolean =>
+  Object.values(ANALYSIS_CELL_PARAM_NAMES).some((name) => query[name] !== undefined);
+
+// A NAR graded title cell (JBC rotates venues and distances) compares its past editions only.
+const readsTitleCellAtEveryVenue = (
+  race: RaceDetail,
+  flags: FinishPredictionDimensionFlags,
+  query: DetailSectionParams["query"],
+): boolean => race.source === "nar" && flags.raceName && !hasExplicitAnalysisCell(query);
+
 const getStatsClassConditionLabel = (race: RaceDetail): string | null => {
   if (race.source === "jra" && isListedOrHigher(race)) {
     const label = getGradeLabel(race.gradeCode);
@@ -1169,6 +1189,15 @@ export const getDetailStatsContext = async ({
   const defaultBloodlineStatsYears = 10;
   const defaultStatsIncludeAge = !getAgeLabel(race.kyosoShubetsuCode).includes("4歳以上");
   const defaultSimilarStatsIncludeSex = raceSymbolLabel !== "牝馬限定";
+  const includesRaceTitle = (prefix: string): boolean =>
+    getDefaultFlag(
+      getStatsQueryParam(query, prefix, "statsRaceTitle") ??
+        getStatsQueryParam(query, prefix, "statsRaceName"),
+      Boolean(raceNameFilterLabels.title),
+    );
+  // NAR graded titles such as JBC move between venues; their past editions are the title.
+  const readsTitleAtEveryVenue = (prefix: string): boolean =>
+    race.source === "nar" && isListedOrHigher(race) && includesRaceTitle(prefix);
   const buildStatsSettings = (
     prefix: string,
     defaultYearsForPrefix: number | null,
@@ -1203,11 +1232,7 @@ export const getDetailStatsContext = async ({
         getStatsQueryParam(query, prefix, "statsRaceName"),
       Boolean(raceNameFilterLabels.subtitle),
     ),
-    includeRaceTitle: getDefaultFlag(
-      getStatsQueryParam(query, prefix, "statsRaceTitle") ??
-        getStatsQueryParam(query, prefix, "statsRaceName"),
-      Boolean(raceNameFilterLabels.title),
-    ),
+    includeRaceTitle: includesRaceTitle(prefix),
     includeRunnerCount: false,
     includeSex: getDefaultFlag(getStatsQueryParam(query, prefix, "statsSex"), defaultIncludeSex),
     includeTrackCode: false,
@@ -1230,7 +1255,7 @@ export const getDetailStatsContext = async ({
             (prefix === "analysis"
               ? getStatsQueryParam(query, "similar", "statsVenue")
               : undefined),
-          true,
+          !readsTitleAtEveryVenue(prefix),
         ),
     includeWeight: getFlag(getStatsQueryParam(query, prefix, "statsWeight")),
     runnerCount: null,
@@ -1305,14 +1330,14 @@ export const getDetailStatsContext = async ({
     query,
     source: race.source,
   });
-  const conditionAnalysisSettings: SimilarRaceStatsSettings = {
-    ...buildCellMatchingStatsSettings({
-      classConditionName: statsClassConditionLabel,
-      flags: analysisCellFlags,
-      sourceScope: getStatsSourceScope(query, "analysis"),
-      years: getStatsYears(getStatsQueryParam(query, "analysis", "statsYears"), null),
-    }),
-  };
+  const conditionAnalysisSettings: SimilarRaceStatsSettings = buildCellMatchingStatsSettings({
+    classConditionName: statsClassConditionLabel,
+    flags: readsTitleCellAtEveryVenue(race, analysisCellFlags, query)
+      ? TITLE_ONLY_CELL_FLAGS
+      : analysisCellFlags,
+    sourceScope: getStatsSourceScope(query, "analysis"),
+    years: getStatsYears(getStatsQueryParam(query, "analysis", "statsYears"), null),
+  });
   const cellGradeLabel = getGradeLabel(race.gradeCode, race.source);
   const cellTrackLabel =
     banEiRace || race.trackCode === null || race.trackCode === ""

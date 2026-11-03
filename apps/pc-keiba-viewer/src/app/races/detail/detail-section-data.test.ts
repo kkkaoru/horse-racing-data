@@ -2932,6 +2932,64 @@ it("recovers known JRA pedigrees when the ten-year catalog window returns empty"
   });
 });
 
+it("reads a graded NAR title such as JBC from past editions at every venue", async () => {
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({ bloodlineRows: [], similarRows: [] });
+  getRaceTimeStatsMock.mockResolvedValue({ raceCount: 0 });
+  getPayoutStatsMock.mockResolvedValue([]);
+  getFinishPositionStatsMock.mockResolvedValue([]);
+  getFrameStatsMock.mockResolvedValue([]);
+  getWeightClassStatsMock.mockResolvedValue([]);
+  getCarriedWeightClassStatsMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getRaceDetailMock.mockResolvedValue({
+    ...NAR_RACE,
+    gradeCode: "A",
+    kyosomeiHondai: "ＪＢＣクラシック",
+  });
+  getRaceRunnersMock.mockResolvedValue([]);
+  await getDetailSectionPayload("win-rate-heatmap", {
+    day: "03",
+    keibajoCode: "46",
+    month: "11",
+    query: {},
+    raceNumber: "09",
+    raceSource: "nar",
+    year: "2026",
+  });
+  expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toMatchObject({
+    includeConditionKey: false,
+    includeDistance: false,
+    includeRaceTitle: true,
+    includeTrackCode: false,
+    includeVenue: false,
+  });
+});
+
+it("keeps an ungraded NAR title at its own venue", async () => {
+  fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({ bloodlineRows: [], similarRows: [] });
+  getRaceTimeStatsMock.mockResolvedValue({ raceCount: 0 });
+  getPayoutStatsMock.mockResolvedValue([]);
+  getFinishPositionStatsMock.mockResolvedValue([]);
+  getFrameStatsMock.mockResolvedValue([]);
+  getWeightClassStatsMock.mockResolvedValue([]);
+  getCarriedWeightClassStatsMock.mockResolvedValue([]);
+  getHorseRaceResultsMock.mockResolvedValue([]);
+  getRaceDetailMock.mockResolvedValue(NAR_RACE);
+  getRaceRunnersMock.mockResolvedValue([]);
+  await getDetailSectionPayload("win-rate-heatmap", {
+    day: "03",
+    keibajoCode: "55",
+    month: "11",
+    query: {},
+    raceNumber: "09",
+    raceSource: "nar",
+    year: "2026",
+  });
+  expect(fetchWinRateHeatmapStatsFromCatalogMock.mock.calls[0]?.[0]).toMatchObject({
+    includeVenue: true,
+  });
+});
+
 it("keeps names-only heatmap rows when the optional bloodline catalog fails", async () => {
   fetchWinRateHeatmapStatsFromCatalogMock.mockResolvedValue({
     bloodlineRows: [],
