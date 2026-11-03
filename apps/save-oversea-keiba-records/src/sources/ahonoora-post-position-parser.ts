@@ -1,5 +1,6 @@
 // This file runs with Bun. Parses ahonoora.com race-history pages (Shift_JIS) for post positions.
 // Markup taken from the live pages, e.g. https://ahonoora.com/bcclassic.html and bcclassic_2025.html.
+// Pages saved through the browser proxy have quoted attributes, so quotes are optional.
 import iconv from "iconv-lite";
 
 export interface AhonooraRunner {
@@ -21,12 +22,12 @@ export interface AhonooraRace {
 const SOURCE_ENCODING: string = "cp932";
 const SERIES_PATTERN: RegExp = /^[a-z0-9]+$/u;
 // The text right before the red grade mark; older pages wrap it in decorative ■ fonts.
-const TITLE_PATTERN: RegExp = /([^<>]+?)\s*<FONT COLOR=RED>\(G/iu;
+const TITLE_PATTERN: RegExp = /([^<>]+?)\s*<FONT COLOR="?RED"?>\(G/iu;
 // "2025/11/1　" on current pages, "2009.11. 7　" on older ones.
 const DATE_PATTERN: RegExp = /(\d{4})[./](\d{1,2})[./]\s?(\d{1,2})\s*　/u;
-const HEADER_PATTERN: RegExp = /<TR[^>]*bgcolor=silver[^>]*>(.*?)<\/TR>/isu;
+const HEADER_PATTERN: RegExp = /<TR[^>]*bgcolor="?silver"?[^>]*>(.*?)<\/TR>/isu;
 const ROW_PATTERN: RegExp =
-  /<tr align=center(?: bgcolor=\w+)?>(.*?)(?=<tr|<\/TBODY>|<\/TABLE>)/gisu;
+  /<tr align="?center"?(?: bgcolor="?\w+"?)?>(.*?)(?=<tr|<\/TBODY>|<\/TABLE>)/gisu;
 const CELL_SPLIT: RegExp = /<td[^>]*>/iu;
 const TAG_PATTERN: RegExp = /<[^>]+>/gu;
 const FINISH_PATTERN: RegExp = /^(\d+)着$/u;

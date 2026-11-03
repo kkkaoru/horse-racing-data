@@ -63,6 +63,24 @@ it("reads the older layout without a horse-number column and keeps unknown cells
   });
 });
 
+it("reads a page saved through the browser proxy with quoted attributes", () => {
+  expect(
+    parseAhonooraRace(`<big>メルボルンカップ <font color="RED">(GI)</font></big></small></b></center><small>
+2023/11/7　豪・フレミントン7R　3歳以上　芝3200m（左）　稍重</small>
+<table border="" bgcolor="LIGHTYELLOW"><tbody><tr align="center" bgcolor="silver"><td width="35">着順</td><td width="35">枠順</td><td>馬名</td><td>性齢</td><td width="35">斤量</td></tr>
+<tr align="center" bgcolor="lightgreen"><td>1着</td><td>4番</td><td><b>Without A Fight</b></td><td>セン6</td><td>56</td></tr>
+<tr align="center"><td>2着</td><td>13番</td><td><b>Soulcombe</b></td><td>セン5</td><td>53.5</td></tr>
+</tbody></table>`),
+  ).toStrictEqual({
+    date: "20231107",
+    title: "メルボルンカップ",
+    runners: [
+      { finish: 1, umaban: null, gate: 4, sexCode: "3", age: 6, weightKg: 56 },
+      { finish: 2, umaban: null, gate: 13, sexCode: "3", age: 5, weightKg: 53.5 },
+    ],
+  });
+});
+
 it("fails closed on pages it cannot read safely", () => {
   expect(() => parseAhonooraRace("<html></html>")).toThrow(
     "Ahonoora race page has no title or date.",
