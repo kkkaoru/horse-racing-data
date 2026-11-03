@@ -136,6 +136,18 @@ test("refuses a mismatched field count", () => {
     "Active runner count does not match the race",
   );
 });
+test("sends a scratched runner row that the starter count leaves out", () => {
+  const plan = buildProductionRequest({
+    ...INPUT,
+    runners: [
+      { ...RUNNER, ijo_kubun_code: null },
+      { ...RUNNER, umaban: "09", ijo_kubun_code: "1" },
+    ],
+  });
+  expect(plan.stages.map((stage) => JSON.parse(stage.content).records.length)).toStrictEqual([
+    1, 2,
+  ]);
+});
 test("refuses rows from another race", () => {
   expect(() =>
     buildProductionRequest({ ...INPUT, runners: [{ ...RUNNER, race_bango: "06" }] }),

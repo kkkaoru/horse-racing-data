@@ -59,6 +59,14 @@ const RACE_KEY_FIELDS: readonly string[] = [
 ];
 const RUN_ID_PATTERN: RegExp = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const MAX_RUNNERS: number = 40;
+// JV ijo_kubun_code: 1 取消, 2 除外 and 3 競走除外 never start.
+const NON_STARTER_CODES: ReadonlySet<string> = new Set(["1", "2", "3"]);
+
+// shusso_tosu counts starters; a 取消/除外 runner row is still sent so production marks it too.
+const startersOf = (
+  runners: ProductionRequestInput["runners"],
+): ProductionRequestInput["runners"] =>
+  runners.filter((row) => !NON_STARTER_CODES.has(String(row.ijo_kubun_code ?? "").trim()));
 
 const validateRequest = (input: ProductionRequestInput): string => {
   const date: string = `${input.race.kaisai_nen}${input.race.kaisai_tsukihi}`;
@@ -84,7 +92,7 @@ const validateRequest = (input: ProductionRequestInput): string => {
   if (
     input.runners.length < 1 ||
     input.runners.length > MAX_RUNNERS ||
-    Number(input.race.shusso_tosu) !== input.runners.length
+    Number(input.race.shusso_tosu) !== startersOf(input.runners).length
   )
     throw new Error("Active runner count does not match the race");
   if (
