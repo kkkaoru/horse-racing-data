@@ -1040,18 +1040,18 @@ it("reads only unambiguous current source-qualified pedigree and preserves nativ
       "CREATE TABLE pc_keiba.oversea_runner_source_id AS SELECT *, 'jra' AS race_source, 'netkeiba' AS source, '000a029d42' AS source_horse_id FROM pc_keiba.jvd_se",
     );
     await connection.run(
-      "CREATE TABLE pc_keiba.oversea_horse_pedigree (source VARCHAR, source_horse_id VARCHAR, sire_name VARCHAR, sire_sire_name VARCHAR, dam_sire_name VARCHAR)",
+      "CREATE TABLE pc_keiba.oversea_horse_pedigree (source VARCHAR, source_horse_id VARCHAR, sire_source_id VARCHAR, sire_name VARCHAR, sire_sire_name VARCHAR, dam_source_id VARCHAR, dam_sire_source_id VARCHAR, dam_sire_name VARCHAR)",
     );
     const query: string = buildWinRateHeatmapKnownBloodlineCountQuery(config, filters);
     // R2 SQL rejects the zero-column UNION projection produced by count(*).
     expect(query).toMatch(/SELECT count\(name\) AS known\nFROM current_bloodlines/u);
     expect((await connection.runAndReadAll(query)).getRowObjects()).toStrictEqual([{ known: 0n }]);
     await connection.run(
-      "INSERT INTO pc_keiba.oversea_horse_pedigree VALUES ('other','000a029d42','Wrong',NULL,NULL)",
+      "INSERT INTO pc_keiba.oversea_horse_pedigree VALUES ('other','000a029d42',NULL,'Wrong',NULL,NULL,NULL,NULL)",
     );
     expect((await connection.runAndReadAll(query)).getRowObjects()).toStrictEqual([{ known: 0n }]);
     await connection.run(
-      "INSERT INTO pc_keiba.oversea_horse_pedigree VALUES ('netkeiba','000a029d42','Sea The Stars','Cape Cross','Selkirk')",
+      "INSERT INTO pc_keiba.oversea_horse_pedigree VALUES ('netkeiba','000a029d42','000a0s0001','Sea The Stars','Cape Cross','000a0d0001','000a0x0001','Selkirk')",
     );
     expect((await connection.runAndReadAll(query)).getRowObjects()).toStrictEqual([{ known: 3n }]);
     const namesQuery: string = query.replace(
@@ -1065,6 +1065,19 @@ it("reads only unambiguous current source-qualified pedigree and preserves nativ
       { name: "Cape Cross" },
       { name: "Sea The Stars" },
       { name: "Selkirk" },
+    ]);
+    // Deeper ancestors come from the sire, dam and dam-sire rows.
+    await connection.run(
+      "INSERT INTO pc_keiba.oversea_horse_pedigree VALUES ('netkeiba','000a0s0001',NULL,'Cape Cross','Green Desert',NULL,NULL,'Bustino'),('netkeiba','000a0d0001',NULL,'Selkirk',NULL,NULL,NULL,'Darshaan'),('netkeiba','000a0x0001',NULL,'Sharpen Up',NULL,NULL,NULL,'Hawaii')",
+    );
+    expect((await connection.runAndReadAll(namesQuery)).getRowObjects()).toStrictEqual([
+      { name: "Bustino" },
+      { name: "Cape Cross" },
+      { name: "Darshaan" },
+      { name: "Green Desert" },
+      { name: "Sea The Stars" },
+      { name: "Selkirk" },
+      { name: "Sharpen Up" },
     ]);
     await connection.run(
       "INSERT INTO pc_keiba.oversea_runner_source_id SELECT * FROM pc_keiba.oversea_runner_source_id",

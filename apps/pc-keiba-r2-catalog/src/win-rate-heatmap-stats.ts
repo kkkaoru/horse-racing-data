@@ -529,19 +529,35 @@ const CURRENT_PROFILE_COLUMNS: ReadonlyMap<string, string> = new Map([
   ["sire", "sire_name"],
   ["sireSire", "sire_sire_name"],
   ["damSire", "dam_sire_name"],
+  ["sireSireSire", "sire_sire_sire_name"],
+  ["sireDamSire", "sire_dam_sire_name"],
+  ["damSireSire", "dam_sire_sire_name"],
+  ["damDamSire", "dam_dam_sire_name"],
 ]);
+// Deeper ancestors are read from the parents' own rows (sire, dam and dam-sire profiles).
+const PROFILE_SELECT_SQL: string = `min(p.sire_name) AS sire_name,
+    min(p.sire_sire_name) AS sire_sire_name, min(p.dam_sire_name) AS dam_sire_name,
+    min(ps.sire_sire_name) AS sire_sire_sire_name, min(ps.dam_sire_name) AS sire_dam_sire_name,
+    min(pds.sire_name) AS dam_sire_sire_name, min(pd.dam_sire_name) AS dam_dam_sire_name`;
 const usesCurrentProfile = isOverseasEvent;
+
+const profileJoinsSql = (env: R2SqlCatalogConfig): string => {
+  const pedigree: string = tableName(env, "oversea_horse_pedigree");
+  return `LEFT JOIN ${pedigree} p
+    ON p.source = mapping.source AND p.source_horse_id = mapping.source_horse_id
+  LEFT JOIN ${pedigree} ps ON ps.source = p.source AND ps.source_horse_id = p.sire_source_id
+  LEFT JOIN ${pedigree} pd ON pd.source = p.source AND pd.source_horse_id = p.dam_source_id
+  LEFT JOIN ${pedigree} pds ON pds.source = p.source AND pds.source_horse_id = p.dam_sire_source_id`;
+};
 
 // Exact provider identity only; duplicate mappings/profiles are unavailable.
 const currentProfileJoinSql = (
   env: R2SqlCatalogConfig,
   filters: WinRateHeatmapStatsFilters,
 ): string => `LEFT JOIN (
-  SELECT mapping.umaban, min(p.sire_name) AS sire_name,
-    min(p.sire_sire_name) AS sire_sire_name, min(p.dam_sire_name) AS dam_sire_name
+  SELECT mapping.umaban, ${PROFILE_SELECT_SQL}
   FROM ${tableName(env, "oversea_runner_source_id")} mapping
-  LEFT JOIN ${tableName(env, "oversea_horse_pedigree")} p
-    ON p.source = mapping.source AND p.source_horse_id = mapping.source_horse_id
+  ${profileJoinsSql(env)}
   WHERE mapping.source = 'netkeiba' AND mapping.race_source = 'jra'
     AND mapping.kaisai_nen = '${filters.date.slice(0, 4)}' AND mapping.kaisai_tsukihi = '${filters.date.slice(4)}'
     AND mapping.keibajo_code = '${filters.keibajoCode}' AND mapping.race_bango = '${filters.raceBango}'
@@ -553,11 +569,9 @@ const currentProfileJoinSql = (
 // Historical profiles are joined by source plus full native event/runner identity.
 const historyProfileJoinSql = (env: R2SqlCatalogConfig): string => `LEFT JOIN (
   SELECT mapping.kaisai_nen, mapping.kaisai_tsukihi, mapping.keibajo_code,
-    mapping.race_bango, mapping.umaban, min(p.sire_name) AS sire_name,
-    min(p.sire_sire_name) AS sire_sire_name, min(p.dam_sire_name) AS dam_sire_name
+    mapping.race_bango, mapping.umaban, ${PROFILE_SELECT_SQL}
   FROM ${tableName(env, "oversea_runner_source_id")} mapping
-  LEFT JOIN ${tableName(env, "oversea_horse_pedigree")} p
-    ON p.source = mapping.source AND p.source_horse_id = mapping.source_horse_id
+  ${profileJoinsSql(env)}
   WHERE mapping.source = 'netkeiba' AND mapping.race_source = 'jra'
     AND regexp_match(mapping.source_horse_id, '^[0-9a-z]{10}$') IS NOT NULL
     AND regexp_match(mapping.source_horse_id, '[1-9a-z]') IS NOT NULL
