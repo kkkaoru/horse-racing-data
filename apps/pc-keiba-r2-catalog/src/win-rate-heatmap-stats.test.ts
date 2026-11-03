@@ -145,6 +145,27 @@ it("builds finish-position cell-router distance bands for JRA and NAR", () => {
   expect(narBand).toMatch("WHEN cr.kyori_int <= 1800 THEN 'mile'");
 });
 
+it("drops the distance band for a race title read across venues", () => {
+  expect(
+    cellRouterDistanceBandFilterSql({
+      ...jraFilters,
+      includeRaceTitle: true,
+      includeVenue: false,
+      keibajoCode: "46",
+      source: "nar",
+    }),
+  ).toBe("");
+  expect(
+    cellRouterDistanceBandFilterSql({
+      ...jraFilters,
+      includeRaceTitle: true,
+      includeVenue: true,
+      keibajoCode: "46",
+      source: "nar",
+    }),
+  ).toMatch("WHEN cr.kyori_int <= 1500 THEN 'extended_sprint'");
+});
+
 it("treats historic Ban-ei venues as the same circuit", () => {
   expect(isBanEiKeibajo("81")).toBe(true);
   expect(isBanEiKeibajo("82")).toBe(true);

@@ -109,6 +109,8 @@ const RACE_TIME_ENCODING_CACHE_TOKEN = "mssd-v2";
 const CORRELATION_CACHE_TOKEN: string = "v2";
 // Bumped when condition-history-stats gained weightChangeClassStats.
 const WEIGHT_CHANGE_CACHE_TOKEN: string = "v1";
+// v2: a race title read across venues (JBC) no longer keeps the distance band.
+const TITLE_DISTANCE_BAND_CACHE_TOKEN: string = "v2";
 
 const appendTrueFlag = (url: URL, name: string, enabled: boolean | undefined): void => {
   if (enabled === true) url.searchParams.set(name, "1");
@@ -192,6 +194,7 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     url.searchParams.set("includeSurface", descriptor.includeSurface ? "1" : "0");
     url.searchParams.set("includeTurn", descriptor.includeTurn ? "1" : "0");
     url.searchParams.set("targetRaces", "1");
+    url.searchParams.set("titleBand", TITLE_DISTANCE_BAND_CACHE_TOKEN);
     url.searchParams.set("finishDetails", FINISH_DETAILS_CACHE_TOKEN);
     url.searchParams.set("raceTimeEncoding", RACE_TIME_ENCODING_CACHE_TOKEN);
     url.searchParams.set("correlation", CORRELATION_CACHE_TOKEN);

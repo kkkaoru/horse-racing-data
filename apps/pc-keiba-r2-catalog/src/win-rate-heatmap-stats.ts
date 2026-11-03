@@ -362,7 +362,14 @@ const narCellDistanceBandSql = (kyoriExpr: string): string => `CASE
     ELSE 'extended'
   END`;
 
+// A title scope across venues (JBC) holds its past editions at many distances.
+const readsTitleAcrossVenues = (filters: WinRateHeatmapStatsFilters): boolean =>
+  filters.includeRaceTitle === true && !filters.includeVenue && !isOverseasEvent(filters);
+
 export const cellRouterDistanceBandFilterSql = (filters: WinRateHeatmapStatsFilters): string => {
+  if (readsTitleAcrossVenues(filters)) {
+    return "";
+  }
   const bandSql = filters.source === "jra" ? jraCellDistanceBandSql : narCellDistanceBandSql;
   return `AND cr.kyori_int IS NOT NULL
     AND ${historyKyoriIntSql()} IS NOT NULL
