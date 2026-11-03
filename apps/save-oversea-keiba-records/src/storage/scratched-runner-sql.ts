@@ -20,9 +20,12 @@ const ACTIVE_UNPLACED_SQL: string =
   "btrim(s.ijo_kubun_code) IN ('', '0') AND btrim(s.kakutei_chakujun) IN ('', '0', '00')";
 const RACE_SQL: string =
   "s.kaisai_nen = $1 AND s.kaisai_tsukihi = $2 AND s.keibajo_code = $3 AND s.race_bango = $4";
+// A rerun upserts the secondary gate again, so an already-scratched row's gate is cleared too.
+const SCRATCHABLE_UNPLACED_SQL: string =
+  "btrim(s.ijo_kubun_code) IN ('', '0', '1') AND btrim(s.kakutei_chakujun) IN ('', '0', '00')";
 const CLEAR_GATE_SQL: string = `UPDATE oversea_runner_source_id o SET gate_number = NULL, updated_at = now()
 FROM jvd_se s
-WHERE ${RACE_SQL} AND ${NAME_SQL} = $5 AND ${ACTIVE_UNPLACED_SQL}
+WHERE ${RACE_SQL} AND ${NAME_SQL} = $5 AND ${SCRATCHABLE_UNPLACED_SQL}
   AND o.race_source = 'jra' AND o.kaisai_nen = s.kaisai_nen AND o.kaisai_tsukihi = s.kaisai_tsukihi
   AND o.keibajo_code = s.keibajo_code AND o.race_bango = s.race_bango AND o.umaban = s.umaban
   AND o.gate_number IS NOT NULL`;
