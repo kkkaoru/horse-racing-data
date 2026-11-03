@@ -16,6 +16,7 @@ const ports = vi.hoisted(() => ({
   jraCardTimes: vi.fn(),
   missingTimes: vi.fn(),
   ownerIds: vi.fn(),
+  ancestors: vi.fn(),
 }));
 vi.mock("./race-time-store", () => ({ runRaceTimeStore: ports.raceTimes }));
 vi.mock("./racing-post-times", () => ({ runRacingPostTimes: ports.racingPost }));
@@ -23,6 +24,10 @@ vi.mock("./jv-race-times", () => ({ runJvRaceTimes: ports.jvTimes }));
 vi.mock("./jra-card-race-times", () => ({ runJraCardRaceTimes: ports.jraCardTimes }));
 vi.mock("./missing-race-times", () => ({ runMissingRaceTimes: ports.missingTimes }));
 vi.mock("./owner-id-store", () => ({ runOwnerIdStore: ports.ownerIds }));
+vi.mock("./pedigree-store", () => ({
+  runAncestorPedigreeStore: ports.ancestors,
+  runPedigreeStore: vi.fn(),
+}));
 vi.mock("./post-position-store", () => ({ runPostPositions: ports.postPositions }));
 vi.mock("./source-id-mirror", () => ({ runSourceIdMirror: ports.sourceIds }));
 vi.mock("./history-cli", () => ({ runHistoryCli: ports.collect }));
@@ -156,6 +161,11 @@ it("routes owner-ids-plan to the owner id store", async () => {
     argv: ["owner-ids-plan", "/h", "2026", "1103", "B6", "local"],
   });
   expect(ports.ownerIds).toHaveBeenCalledTimes(1);
+  expect(ports.connect).not.toHaveBeenCalled();
+});
+it("routes pedigree-ancestors-plan to the ancestor pedigree store", async () => {
+  await runHistoryCommand({ ...input, argv: ["pedigree-ancestors-plan", "/p", "local"] });
+  expect(ports.ancestors).toHaveBeenCalledTimes(1);
   expect(ports.connect).not.toHaveBeenCalled();
 });
 it("routes jv-race-times-apply to the official JV times", async () => {

@@ -7,7 +7,12 @@ import {
 import { runHistoryLocalMirror, runHistoryProductionMirror } from "./history-local-mirror";
 import { runSourceIdMirror, type SourceIdMirrorReport } from "./source-id-mirror";
 import { runEventEntities, type EventEntitiesReport } from "./event-entities";
-import { runPedigreeStore, type PedigreeStoreReport } from "./pedigree-store";
+import {
+  runAncestorPedigreeStore,
+  runPedigreeStore,
+  type AncestorPedigreeReport,
+  type PedigreeStoreReport,
+} from "./pedigree-store";
 import { runPostPositions, type PostPositionReport } from "./post-position-store";
 import { runRaceTimeStore, type RaceTimeStoreReport } from "./race-time-store";
 import { runRacingPostTimes, type RacingPostTimesReport } from "./racing-post-times";
@@ -62,6 +67,7 @@ export const runHistoryCommand = async (
   | JraCardRaceTimesReport
   | MissingRaceTimesReport
   | OwnerIdStoreReport
+  | AncestorPedigreeReport
 > => {
   if (input.argv[0] === "collect" || input.argv[0] === "status" || input.argv[0] === "audit")
     return runHistoryCli(input);
@@ -73,6 +79,8 @@ export const runHistoryCommand = async (
     return runEventEntities(input);
   if (input.argv[0] === "pedigree-plan" || input.argv[0] === "pedigree-apply")
     return runPedigreeStore(input);
+  if (String(input.argv[0]).startsWith("pedigree-ancestors-"))
+    return runAncestorPedigreeStore(input);
   if (String(input.argv[0]).startsWith("post-positions-")) return runPostPositions(input);
   if (input.argv[0] === "race-times-plan" || input.argv[0] === "race-times-apply")
     return runRaceTimeStore(input);

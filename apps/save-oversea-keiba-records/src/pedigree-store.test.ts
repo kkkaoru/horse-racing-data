@@ -1,6 +1,6 @@
 // This file runs with Bun and Vitest. Database pools and the filesystem are mocked.
 import { beforeEach, expect, it, vi } from "vitest";
-import { planPedigreeStore, runPedigreeStore } from "./pedigree-store";
+import { planPedigreeStore, runAncestorPedigreeStore, runPedigreeStore } from "./pedigree-store";
 
 const ports = vi.hoisted(() => ({
   createTargetPool: vi.fn(),
@@ -207,4 +207,100 @@ it("requires a valid action, target, confirmation and private profile", async ()
   await expect(
     runPedigreeStore({ argv: ["pedigree-plan", "/private/history", "local"], env: ENV }),
   ).rejects.toThrow("The pedigree markup profile is incomplete.");
+});
+
+const FIVE_ENV = { ...ENV, OVERSEA_FIVE_GENERATION_PEDIGREE_PROFILE_PATH: "/private/five.json" };
+const FIVE_ROWSPANS: readonly string[] = [
+  ' rowspan="16"',
+  ' rowspan="8"',
+  ' rowspan="4"',
+  ' rowspan="2"',
+  "",
+];
+const fiveId = (path: string): string => path.padEnd(10, "0");
+const fiveSubtree = (path: string): string[] =>
+  path.length > 5
+    ? []
+    : [
+        `<td${FIVE_ROWSPANS[path.length - 1]}><a href="/horse/${fiveId(path)}/">${path}</a></td>`,
+        ...fiveSubtree(`${path}s`),
+        ...fiveSubtree(`${path}d`),
+      ];
+const FIVE_PAGE: string = `<table class="five"><tr>${[...fiveSubtree("s"), ...fiveSubtree("d")].join("</tr><tr>")}</tr></table>`;
+
+it("stores the sire, dam and dam-sire rows of cached five-generation pages", async () => {
+  ports.readdir.mockResolvedValue(["p1.html", "p1.raw", "p1.raw.meta.json", "p2.html"]);
+  ports.readFile.mockImplementation(async (path: string) => {
+    if (path === "/private/five.json")
+      return JSON.stringify({ tableMarker: 'class="five"', horsePathPrefix: "/horse/" });
+    if (path.endsWith(".raw.meta.json"))
+      return JSON.stringify({ url: "https://source.test/ped/h1/" });
+    return path.endsWith("p2.html") ? "<html></html>" : FIVE_PAGE;
+  });
+  ports.poolQuery.mockResolvedValue({ rowCount: 0, rows: [] });
+  await expect(
+    runAncestorPedigreeStore({
+      argv: ["pedigree-ancestors-plan", "/private/ped", "local"],
+      env: FIVE_ENV,
+    }),
+  ).resolves.toStrictEqual({
+    status: "complete",
+    operation: "planned",
+    target: "local",
+    pages: 2,
+    ancestors: 3,
+    inserted: 3,
+    unchanged: 0,
+    conflicts: [],
+  });
+  expect(ports.poolQuery.mock.calls[0]?.[1]).toStrictEqual([
+    "netkeiba",
+    ["ds00000000", "d000000000", "s000000000"],
+  ]);
+});
+
+it("rejects ancestor runs without arguments, profile, a complete profile or page metadata", async () => {
+  await expect(
+    runAncestorPedigreeStore({
+      argv: ["pedigree-ancestors-apply", "/private/ped", "local"],
+      env: FIVE_ENV,
+    }),
+  ).rejects.toThrow("Use pedigree-ancestors-plan");
+  await expect(
+    runAncestorPedigreeStore({
+      argv: ["pedigree-ancestors-plan", "/private/ped", "local"],
+      env: { ...FIVE_ENV, OVERSEA_FIVE_GENERATION_PEDIGREE_PROFILE_PATH: "" },
+    }),
+  ).rejects.toThrow("OVERSEA_FIVE_GENERATION_PEDIGREE_PROFILE_PATH is required.");
+  ports.readFile.mockResolvedValue("{}");
+  await expect(
+    runAncestorPedigreeStore({
+      argv: ["pedigree-ancestors-plan", "/private/ped", "local"],
+      env: FIVE_ENV,
+    }),
+  ).rejects.toThrow("The five-generation pedigree profile is incomplete.");
+  ports.readdir.mockResolvedValue(["p1.html"]);
+  ports.readFile.mockImplementation(async (path: string) =>
+    path === "/private/five.json"
+      ? JSON.stringify({ tableMarker: "t", horsePathPrefix: "/h/" })
+      : "{}",
+  );
+  await expect(
+    runAncestorPedigreeStore({
+      argv: ["pedigree-ancestors-plan", "/private/ped", "local"],
+      env: FIVE_ENV,
+    }),
+  ).rejects.toThrow("A pedigree page has no fetch metadata URL.");
+});
+
+it("plans an empty ancestor set without opening a database pool", async () => {
+  ports.readdir.mockResolvedValue([]);
+  ports.readFile.mockResolvedValue(JSON.stringify({ tableMarker: "t", horsePathPrefix: "/h/" }));
+  await expect(
+    runAncestorPedigreeStore({
+      argv: ["pedigree-ancestors-apply", "/private/ped", "production", "--confirm-write"],
+      env: FIVE_ENV,
+    }),
+  ).resolves.toMatchObject({ operation: "applied", ancestors: 0, inserted: 0 });
+  expect(ports.createTargetPool).not.toHaveBeenCalled();
 });

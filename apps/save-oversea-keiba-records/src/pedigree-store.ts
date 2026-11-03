@@ -5,6 +5,10 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { localHistoryEnvironment } from "./history-local-mirror";
 import {
+  parseSecondaryAncestorPedigrees,
+  type SecondaryFiveGenerationProfile,
+} from "./sources/secondary-five-generation-pedigree-parser";
+import {
   parseSecondaryHorsePedigreeHtml,
   type SecondaryHorsePedigree,
   type SecondaryPedigreeMarkupProfile,
@@ -23,6 +27,22 @@ export interface PedigreeStorePlan {
   readonly inserts: readonly PedigreeRow[];
   readonly conflicts: readonly string[];
   readonly unchanged: number;
+}
+export interface AncestorPedigreeReport {
+  readonly status: "complete";
+  readonly operation: "planned" | "applied";
+  readonly target: "local" | "production";
+  readonly pages: number;
+  readonly ancestors: number;
+  readonly inserted: number;
+  readonly unchanged: number;
+  readonly conflicts: readonly string[];
+}
+interface StorePedigreeInput {
+  readonly env: PedigreeStoreInput["env"];
+  readonly target: "local" | "production";
+  readonly rows: readonly PedigreeRow[];
+  readonly apply: boolean;
 }
 export interface PedigreeStoreReport {
   readonly status: "complete";
@@ -58,6 +78,11 @@ const INSERT_SQL: string = `INSERT INTO oversea_horse_pedigree (${COLUMNS.join("
 VALUES (${COLUMNS.map((_column, index) => `$${String(index + 1)}`).join(", ")})`;
 const USAGE: string =
   "Use pedigree-plan HISTORY_ROOT TARGET or pedigree-apply HISTORY_ROOT TARGET --confirm-write; TARGET is local or production.";
+const ANCESTOR_USAGE: string =
+  "Use pedigree-ancestors-plan PAGE_DIRECTORY TARGET or pedigree-ancestors-apply PAGE_DIRECTORY TARGET --confirm-write; TARGET is local or production.";
+const FIVE_GENERATION_PROFILE_ENV: string = "OVERSEA_FIVE_GENERATION_PEDIGREE_PROFILE_PATH";
+const PAGE_SUFFIX: string = ".html";
+const META_SUFFIX: string = ".raw.meta.json";
 
 export const pedigreeRow = (pedigree: SecondaryHorsePedigree): PedigreeRow => ({
   source: SOURCE,
@@ -178,6 +203,26 @@ const writeInserts = async (
   }
 };
 
+const storePedigreeRows = async ({
+  env,
+  target,
+  rows,
+  apply,
+}: StorePedigreeInput): Promise<PedigreeStorePlan> => {
+  if (rows.length === 0) return planPedigreeStore(rows, []);
+  const pool: TargetPool = createTargetPool(
+    target === "local" ? localHistoryEnvironment(env) : env,
+    target,
+  );
+  try {
+    return apply
+      ? await writeInserts(pool, rows)
+      : planPedigreeStore(rows, await selectExisting(pool.pool, rows));
+  } finally {
+    await pool.pool.end();
+  }
+};
+
 export const runPedigreeStore = async ({
   argv,
   env,
@@ -209,27 +254,89 @@ export const runPedigreeStore = async ({
   const archivedHorses: number = new Set(
     directories.map((name) => HORSE_DIRECTORY_PATTERN.exec(name)?.[1]),
   ).size;
-  const pool: TargetPool = createTargetPool(
-    target === "local" ? localHistoryEnvironment(env) : env,
+  const plan: PedigreeStorePlan = await storePedigreeRows({ env, target, rows, apply });
+  return {
+    status: "complete",
+    operation: apply ? "applied" : "planned",
     target,
+    archivedHorses,
+    parsed: rows.length,
+    withoutPedigree: archivedHorses - rows.length,
+    inserted: plan.inserts.length,
+    unchanged: plan.unchanged,
+    conflicts: plan.conflicts,
+  };
+};
+
+const isFiveGenerationProfile = (value: unknown): value is SecondaryFiveGenerationProfile =>
+  typeof value === "object" &&
+  value !== null &&
+  "tableMarker" in value &&
+  typeof value.tableMarker === "string" &&
+  "horsePathPrefix" in value &&
+  typeof value.horsePathPrefix === "string";
+
+const pageUrl = (meta: unknown): string => {
+  assert(
+    typeof meta === "object" && meta !== null && "url" in meta && typeof meta.url === "string",
+    "A pedigree page has no fetch metadata URL.",
   );
-  try {
-    const plan: PedigreeStorePlan =
-      apply && rows.length > 0
-        ? await writeInserts(pool, rows)
-        : planPedigreeStore(rows, rows.length === 0 ? [] : await selectExisting(pool.pool, rows));
-    return {
-      status: "complete",
-      operation: apply ? "applied" : "planned",
-      target,
-      archivedHorses,
-      parsed: rows.length,
-      withoutPedigree: archivedHorses - rows.length,
-      inserted: plan.inserts.length,
-      unchanged: plan.unchanged,
-      conflicts: plan.conflicts,
-    };
-  } finally {
-    await pool.pool.end();
-  }
+  return meta.url;
+};
+
+// One cached page (fetched through the proxy) yields the rows of its sire, dam and dam-sire.
+const pageAncestors = async (
+  directory: string,
+  page: string,
+  profile: SecondaryFiveGenerationProfile,
+): Promise<PedigreeRow[]> => {
+  const base: string = page.slice(0, -PAGE_SUFFIX.length);
+  const [html, meta] = await Promise.all([
+    readFile(join(directory, page), "utf8"),
+    readFile(join(directory, `${base}${META_SUFFIX}`), "utf8"),
+  ]);
+  return parseSecondaryAncestorPedigrees(html, profile, pageUrl(JSON.parse(meta))).map(pedigreeRow);
+};
+
+export const runAncestorPedigreeStore = async ({
+  argv,
+  env,
+}: PedigreeStoreInput): Promise<AncestorPedigreeReport> => {
+  const [action, directory, target, confirmation]: readonly (string | undefined)[] = argv;
+  const apply: boolean = action === "pedigree-ancestors-apply";
+  assert(
+    directory !== undefined &&
+      (target === "local" || target === "production") &&
+      ((action === "pedigree-ancestors-plan" && argv.length === 3) ||
+        (apply && argv.length === 4 && confirmation === "--confirm-write")),
+    ANCESTOR_USAGE,
+  );
+  const path: string | undefined = env[FIVE_GENERATION_PROFILE_ENV];
+  assert(path !== undefined && path !== "", `${FIVE_GENERATION_PROFILE_ENV} is required.`);
+  const profile: unknown = JSON.parse(await readFile(path, "utf8"));
+  assert(isFiveGenerationProfile(profile), "The five-generation pedigree profile is incomplete.");
+  const pages: string[] = (await readdir(directory)).filter((name) => name.endsWith(PAGE_SUFFIX));
+  const parsed: PedigreeRow[][] = await Promise.all(
+    pages.toSorted().map((page) => pageAncestors(directory, page, profile)),
+  );
+  // An ancestor shared by several horses resolves to its first row.
+  const rows: PedigreeRow[] = [
+    ...new Map(
+      parsed
+        .flat()
+        .toReversed()
+        .map((row) => [String(row.source_horse_id), row]),
+    ).values(),
+  ];
+  const plan: PedigreeStorePlan = await storePedigreeRows({ env, target, rows, apply });
+  return {
+    status: "complete",
+    operation: apply ? "applied" : "planned",
+    target,
+    pages: pages.length,
+    ancestors: rows.length,
+    inserted: plan.inserts.length,
+    unchanged: plan.unchanged,
+    conflicts: plan.conflicts,
+  };
 };

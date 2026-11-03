@@ -291,6 +291,16 @@ bun run history pedigree-apply /private/history local --confirm-write
 bun run history pedigree-apply /private/history production --confirm-write
 ```
 
+The deeper ancestors (父父父, 父母父, 母父父, 母母父) come from each horse's five-generation
+pedigree page, fetched serially through the proxy into a private directory. Every page stores the
+two-generation rows of the horse's sire, dam and dam-sire, so a reader finds the deeper ancestors
+through those parents' rows (the breeding-country suffix is dropped to match the horse pages):
+
+```sh
+OVERSEA_FIVE_GENERATION_PEDIGREE_PROFILE_PATH=/private/five-generation.json \
+  bun run history pedigree-ancestors-apply /private/ped local --confirm-write
+```
+
 It inserts only horses missing from `oversea_horse_pedigree`, in one locked
 transaction with a readback. A horse whose page has no pedigree table is skipped
 (a source gap, never filled). A stored row that differs is kept as-is and only
