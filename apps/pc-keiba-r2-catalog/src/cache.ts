@@ -148,8 +148,9 @@ export const cacheRequestFor = (descriptor: CacheDescriptor): Request => {
     // v8: bloodline cells read past editions of the race again (v7 reverted).
     // v6: 騎手枠別 counts the jockey's own 3-year record from that frame.
     url.pathname = "/v8/win-rate-heatmap-stats";
+    // source-mapping-v2: overseas bloodline also reads ancestor pedigrees (父父父 … 母母父).
     if (/^[A-Z][0-9A-Z]$/u.test(descriptor.keibajoCode))
-      url.searchParams.set("overseasInputs", "source-mapping-v1");
+      url.searchParams.set("overseasInputs", "source-mapping-v2");
     url.searchParams.set("keibajoCode", descriptor.keibajoCode);
     url.searchParams.set("raceBango", descriptor.raceBango);
     url.searchParams.set("source", descriptor.source);

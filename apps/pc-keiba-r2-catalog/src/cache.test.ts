@@ -408,7 +408,7 @@ it("versions overseas gate-dependent aggregates without invalidating domestic ag
     years: 3,
   } satisfies Parameters<typeof heatmapStatsDescriptor>[0];
   expect(cacheRequestFor(heatmapStatsDescriptor(filters)).url).toMatch(
-    "overseasInputs=source-mapping-v1",
+    "overseasInputs=source-mapping-v2",
   );
   expect(
     cacheRequestFor(heatmapStatsDescriptor({ ...filters, keibajoCode: "05" })).url,
