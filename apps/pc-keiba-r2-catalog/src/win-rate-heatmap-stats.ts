@@ -484,9 +484,14 @@ const MASTER_PEDIGREE_COLUMNS: ReadonlyArray<string> = [
   "ketto_joho_13b",
 ];
 
+// One distinct profile per horse, as min = max: count(DISTINCT) exceeded the R2 SQL scan
+// budget once overseas history was added (Melbourne Cup bloodline, 2026-11-03).
+const masterProfileSql = (aggregate: "min" | "max"): string =>
+  `${aggregate}(concat(${MASTER_PEDIGREE_COLUMNS.map((column) => `coalesce(${column}, '')`).join(", '|', ")}))`;
+
 const uniqueMasterSql = (env: R2SqlCatalogConfig, table: string): string =>
   `(SELECT ketto_toroku_bango, ${MASTER_PEDIGREE_COLUMNS.map((column) => `max(${column}) AS ${column}`).join(", ")}
-    FROM ${tableName(env, table)} GROUP BY ketto_toroku_bango HAVING count(DISTINCT concat(${MASTER_PEDIGREE_COLUMNS.map((column) => `coalesce(${column}, '')`).join(", '|', ")})) = 1)`;
+    FROM ${tableName(env, table)} GROUP BY ketto_toroku_bango HAVING ${masterProfileSql("min")} = ${masterProfileSql("max")})`;
 
 const masterJoinsSql = (env: R2SqlCatalogConfig, tables: CatalogTableSet): string =>
   `LEFT JOIN ${uniqueMasterSql(env, tables.masterPrimary)} primary_um

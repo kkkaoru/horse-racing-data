@@ -86,7 +86,7 @@ it("builds aggregate-only JRA bloodline SQL with heatmap default similar-section
   expect(sql).toMatch("FROM pc_keiba.jvd_se");
   expect(sql).toMatch("INNER JOIN pc_keiba.jvd_ra ra");
   expect(sql).toMatch("FROM pc_keiba.jvd_ra");
-  expect(sql).toMatch("FROM pc_keiba.jvd_um GROUP BY ketto_toroku_bango HAVING count(DISTINCT");
+  expect(sql).toMatch("FROM pc_keiba.jvd_um GROUP BY ketto_toroku_bango HAVING min(concat(");
   expect(sql).toMatch("FROM pc_keiba.nvd_um GROUP BY ketto_toroku_bango");
   expect(sql).toMatch("FROM pc_keiba.nvd_nu GROUP BY ketto_toroku_bango");
   expect(sql).toMatch(") primary_um\n    ON primary_um.ketto_toroku_bango = se.ketto_toroku_bango");
