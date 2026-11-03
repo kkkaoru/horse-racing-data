@@ -125,7 +125,7 @@ def test_to_sources_maps_domestic_rows_onto_the_event_source_shape() -> None:
     assert sources.people.iloc[0]["race_date"] == "2009-11-03"
 
 
-def test_run_evaluates_walk_forward_compares_generic_and_writes_kv(
+def test_run_evaluates_each_title_alone_and_writes_kv_only_for_titles_beating_generic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -138,12 +138,12 @@ def test_run_evaluates_walk_forward_compares_generic_and_writes_kv(
     )
     generic = pd.DataFrame(
         {
-            "model_version": ["g"] * 9 + ["g"] * 4,
-            "race_day": ["20111103"] * 5 + ["20121103"] * 4 + ["20121103"] * 4,
-            "venue": ["44"] * 9 + ["30"] * 4,
-            "race_bango": ["10"] * 9 + ["09"] * 4,
-            "umaban": ["01", "02", "03", "04", "05", "01", "02", "03", "04", "01", "02", "03", "04"],
-            "predicted_rank": [2, 1, 3, 4, 5, 1, 2, 3, 4, 1, 2, 3, 4],
+            "model_version": ["g"] * 14,
+            "race_day": ["20111103"] * 5 + ["20121103"] * 5 + ["20121103"] * 4,
+            "venue": ["44"] * 10 + ["30"] * 4,
+            "race_bango": ["10"] * 10 + ["09"] * 4,
+            "umaban": ["01", "02", "03", "04", "05", "01", "02", "03", "04", "05", "01", "02", "03", "04"],
+            "predicted_rank": [5, 4, 3, 2, 1, 5, 4, 3, 2, 1, 1, 2, 3, 4],
         }
     )
 
@@ -151,35 +151,34 @@ def test_run_evaluates_walk_forward_compares_generic_and_writes_kv(
         json.dumps(model.run(dumps(), generic, "20131103", tmp_path / "out", datetime(2013, 11, 3, tzinfo=timezone.utc)))
     )
 
-    evaluation = report["evaluation"]
-    assert [fold["year"] for fold in evaluation["folds"]] == ["2011", "2012"]
-    assert evaluation["candidates"]["horseWinRate"][0] == {"k": 1, "races": 3, "exactSetHits": 2, "meanPrecision": 2 / 3}
-    assert report["genericStoredPredictions"] == {
-        "g": {
-            "races": 1,
-            "summary": [
-                {"k": 1, "races": 1, "exactSetHits": 0, "meanPrecision": 0.0},
-                {"k": 2, "races": 1, "exactSetHits": 1, "meanPrecision": 1.0},
-                {"k": 3, "races": 1, "exactSetHits": 1, "meanPrecision": 1.0},
-                {"k": 4, "races": 1, "exactSetHits": 1, "meanPrecision": 1.0},
-                {"k": 5, "races": 1, "exactSetHits": 1, "meanPrecision": 1.0},
-            ],
-        }
-    }
+    classic = report["titles"]["ＪＢＣクラシック"]
+    assert classic["editions"] == ["200911034410", "201011034410", "201111034410", "201211034410"]
+    assert [fold["year"] for fold in classic["evaluation"]["folds"]] == ["2011", "2012"]
+    assert classic["evaluation"]["selected"] == "xgb"
+    assert classic["evaluation"]["candidates"]["horseWinRate"][0] == {"k": 1, "races": 2, "exactSetHits": 2, "meanPrecision": 1.0}
+    assert classic["genericStoredPredictions"]["g"][0] == {"k": 1, "races": 2, "exactSetHits": 0, "meanPrecision": 0.0}
+    assert classic["publish"] is True
+    assert report["titles"]["ＪＢＣスプリント"]["publish"] is False
+    assert report["titles"]["ＪＢＣ２歳優駿"]["genericStoredPredictions"] == {"g": []}
+    assert report["titles"]["ＪＢＣ２歳優駿"]["publish"] is False
     assert report["predictedRaces"] == ["pred:fp:v1:20131103:46:09"]
     bulk = json.loads((tmp_path / "out" / "kv-bulk.json").read_text(encoding="utf-8"))
     body = json.loads(bulk[0]["value"])
     assert bulk[0]["key"] == "pred:fp:v1:20131103:46:09"
     assert sorted(row["horseNumber"] for row in body) == ["1", "2", "3", "4", "5"]
-    assert evaluation["selected"] == "xgb"
     assert body[0]["modelVersion"] == "jbc-event-v1-xgb-20131103"
 
 
+def test_beats_generic_needs_top1_not_worse_and_a_better_total() -> None:
+    better = [{"meanPrecision": 0.5}, {"meanPrecision": 0.5}]
+    assert model.beats_generic(better, {"g": [{"meanPrecision": 0.5}, {"meanPrecision": 0.4}]}) is True
+    assert model.beats_generic(better, {"g": [{"meanPrecision": 0.6}, {"meanPrecision": 0.1}]}) is False
+    assert model.beats_generic(better, {"g": []}) is False
+    assert model.beats_generic([], {"g": [{"meanPrecision": 0.0}]}) is False
+
+
 def test_generic_summary_without_rows_reports_no_races() -> None:
-    assert model.generic_summary(pd.DataFrame({"race_key": ["k"]}), pd.DataFrame({"race_key": ["x"]}), ["k"]) == {
-        "races": 0,
-        "summary": [],
-    }
+    assert model.generic_summary(pd.DataFrame({"race_key": ["k"]}), pd.DataFrame({"race_key": ["x"]}), ["k"]) == []
 
 
 def test_main_reads_dumps_filters_later_days_and_prints_report(
@@ -203,9 +202,9 @@ def test_main_reads_dumps_filters_later_days_and_prints_report(
     model.main([str(tmp_path), "20131103", str(tmp_path / "out")])
 
     printed = json.loads(capsys.readouterr().out)
-    assert printed["predictedRaces"] == ["pred:fp:v1:20131103:46:09"]
-    assert printed["editions"][-1] == "20131103:46:09:ＪＢＣクラシック"
-    assert len(printed["editions"]) == 7
+    assert printed["predictedRaces"] == []
+    assert printed["titles"]["ＪＢＣクラシック"]["editions"] == ["200911034410", "201011034410", "201111034410", "201211034410"]
+    assert printed["titles"]["ＪＢＣクラシック"]["publish"] is False
 
 
 def test_main_rejects_a_malformed_day(tmp_path: Path) -> None:

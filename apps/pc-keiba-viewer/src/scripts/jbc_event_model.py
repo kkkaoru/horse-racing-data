@@ -1,7 +1,7 @@
-"""Pooled JBC ranker trained on every past edition of the four JBC titles at any venue.
+"""Per-title JBC rankers, each trained only on its own title's past editions at any venue.
 
 JBC moves between NAR venues (and JRA Kyoto in 2018), so the cohort is every past
-race whose normalized title is one of the exact JBC titles, wherever it ran. The
+race with that exact normalized title, wherever it ran; each title gets its own\nwalk-forward and publish gate against stored generic predictions. The
 domestic JV/NV rows are mapped onto the overseas event model's source shape so its
 features, walk-forward folds, candidates and KV payload are reused unchanged.
 History and people rates use only days strictly before each race. No odds or
@@ -23,7 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,6 +45,13 @@ DIRT_SURFACE: str = "ダ"
 FIRST_EVALUATED_YEAR: str = "2011"
 MODEL_VERSION_PREFIX: str = "jbc-event-v1"
 PERSON_COLUMNS: tuple[str, ...] = ("jockey", "trainer", "owner")
+
+
+@dataclass(frozen=True)
+class Evaluation:
+    folds: list[dict[str, object]]
+    candidates: dict[str, list[dict[str, object]]]
+    selected: str
 
 
 @dataclass(frozen=True)
@@ -110,23 +117,24 @@ def to_sources(dumps: Dumps) -> event.Sources:
     )
 
 
-def evaluate(data: pd.DataFrame, day: str) -> dict[str, object]:
+def evaluate(data: pd.DataFrame, day: str) -> Evaluation:
     """Every year from FIRST_EVALUATED_YEAR is one fold trained only on earlier days."""
     past = data.loc[data["race_day"] < day]
     years = sorted({d[:4] for d in past["race_day"] if d[:4] >= FIRST_EVALUATED_YEAR})
     folds = [fold for year in years if (fold := event.evaluate_year(past, year)) is not None]
+    # A title without an evaluable fold (too few earlier editions) gets empty summaries.
     candidates = {
-        name: event.summarize([race for fold in folds for race in fold.results[name]])
+        name: event.summarize(results) if (results := [race for fold in folds for race in fold.results[name]]) else []
         for name in event.CANDIDATES
     }
-    return {
-        "folds": [fold.summary for fold in folds],
-        "candidates": candidates,
-        "selected": max(event.CANDIDATES, key=lambda name: event.selection_key(candidates[name])),
-    }
+    return Evaluation(
+        folds=[fold.summary for fold in folds],
+        candidates=candidates,
+        selected=max(event.CANDIDATES, key=lambda name: event.selection_key(candidates[name])),
+    )
 
 
-def generic_summary(data: pd.DataFrame, generic: pd.DataFrame, races: Sequence[str]) -> dict[str, object]:
+def generic_summary(data: pd.DataFrame, generic: pd.DataFrame, races: Sequence[str]) -> list[dict[str, object]]:
     """Stored generic-model ranks on the same evaluated races (missing races are skipped)."""
     results: list[list[dict[str, int | float | bool]]] = []
     for key in races:
@@ -140,7 +148,7 @@ def generic_summary(data: pd.DataFrame, generic: pd.DataFrame, races: Sequence[s
         actual = [horse for horse in event.actual_order(card) if horse in set(predicted)]
         if actual[: event.TOP_K] == event.actual_order(card)[: event.TOP_K]:
             results.append(unordered_topk(predicted, actual))
-    return {"races": len(results), "summary": event.summarize(results) if results else []}
+    return event.summarize(results) if results else []
 
 
 def predict_day(
@@ -175,34 +183,61 @@ def load_dumps(directory: Path, day: str) -> tuple[Dumps, pd.DataFrame]:
     return dumps, generic
 
 
-def run(dumps: Dumps, generic: pd.DataFrame, day: str, output: Path, now: datetime) -> dict[str, object]:
-    data = event.runner_rows(to_sources(dumps))
-    evaluation = evaluate(data, day)
-    past = data.loc[(data["race_day"] < day) & (data["race_day"] >= FIRST_EVALUATED_YEAR)]
+def precisions(summary: Sequence[Mapping[str, object]]) -> list[float]:
+    return [float(str(row["meanPrecision"])) for row in summary]
+
+
+def beats_generic(
+    dedicated: Sequence[Mapping[str, object]], generic: Mapping[str, Sequence[Mapping[str, object]]]
+) -> bool:
+    """Publish gate: top1 not worse and summed top1..5 overlap better than every stored generic."""
+    mine = precisions(dedicated)
+    others = [precisions(summary) for summary in generic.values() if summary]
+    return bool(mine) and bool(others) and all(mine[0] >= o[0] and sum(mine) > sum(o) for o in others)
+
+
+def title_report(
+    data: pd.DataFrame, generic: pd.DataFrame, *, title: str, day: str, generated_at: str
+) -> tuple[dict[str, object], dict[str, list[dict[str, object]]]]:
+    """One title's own walk-forward, generic comparison, gate and (if it passes) KV bodies."""
+    titled = data.loc[data["title"] == title]
+    evaluation = evaluate(titled, day)
+    years = {str(fold["year"]) for fold in evaluation.folds}
+    evaluated = sorted(set(titled.loc[titled["race_day"].str[:4].isin(years), "race_key"]))
     generic_by_model = {
         str(version): generic_summary(
-            data,
-            rows.assign(race_key=rows["race_day"] + rows["venue"] + rows["race_bango"]),
-            sorted(set(past["race_key"])),
+            titled, rows.assign(race_key=rows["race_day"] + rows["venue"] + rows["race_bango"]), evaluated
         )
         for version, rows in generic.groupby("model_version")
     }
-    payloads = predict_day(
-        data,
-        day,
-        candidate=str(evaluation["selected"]),
-        generated_at=now.isoformat().replace("+00:00", "Z"),
+    selected = evaluation.selected
+    publish = beats_generic(evaluation.candidates[selected], generic_by_model)
+    payloads = (
+        predict_day(titled, day, candidate=selected, generated_at=generated_at)
+        if publish and titled["race_day"].eq(day).any()
+        else {}
     )
     report: dict[str, object] = {
-        "day": day,
-        "titles": TITLES,
-        "editions": sorted(
-            f"{race.race_day}:{race.venue}:{race.race_bango}:{race.title}"
-            for race in dumps.races.loc[dumps.races["title"].isin(TITLES)].itertuples(index=False)
-        ),
-        "features": event.FEATURES,
-        "evaluation": evaluation,
+        "editions": sorted(set(titled.loc[titled["race_day"] < day, "race_key"])),
+        "evaluation": asdict(evaluation),
         "genericStoredPredictions": generic_by_model,
+        "publish": publish,
+    }
+    return report, payloads
+
+
+def run(dumps: Dumps, generic: pd.DataFrame, day: str, output: Path, now: datetime) -> dict[str, object]:
+    data = event.runner_rows(to_sources(dumps))
+    generated_at = now.isoformat().replace("+00:00", "Z")
+    titles: dict[str, object] = {}
+    payloads: dict[str, list[dict[str, object]]] = {}
+    for title in TITLES:
+        titles[title], title_payloads = title_report(data, generic, title=title, day=day, generated_at=generated_at)
+        payloads |= title_payloads
+    report: dict[str, object] = {
+        "day": day,
+        "features": event.FEATURES,
+        "titles": titles,
         "selectionWasRetrospective": True,
         "predictedRaces": sorted(payloads),
         "limitations": "Generic stored predictions were generated in 2026 and may be in-sample.",
