@@ -5,7 +5,9 @@
 import assert from "node:assert/strict";
 import { open, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import iconv from "iconv-lite";
 import { localHistoryEnvironment } from "./history-local-mirror";
+import { HISTORY_PROXY_ORIGIN } from "./history-proxy";
 import {
   decodeAhonoora,
   parseAhonooraRace,
@@ -82,7 +84,8 @@ interface RaceMatch {
 // JV 1 取消, 2 除外, 3 競走除外: never started, so no gate and never a page runner.
 const NON_STARTER_CODES: ReadonlySet<string> = new Set(["1", "2", "3"]);
 const ORIGIN: string = "https://ahonoora.com/";
-const PAGE_INTERVAL_MS: number = 2000;
+const PAGE_INTERVAL_MS: number = 6000;
+const SOURCE_ENCODING: string = "cp932";
 const FILE_MODE: number = 0o600;
 const YEAR_PAGE_PATTERN: RegExp = /^[a-z0-9]+_\d{4}\.html$/u;
 const VENUE_PATTERN: RegExp = /^[A-Z][0-9A-Z]$/u;
@@ -424,11 +427,15 @@ const writeNew = async (path: string, bytes: Uint8Array): Promise<boolean> => {
   }
 };
 
+// Fetched through the production proxy, which answers with the rendered page as UTF-8; it is
+// archived re-encoded as Shift_JIS so stored pages keep the source encoding the parser reads.
 const fetchBytes = async (input: PostPositionInput, file: string): Promise<Uint8Array> => {
   const fetchImpl: (url: string) => Promise<Response> = input.fetchImpl ?? fetch;
-  const response: Response = await fetchImpl(`${ORIGIN}${file}`);
+  const proxy: URL = new URL("/playwright", HISTORY_PROXY_ORIGIN);
+  proxy.searchParams.set("url", `${ORIGIN}${file}`);
+  const response: Response = await fetchImpl(proxy.href);
   if (!response.ok) throw new Error(`Ahonoora page ${file} returned ${String(response.status)}.`);
-  return new Uint8Array(await response.arrayBuffer());
+  return new Uint8Array(iconv.encode(await response.text(), SOURCE_ENCODING));
 };
 
 const pause = async (input: PostPositionInput): Promise<void> =>

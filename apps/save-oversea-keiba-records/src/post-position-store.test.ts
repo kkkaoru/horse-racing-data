@@ -228,10 +228,10 @@ it("fetches index and missing year pages serially, keeping archived ones", async
     }),
   ).resolves.toMatchObject({ operation: "fetched", pages: 0, races: 2 });
   expect(fetchImpl.mock.calls.map(([url]) => url)).toStrictEqual([
-    "https://ahonoora.com/bcclassic.html",
-    "https://ahonoora.com/bcclassic_2025.html",
+    "https://reverse-proxy.api.kkk4oru.com/playwright?url=https%3A%2F%2Fahonoora.com%2Fbcclassic.html",
+    "https://reverse-proxy.api.kkk4oru.com/playwright?url=https%3A%2F%2Fahonoora.com%2Fbcclassic_2025.html",
   ]);
-  expect(sleep).toHaveBeenCalledWith(2000);
+  expect(sleep).toHaveBeenCalledWith(6000);
   expect(ports.open.mock.calls[0]?.[0]).toBe("/private/pages/bcclassic_2025.html");
 });
 

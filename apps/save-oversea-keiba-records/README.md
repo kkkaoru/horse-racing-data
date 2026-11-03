@@ -246,8 +246,9 @@ rows with `production prepare/apply` for each race.
 
 netkeiba does not publish post positions for past overseas editions. The
 ahonoora.com race-history pages (Shift_JIS) list 着順, 馬番 (newer pages only), 枠順,
-性齢 and 斤量 per runner. Fetch is serial with a 2-second interval and keeps pages
-already archived. Apply matches each runner by its unique finish (a numeric 馬番 on
+性齢 and 斤量 per runner. Fetch goes through the production proxy, is serial with a 6-second
+interval, stores each page re-encoded as Shift_JIS and keeps pages already archived. The parser
+accepts both the original markup and the proxy's browser-serialized (quoted) attributes. Apply matches each runner by its unique finish (a numeric 馬番 on
 the page must also agree; unplaced runners need it). It only fills empty values
 (`gate_number` NULL; `seibetsu_code` / `barei` / `futan_juryo` blank or zero). A
 differing stored value is kept and reported, and a page that cannot be read safely
