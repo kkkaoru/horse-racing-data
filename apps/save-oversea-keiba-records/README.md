@@ -213,6 +213,16 @@ OVERSEA_HISTORY_PLAN_TEMPLATES_PATH=/private/history-plan-templates.json \
   bun run history event-plans /private/event-entities.txt /private/plans
 ```
 
+Owner ids are not on the race cards. After the horse pass, fill the meeting's empty
+`source_owner_id` values from each runner's archived horse page (a private profile holds the
+`ownerIdPattern`; the page shows the current owner, so past meetings are never filled), then rerun
+`event-entities` / `event-plans`:
+
+```sh
+OVERSEA_OWNER_ID_PROFILE_PATH=/private/owner-id.json \
+  bun run history owner-ids-apply /private/history 2026 1103 B6 local --confirm-write
+```
+
 The template file is private like the markup profiles: a JSON object with
 `horse`, `jockey`, `trainer` and `owner` entries, each `{ "urlTemplate": "…{ID}…",
 "plan": { …the rest of a history plan… } }`. Collect each planned entity with
