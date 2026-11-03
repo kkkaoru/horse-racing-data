@@ -151,6 +151,10 @@ it("keeps unique pretarget Arc bloodlines including current horses, with source-
       ('netkeiba','000a000001','Wrong native override','Wrong native grandsire','Wrong native damsire'),
       ('other','000a000002','Wrong source sire','Wrong source grandsire','Wrong source damsire'),
       ('netkeiba','000a000002','Native sire','Shared ancestor','Shared ancestor')) t(source,source_horse_id,sire_name,sire_sire_name,dam_sire_name)`);
+    // Ancestor rows are reached through these ids; none are stored in this fixture.
+    await c.run(
+      "ALTER TABLE pc_keiba.oversea_horse_pedigree ADD COLUMN sire_source_id VARCHAR; ALTER TABLE pc_keiba.oversea_horse_pedigree ADD COLUMN dam_source_id VARCHAR; ALTER TABLE pc_keiba.oversea_horse_pedigree ADD COLUMN dam_sire_source_id VARCHAR",
+    );
     // Native rate eligibility reads the provider status column; these ranked fixtures are normal starts.
     await c.run("ALTER TABLE pc_keiba.jvd_se ADD COLUMN ijo_kubun_code VARCHAR DEFAULT '0'");
     const sql: string = buildWinRateHeatmapBloodlineQuery(config, filters);

@@ -985,7 +985,7 @@ it("executes Arc native DNF/DSQ denominators without inventing placed horses or 
       INSERT INTO pc_keiba.jvd_se SELECT * REPLACE ('2026' AS kaisai_nen) FROM pc_keiba.jvd_se WHERE umaban='01';
       CREATE TABLE pc_keiba.oversea_runner_source_id AS SELECT kaisai_nen,kaisai_tsukihi,keibajo_code,race_bango,umaban,
         'jra' AS race_source, 'netkeiba' AS source, '000a000001' AS source_horse_id, 16 AS gate_number FROM pc_keiba.jvd_se;
-      CREATE TABLE pc_keiba.oversea_horse_pedigree (source VARCHAR, source_horse_id VARCHAR, sire_name VARCHAR, sire_sire_name VARCHAR, dam_sire_name VARCHAR);`);
+      CREATE TABLE pc_keiba.oversea_horse_pedigree (source VARCHAR, source_horse_id VARCHAR, sire_source_id VARCHAR, sire_name VARCHAR, sire_sire_name VARCHAR, dam_source_id VARCHAR, dam_sire_source_id VARCHAR, dam_sire_name VARCHAR);`);
     const columns: string = ["01", "02", "03", "05", "07", "09", "11", "13"]
       .map((n) => `ketto_joho_${n}b VARCHAR`)
       .join(", ");
