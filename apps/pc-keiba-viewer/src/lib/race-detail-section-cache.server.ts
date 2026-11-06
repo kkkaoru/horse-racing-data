@@ -299,9 +299,29 @@ const isEmptyPremiumDataTopSectionBody = (body: string): boolean => {
   }
 };
 
+// A results payload computed before the race's runners reached Catalog holds no
+// runners at all; caching it hid every horse's history until race start + 6h.
+const isEmptyResultsSectionBody = (body: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "type" in parsed &&
+      parsed.type === "results" &&
+      "runners" in parsed &&
+      Array.isArray(parsed.runners) &&
+      parsed.runners.length === 0
+    );
+  } catch {
+    return false;
+  }
+};
+
 const isEmptyDataSectionBody = (body: string, cacheKey: string): boolean =>
   isEmptyPremiumTrainingSectionBody(body) ||
   isEmptyPremiumDataTopSectionBody(body) ||
+  isEmptyResultsSectionBody(body) ||
   (/:\d{4}:\d{1,2}:\d{1,2}:[A-Z][0-9A-Z]:\d{2}:time-score:/u.test(cacheKey) &&
     !hasOverseasTimeScoreEvidence(body));
 

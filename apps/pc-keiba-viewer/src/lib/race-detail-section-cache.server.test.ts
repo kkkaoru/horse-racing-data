@@ -229,6 +229,24 @@ it("caches a training section body with a premium evaluation grade using the ful
   expect(readFreshUntil(mainPutCall?.[1])).toBe(1783242000000);
 });
 
+it("neither caches nor serves a results section computed before its runners landed", async () => {
+  const body = JSON.stringify({ results: [], runners: [], type: "results" });
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(body);
+  mockEnvWithKv(kv);
+  expect(await getCachedDetailSectionResponse("results-key")).toBeNull();
+  await putDetailSectionCache({ body, cacheKey: "results-key", race: FUTURE_RACE });
+  expect(kv.put).not.toHaveBeenCalled();
+});
+
+it("keeps caching a results section that has runners but no past results", async () => {
+  const body = JSON.stringify({ results: [], runners: [{ umaban: "01" }], type: "results" });
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(body);
+  mockEnvWithKv(kv);
+  expect(await (await getCachedDetailSectionResponse("results-key"))?.text()).toBe(body);
+});
+
 it("does not cache an empty premium-data-top section body", async () => {
   const kv = buildKvStub();
   mockEnvWithKv(kv);
