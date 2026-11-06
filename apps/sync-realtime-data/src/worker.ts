@@ -4762,24 +4762,25 @@ const fetchAndStoreResults = async (env: Env, raceKey: string): Promise<void> =>
     if (!resultUrl) {
       throw new Error(`race result url is unavailable: ${raceKey}`);
     }
-    const [entryPage, resultPage] = await Promise.all([
+    // Sequential so a message never holds two Playwright browsers at once.
+    const entryPage: ResultEntryPage =
       race.source === "jra"
-        ? fetchJraResultHtmlWithFallback({
+        ? await fetchJraResultHtmlWithFallback({
             browserBinding: env.JRA_BROWSER,
             needsParse: (html) => parseJraRaceEntries(html).length > 0,
             url: race.debaUrl,
           }).then((html): ResultEntryPage => ({ html, notFound: false, storedEntries: null }))
-        : fetchNarEntryPageForResult(env, race),
+        : await fetchNarEntryPageForResult(env, race);
+    const resultPage: ResultPage =
       race.source === "jra"
-        ? fetchJraResultHtmlWithFallback({
+        ? await fetchJraResultHtmlWithFallback({
             browserBinding: env.JRA_BROWSER,
             needsParse: (html) =>
               parseJraRaceResults(html).length > 0 ||
               parseJraRaceResultExcludedHorseNumbers(html).length > 0,
             url: resultUrl,
           }).then((html): ResultPage => ({ html, notFound: false }))
-        : fetchNarResultPage(resultUrl),
-    ]);
+        : await fetchNarResultPage(resultUrl);
     const resultHtml = resultPage.html;
     const parsedEntries =
       race.source === "jra"

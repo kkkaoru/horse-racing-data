@@ -94,7 +94,7 @@
     ],
     "consumers": [
       {
-        // Capped at 2 (was 3, was 6) for two compounding reasons:
+        // Capped at 1 (was 2, 3, 6) so this queue holds one browser at a time, and:
         // - D1: avoid fanning out parallel INSERT/UPSERT/SELECT batches while a
         //   build-daily-features tick (5500+ rows) or an odds-snapshot insert
         //   is running. Backlog is preferable to "D1 DB is overloaded".
@@ -106,13 +106,13 @@
         //   track-condition + odds Playwright calls from this same worker. The
         //   binding rate-limited, page.goto hung, the runtime cancelled the
         //   handler at ~30s, and the queue retried indefinitely — observed
-        //   throughput collapsed to ~1 fetch-results / 15 min. Cap at 2 gives
-        //   us at most 4 simultaneous browsers from the queue path and leaves
-        //   headroom for cron-driven track-condition + odds launches.
+        //   throughput collapsed to ~1 fetch-results / 15 min. The two pages are
+        //   now fetched one after the other, so the queue path peaks at one
+        //   browser and leaves headroom for track-condition + odds launches.
         "queue": "sync-realtime-data-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
-        "max_concurrency": 2,
+        "max_concurrency": 1,
         "max_retries": 3,
         "retry_delay": 60,
       },
@@ -120,7 +120,7 @@
         "queue": "sync-realtime-data-premium-race-jobs",
         "max_batch_size": 1,
         "max_batch_timeout": 5,
-        "max_concurrency": 4,
+        "max_concurrency": 1,
         "max_retries": 3,
         "retry_delay": 60,
       },
