@@ -3,6 +3,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 
 import { BrandRunner } from "./brand-runner";
+import { HeaderShareButton } from "./header-share-button";
 import { StylesheetReloadGuard } from "./stylesheet-reload-guard";
 
 import "./vars.css";
@@ -43,6 +44,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
               <Link href="/trainers">調教師一覧</Link>
               <Link href="/mypage">マイページ</Link>
               <Link href="/mcp-connect">MCP 接続</Link>
+              <HeaderShareButton />
             </nav>
           </details>
         </header>
