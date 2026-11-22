@@ -33,6 +33,7 @@ import {
   formatRunnerValue,
   formatSexAge,
   isBanEiKeibajoCode,
+  isOverseasKeibajoCode,
 } from "../../../lib/runner-format";
 import {
   loadResultsChartForCurrentUser,
@@ -648,6 +649,19 @@ export function HorseRaceResultsTable({
       currentTrackCode,
       direction: "asc",
     });
+    // Overseas rows carry no 上がり3F and their times are not distance-converted, so
+    // they must not shadow a domestic row when the per-horse limit hides rows.
+    const compareByDomesticRaceTimeAsc = (
+      left: HorseRaceResult,
+      right: HorseRaceResult,
+    ): number => {
+      const overseasCompared =
+        Number(isOverseasKeibajoCode(left.keibajoCode)) -
+        Number(isOverseasKeibajoCode(right.keibajoCode));
+      return overseasCompared !== 0
+        ? overseasCompared
+        : compareByComparableRaceTimeAsc(left, right);
+    };
     const compareBySelectedSort = (left: HorseRaceResult, right: HorseRaceResult): number => {
       const primary = compareNullable(
         getSortValue(left, sort.key),
@@ -723,8 +737,8 @@ export function HorseRaceResultsTable({
           !sameDistanceOnly && inRangeResults.length === 0 && includeOutOfRangeFallback;
         // Comparison-oriented race-time order drives which races survive the per-horse limit.
         const prioritizedResults = shouldUseFallback
-          ? horseResults.toSorted(compareByComparableRaceTimeAsc)
-          : inRangeResults.toSorted(compareByComparableRaceTimeAsc);
+          ? horseResults.toSorted(compareByDomesticRaceTimeAsc)
+          : inRangeResults.toSorted(compareByDomesticRaceTimeAsc);
 
         return prioritizedResults.filter((result) => {
           if (limitCount === null) {

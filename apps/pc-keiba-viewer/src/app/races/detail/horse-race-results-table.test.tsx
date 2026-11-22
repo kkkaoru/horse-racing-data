@@ -150,6 +150,63 @@ describe("horse race results table", () => {
     expect(screen.queryByText("ランク外")).toBeNull();
   });
 
+  it("prefers a domestic result over an overseas one when the per-horse limit keeps one row", () => {
+    renderResultsTable(
+      <HorseRaceResultsTable
+        classConditionName="G1"
+        currentDistance="1600"
+        currentKeibajoCode="08"
+        currentRaceDate="20261122"
+        currentTrackCode="18"
+        defaultIncludeClass={false}
+        raceTimeStats={null}
+        results={[
+          result({
+            bamei: "ジューンテイク",
+            currentUmaban: "09",
+            umaban: "09",
+            kettoTorokuBango: "2021100913",
+            kakuteiChakujun: "08",
+            kaisaiNen: "2026",
+            kaisaiTsukihi: "0614",
+            keibajoCode: "09",
+            kyori: "2200",
+            sohaTime: "2137",
+            kohan3f: "367",
+            gradeCode: "A",
+            kyosomeiHondai: "宝塚記念",
+            raceBango: "11",
+            trackCode: "18",
+          }),
+          // Overseas row: shorter raw time and closer distance, but no 上がり3F.
+          result({
+            bamei: "ジューンテイク",
+            currentUmaban: "09",
+            umaban: "09",
+            kettoTorokuBango: "2021100913",
+            kakuteiChakujun: "08",
+            kaisaiNen: "2026",
+            kaisaiTsukihi: "0426",
+            keibajoCode: "G0",
+            kyori: "2000",
+            sohaTime: "2015",
+            kohan3f: "000",
+            gradeCode: "A",
+            kyosomeiHondai: "クイーンエリザベス２世カップ",
+            raceBango: "08",
+            trackCode: "18",
+          }),
+        ]}
+        runners={[]}
+        source="jra"
+        sourceScope="all"
+      />,
+    );
+
+    expect(screen.getByText("宝塚記念")).toBeTruthy();
+    expect(screen.queryByText("クイーンエリザベス２世カップ")).toBeNull();
+  });
+
   it("disables the finish rank filter when it alone removes all rows", async () => {
     renderResultsTable(
       <HorseRaceResultsTable
