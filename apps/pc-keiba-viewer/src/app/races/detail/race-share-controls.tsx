@@ -4,8 +4,9 @@ import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
+import { buildShareUrl, SHARE_HOST } from "../../../lib/share-link";
+
 const RESET_DELAY_MS = 1800;
-const PRODUCTION_HOST = "pc-keiba-viewer.kkk4oru.com";
 
 function CopyUrlButton({
   copied,
@@ -37,11 +38,11 @@ export function RaceShareControls({ path }: { path: string }) {
   const [copied, setCopied] = useState(false);
   const [hiddenFloating, setHiddenFloating] = useState(false);
   const [isProductionHost] = useState(
-    () => typeof window !== "undefined" && window.location.hostname === PRODUCTION_HOST,
+    () => typeof window !== "undefined" && window.location.hostname === SHARE_HOST,
   );
   const [headerNav, setHeaderNav] = useState<Element | null>(null);
   const queryString = searchParams.toString();
-  const shareUrl = `https://pc-keiba-viewer.kkk4oru.com${path}${queryString ? `?${queryString}` : ""}`;
+  const shareUrl = buildShareUrl(path, queryString ? `?${queryString}` : "");
 
   useEffect(() => {
     if (isProductionHost) {

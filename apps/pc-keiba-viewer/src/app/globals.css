@@ -259,6 +259,17 @@ main {
   width: var(--space-100pct-12);
 }
 
+.header-menu nav .race-share-button:disabled {
+  cursor: not-allowed;
+  opacity: var(--number-0-6-23);
+}
+
+.header-share-notice {
+  color: var(--accent-strong);
+  font-size: var(--space-12px-9);
+  padding: var(--space-6px-33) var(--space-12px-9);
+}
+
 .race-global-summary {
   align-items: center;
   display: flex;
