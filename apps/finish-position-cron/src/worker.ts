@@ -43,7 +43,12 @@ import {
   isAllowedContainerDoName,
   isContainerControlQueueMessage,
 } from "./container-control";
-import { claimRescoreRace, completeFocusedFullRace, releaseRescoreRaceClaim } from "./do-state";
+import {
+  claimRescoreRace,
+  completeFocusedFullRace,
+  forceReleaseContainerSlot,
+  releaseRescoreRaceClaim,
+} from "./do-state";
 import { warmNeon } from "./neon-warm";
 import { resolvePredictDoName } from "./predict-do-shard";
 import {
@@ -121,6 +126,7 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_ACCEPTED = 202;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const ADMIN_STOP_CONTAINERS_PATH = "/api/admin/stop-predict-containers";
+const ADMIN_FORCE_RELEASE_CONTAINER_SLOT_PATH = "/api/admin/force-release-container-slot";
 const ADMIN_COMPLETE_FOCUSED_FULL_RACE_PATH = "/api/admin/complete-focused-full-race";
 const ADMIN_RUN_FOCUSED_FULL_RACE_PATH = "/api/admin/run-focused-full-race";
 const ADMIN_RUN_FOCUSED_FULL_RACE_DIRECT_PATH = "/api/admin/run-focused-full-race-direct";
@@ -330,6 +336,12 @@ export const isInternalDeliveryCanaryRequest = (method: string, pathname: string
 
 export const isAdminStopContainersRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_STOP_CONTAINERS_PATH;
+
+export const isAdminForceReleaseContainerSlotRequest = (
+  method: string,
+  pathname: string,
+): boolean =>
+  method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_FORCE_RELEASE_CONTAINER_SLOT_PATH;
 
 export const isAdminCompleteFocusedFullRaceRequest = (method: string, pathname: string): boolean =>
   method === INTERNAL_RESCORE_RACE_METHOD && pathname === ADMIN_COMPLETE_FOCUSED_FULL_RACE_PATH;
@@ -716,6 +728,40 @@ const handleAdminStopContainers = async (request: Request, env: Env): Promise<Re
     ),
   );
   return Response.json({ names, ok: true, queued: names.length }, { status: HTTP_ACCEPTED });
+};
+
+const handleAdminForceReleaseContainerSlot = async (
+  request: Request,
+  env: Env,
+): Promise<Response> => {
+  if (!isAuthorized(request.headers.get("authorization"), env.TRIGGER_TOKEN)) {
+    console.warn("[predict-worker] admin-force-release unauthorized");
+    return Response.json({ error: "unauthorized", ok: false }, { status: HTTP_UNAUTHORIZED });
+  }
+  const names = (await parseBody(request)).names;
+  if (!Array.isArray(names) || names.length === 0 || !names.every(isValidNonEmptyString)) {
+    console.warn("[predict-worker] admin-force-release invalid names");
+    return Response.json({ error: "invalid names", ok: false }, { status: HTTP_BAD_REQUEST });
+  }
+  console.warn(
+    `[predict-worker] admin-force-release requested count=${names.length} names=${names.join(",")}`,
+  );
+  const released = [];
+  for (const doName of names) {
+    released.push({ doName, released: await forceReleaseContainerSlot({ doName, env }) });
+  }
+  return Response.json({ ok: true, released });
+};
+
+const guardedAdminForceReleaseContainerSlot = async (
+  request: Request,
+  env: Env,
+): Promise<Response> => {
+  try {
+    return await handleAdminForceReleaseContainerSlot(request, env);
+  } catch (error) {
+    return Response.json({ error: String(error), ok: false }, { status: HTTP_BAD_REQUEST });
+  }
 };
 
 const guardedAdminStopContainers = async (request: Request, env: Env): Promise<Response> => {
@@ -1143,6 +1189,9 @@ export const handleFetch = async (request: Request, env: Env): Promise<Response>
   }
   if (isAdminStopContainersRequest(request.method, url.pathname)) {
     return guardedAdminStopContainers(request, env);
+  }
+  if (isAdminForceReleaseContainerSlotRequest(request.method, url.pathname)) {
+    return guardedAdminForceReleaseContainerSlot(request, env);
   }
   const focusedFullAdmin = routeFocusedFullAdmin(request, url.pathname, env);
   if (focusedFullAdmin !== null) return focusedFullAdmin;

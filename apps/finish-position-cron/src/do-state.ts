@@ -757,6 +757,21 @@ export const checkContainerExecution = async (
   return (await response.json<{ allowed: boolean }>()).allowed;
 };
 
+export const forceReleaseContainerSlot = async (params: {
+  doName: string;
+  env: Env;
+}): Promise<number> => {
+  const response = await getCoordinatorStub(params.env).fetch(
+    new Request("http://do/force-release-container-slot", {
+      method: "POST",
+      body: JSON.stringify({ doName: params.doName }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  if (!response.ok) throw new Error("Container slot force release failed");
+  return (await response.json<{ released: number }>()).released;
+};
+
 export const cancelContainerSlotStop = async (params: ClearContainerSlotParams): Promise<void> => {
   const response = await getCoordinatorStub(params.env).fetch(
     new Request("http://do/cancel-container-slot-stop", {

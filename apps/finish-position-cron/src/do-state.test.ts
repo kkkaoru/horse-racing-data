@@ -34,6 +34,7 @@ import {
   claimRescoreRace,
   claimRun,
   checkContainerSlotStop,
+  forceReleaseContainerSlot,
   clearFocusedFullWatchOutbox,
   clearContainerSlot,
   completeFocusedFullRace,
@@ -999,4 +1000,21 @@ test("observation serializes read-only race authority through the existing claim
     runYmd: "20261004",
     raceBango: "11",
   });
+});
+
+test("force release reaches the coordinator and reports the dropped lease", async () => {
+  fetchMock.mockResolvedValueOnce(Response.json({ released: 1 }));
+  await expect(
+    forceReleaseContainerSlot({ env: makeEnv(), doName: "race-chain-predict-nar-0" }),
+  ).resolves.toBe(1);
+  const request: unknown = fetchMock.mock.calls[0]?.[0];
+  if (!(request instanceof Request)) throw new Error("Missing request");
+  expect(new URL(request.url).pathname).toBe("/force-release-container-slot");
+});
+
+test("force release surfaces a coordinator failure", async () => {
+  fetchMock.mockResolvedValueOnce(new Response("nope", { status: 500 }));
+  await expect(
+    forceReleaseContainerSlot({ env: makeEnv(), doName: "race-chain-predict-nar-0" }),
+  ).rejects.toThrow("Container slot force release failed");
 });

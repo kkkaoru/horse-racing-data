@@ -1924,6 +1924,24 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     });
   }
 
+  // Operator escape for a lane whose fenced lease has no live owner. A fenced
+  // lease never ages out (that exemption prevents double-booking a running
+  // container) and releaseContainerSlotLease only accepts the owner's exact
+  // executionId, so a dead owner wedges the lane with no log and no way back:
+  // on 2026-11-28 both NAR lanes were held by executions from 11-11 and 11-20
+  // and 15 races never reached the pipeline. Stopping the containers does not
+  // help because the stop is queued but never reaches this object. This drops
+  // the lease for one named lane by operator request, nothing else.
+  async forceReleaseContainerSlot(params: { doName: string }): Promise<number> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const record = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
+      const leases = record?.leases ?? [];
+      const kept = leases.filter((lease) => lease.doName !== params.doName);
+      await this.ctx.storage.put<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY, { leases: kept });
+      return leases.length - kept.length;
+    });
+  }
+
   async cancelContainerSlotStop(params: ClearContainerSlotParams): Promise<void> {
     await this.ctx.blockConcurrencyWhile(async () => {
       const fences =
@@ -2035,6 +2053,10 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     if (request.method === "POST" && url.pathname === "/check-container-execution") {
       const params = await request.json<ClearContainerSlotParams>();
       return Response.json({ allowed: await this.checkContainerExecution(params) });
+    }
+    if (request.method === "POST" && url.pathname === "/force-release-container-slot") {
+      const params = await request.json<{ doName: string }>();
+      return Response.json({ released: await this.forceReleaseContainerSlot(params) });
     }
     if (request.method === "POST" && url.pathname === "/cancel-container-slot-stop") {
       await this.cancelContainerSlotStop(await request.json<ClearContainerSlotParams>());

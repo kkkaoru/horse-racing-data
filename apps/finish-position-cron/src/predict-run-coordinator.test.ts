@@ -5462,3 +5462,41 @@ test("completion hands the lane to its waiter after a race-chain container slot 
     status: "success",
   });
 });
+
+test("force release frees a wedged lane whose fenced owner is gone", async () => {
+  const coordinator = makeCoordinator();
+  await coordinator.claimContainerSlot({
+    category: "nar",
+    doName: "race-chain-predict-nar-0",
+    kind: "focused-full",
+    workKey: "race-old",
+    generationId: "queue-a",
+  });
+  // A fenced lease outlives its owner: nothing else releases it, so every later
+  // claim on the lane is refused as busy (2026-11-28 NAR wedge).
+  await expect(
+    coordinator.claimContainerSlot({
+      category: "nar",
+      doName: "race-chain-predict-nar-0",
+      kind: "focused-full",
+      workKey: "race-new",
+      generationId: "queue-b",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "busy" });
+  const response = await coordinator.fetch(
+    new Request("http://do/force-release-container-slot", {
+      method: "POST",
+      body: JSON.stringify({ doName: "race-chain-predict-nar-0" }),
+    }),
+  );
+  expect(await response.json()).toStrictEqual({ released: 1 });
+  await expect(
+    coordinator.claimContainerSlot({
+      category: "nar",
+      doName: "race-chain-predict-nar-0",
+      kind: "focused-full",
+      workKey: "race-new",
+      generationId: "queue-b",
+    }),
+  ).resolves.toMatchObject({ proceed: true });
+});
