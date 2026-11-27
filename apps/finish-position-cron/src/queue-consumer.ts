@@ -1965,14 +1965,24 @@ const retryBusyFocusedFull = async (
   // Container-slot/Python busy is different: that race is the active owner
   // and must yield so a real owner mismatch cannot poison the lane.
   if (!preserveLanePriority && isFocusedSkipDedupMessage(message.body)) {
-    await completeFocusedFullRace({
-      category,
-      env,
-      keibajoCode: message.body.keibajoCode,
-      raceBango: message.body.raceBango,
-      runYmd,
-      status: "error",
-    });
+    try {
+      await completeFocusedFullRace({
+        category,
+        env,
+        keibajoCode: message.body.keibajoCode,
+        raceBango: message.body.raceBango,
+        runYmd,
+        status: "error",
+      });
+    } catch (error) {
+      // A NOT_OWNED reply means another execution still owns the run record, so
+      // this delivery must stay on the Queue. Throwing dead-letters every race
+      // of the shard while the orphaned container-slot lease ages out.
+      if (!(error instanceof Error) || error.message !== "FOCUSED_FULL_EXECUTION_NOT_OWNED") {
+        throw error;
+      }
+      debugLog(message.body, `Focused full run still owned, yielding ${suffix}`);
+    }
   }
   const delaySeconds = computeRetryDelaySeconds(message.attempts);
   message.retry({ delaySeconds });

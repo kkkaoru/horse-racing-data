@@ -839,6 +839,51 @@ test("yields the focused-full lane only for an actual same-container owner confl
   expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
 });
 
+test("keeps a busy focused-full message on the Queue when the run record is still owned", async () => {
+  claimContainerSlotMock.mockResolvedValueOnce({ proceed: false, state: "busy" });
+  completeFocusedFullRaceMock.mockRejectedValueOnce(new Error("FOCUSED_FULL_EXECUTION_NOT_OWNED"));
+  await handleQueue(
+    makeBatch([
+      makeMessage({
+        daysAhead: 0,
+        keibajoCode: "02",
+        mode: "full",
+        raceBango: "01",
+        runYmd: "20260628",
+        skipDedup: true,
+      }),
+    ]),
+    { ...makeEnv(), RACE_SHARDED_DO: "1" },
+  );
+
+  expect(stubFetchMock).not.toHaveBeenCalled();
+  expect(ackMock).not.toHaveBeenCalled();
+  expect(retryMock).toHaveBeenCalledWith({ delaySeconds: 70 });
+});
+
+test("rethrows a busy focused-full terminalization failure that is not an ownership conflict", async () => {
+  claimContainerSlotMock.mockResolvedValueOnce({ proceed: false, state: "busy" });
+  completeFocusedFullRaceMock.mockRejectedValueOnce(
+    new Error("DO complete-focused-full-race failed: 500"),
+  );
+  await expect(
+    handleQueue(
+      makeBatch([
+        makeMessage({
+          daysAhead: 0,
+          keibajoCode: "02",
+          mode: "full",
+          raceBango: "01",
+          runYmd: "20260628",
+          skipDedup: true,
+        }),
+      ]),
+      { ...makeEnv(), RACE_SHARDED_DO: "1" },
+    ),
+  ).rejects.toThrow("DO complete-focused-full-race failed: 500");
+  expect(retryMock).not.toHaveBeenCalled();
+});
+
 test("defers a partial day-base, enqueues one repair, and never claims a Container", async () => {
   getFocusedFullDayBaseReadinessMock.mockResolvedValueOnce({
     ready: false,
