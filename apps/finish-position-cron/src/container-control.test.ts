@@ -7,6 +7,7 @@ const {
   cancelContainerSlotStopMock,
   claimContainerSlotStopMock,
   clearContainerSlotMock,
+  forceReleaseContainerSlotMock,
   markContainerSlotStoppedMock,
 } = vi.hoisted(() => ({
   cancelContainerSlotStopMock: vi.fn(async () => undefined),
@@ -17,6 +18,7 @@ const {
     }>
   >(async () => ({ allowed: true, state: "claimed" })),
   clearContainerSlotMock: vi.fn(async () => undefined),
+  forceReleaseContainerSlotMock: vi.fn(async () => true),
   markContainerSlotStoppedMock: vi.fn(async () => undefined),
 }));
 
@@ -24,6 +26,7 @@ vi.mock("./do-state", () => ({
   cancelContainerSlotStop: cancelContainerSlotStopMock,
   claimContainerSlotStop: claimContainerSlotStopMock,
   clearContainerSlot: clearContainerSlotMock,
+  forceReleaseContainerSlot: forceReleaseContainerSlotMock,
   markContainerSlotStopped: markContainerSlotStoppedMock,
 }));
 
@@ -101,6 +104,20 @@ test("skips a stale stop owned by different work without touching the container"
   expect(stubFetchMock).not.toHaveBeenCalled();
   expect(clearContainerSlotMock).not.toHaveBeenCalled();
   warnSpy.mockRestore();
+});
+
+test("a forced stop frees the lease that blocks it and still reaches the container", async () => {
+  const env = makeEnv();
+  claimContainerSlotStopMock.mockResolvedValueOnce({ allowed: false, state: "blocked" });
+  stubFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+  await consumeContainerStop(env, { ...message, force: true });
+
+  expect(forceReleaseContainerSlotMock).toHaveBeenCalledWith({ doName: "predict-jra-1", env });
+  expect(stubFetchMock).toHaveBeenCalledTimes(1);
+  const request = (stubFetchMock.mock.calls[0] as [Request])[0];
+  expect(request.url).toBe("http://do/__admin/stop-container");
+  expect(request.headers.get("x-prediction-force-stop")).toBe("1");
 });
 
 test("logs a missing work key when an administrative stop becomes stale", async () => {

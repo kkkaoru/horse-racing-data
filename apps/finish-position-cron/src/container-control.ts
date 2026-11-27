@@ -4,6 +4,7 @@ import {
   cancelContainerSlotStop,
   claimContainerSlotStop,
   clearContainerSlot,
+  forceReleaseContainerSlot,
   markContainerSlotStopped,
 } from "./do-state";
 import {
@@ -191,7 +192,15 @@ export const consumeContainerStop = async (
     acceptableWorkKeys: message.acceptableWorkKeys,
     workKey: message.workKey,
   });
-  if (!claim.allowed) {
+  // A forced operator stop is the sanctioned escape from a slot lease whose
+  // owner no longer exists: free the lease, then let the DO clear its record.
+  // Without this the stop is refused by the very lease it should release, and
+  // the lane can never be recovered.
+  const forcedPastBlockedClaim = claim.state === "blocked" && message.force === true;
+  if (forcedPastBlockedClaim) {
+    await forceReleaseContainerSlot({ doName: message.name, env });
+  }
+  if (!claim.allowed && !forcedPastBlockedClaim) {
     if (claim.state === "destroyed" && message.executionId === undefined) {
       await afterDestroyed?.();
       await clearContainerSlot({
