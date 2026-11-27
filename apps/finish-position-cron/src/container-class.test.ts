@@ -1445,6 +1445,28 @@ test("an id-less operator stop clears a dead owner when the container is not run
   });
 });
 
+test("an operator force stop clears a record whose container is still running", async () => {
+  const harness = makeContainerHarness("", "1", true);
+  // Default harness has the runtime container running: the zombie case where
+  // neither an id-less stop nor admission can prove ownership.
+  await harness.storagePutMock("prediction-execution", {
+    executionId: "execution-dead",
+    disposition: "active",
+    updatedAt: Date.now(),
+  });
+  const stopped = await reconstructContainer(harness).fetch(
+    new Request("http://do/__admin/stop-container", {
+      headers: { authorization: "Bearer secret-token", "x-prediction-force-stop": "1" },
+    }),
+  );
+  expect(stopped.status).toBe(200);
+  expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+    executionId: "execution-dead",
+    disposition: "stopped",
+    updatedAt: expect.any(Number),
+  });
+});
+
 test("a stopped E record cannot authorize destruction of an unexplained live process", async () => {
   const harness = makeContainerHarness("", "1", true);
   await harness.storagePutMock("prediction-execution", {

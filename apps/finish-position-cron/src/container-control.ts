@@ -232,6 +232,7 @@ export const consumeContainerStop = async (
       headers: {
         authorization: `Bearer ${env.TRIGGER_TOKEN}`,
         ...(message.requireStopped === true ? { "x-prediction-require-stopped": "1" } : {}),
+        ...(message.force === true ? { "x-prediction-force-stop": "1" } : {}),
         ...(message.executionId === undefined
           ? {}
           : { "x-prediction-execution-id": message.executionId }),

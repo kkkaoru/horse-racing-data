@@ -394,10 +394,15 @@ export class FinishPositionPredictContainer extends Container<Env> {
       // executionId of a killed delivery is unknowable. Without this a lane
       // wedged on an abandoned record answers 409 here and 425 on every
       // predict forever.
+      // An operator force-stop is the sanctioned way out of a lane whose record
+      // no live delivery can prove it owns; admission stays fenced, so this is
+      // the only path that can clear an unowned record.
+      const forceStop = request.headers.get("x-prediction-force-stop") === "1";
       const matches =
-        expectedId === null
+        forceStop ||
+        (expectedId === null
           ? current.legacy === true || this.ctx.container?.running === false
-          : current.executionId === expectedId;
+          : current.executionId === expectedId);
       if (!matches) return { state: "blocked" };
       if (
         request.headers.get("x-prediction-require-stopped") === "1" &&
