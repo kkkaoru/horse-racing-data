@@ -1073,6 +1073,7 @@ test("SDK stopped status cannot certify a still-running physical execution", asy
   expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
     executionId: "execution-a",
     disposition: "stopping",
+    updatedAt: expect.any(Number),
   });
 });
 
@@ -1130,6 +1131,7 @@ test.each([false, true])(
     expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
       executionId: "execution-a",
       disposition: "stopped",
+      updatedAt: expect.any(Number),
     });
   },
 );
@@ -1160,6 +1162,7 @@ test.each([false, true])(
       expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
         executionId: "execution-a",
         disposition: "stopped",
+        updatedAt: expect.any(Number),
       });
     } finally {
       vi.useRealTimers();
@@ -1190,6 +1193,7 @@ test.each([false, true])(
     expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
       executionId: "execution-a",
       disposition: "stopped",
+      updatedAt: expect.any(Number),
     });
   },
 );
@@ -1207,6 +1211,7 @@ test("persisted pre-readiness interruption recovers without delivering a model r
   expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
     executionId: "execution-a",
     disposition: "preparing",
+    updatedAt: expect.any(Number),
   });
   const instance = reconstructContainer(harness);
   expect((await instance.fetch(request)).status).toBe(425);
@@ -1243,6 +1248,7 @@ test.each([false, true])(
       await harness.storagePutMock("prediction-execution", {
         executionId: "execution-a",
         disposition: "dispatching",
+        updatedAt: Date.now(),
       });
     }
     const instance = reconstructContainer(harness);
@@ -1257,6 +1263,7 @@ test.each([false, true])(
     expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
       executionId: "execution-a",
       disposition: "stopped",
+      updatedAt: expect.any(Number),
     });
     expect(harness.containerFetchMock).toHaveBeenCalledTimes(watchExists ? 1 : 0);
   },
@@ -1297,6 +1304,7 @@ test("physically stopped legacy prewarm permits fenced admission but unknown liv
   expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
     executionId: "execution-b",
     disposition: "active",
+    updatedAt: expect.any(Number),
   });
 });
 
@@ -1318,6 +1326,7 @@ test("confirmed fenced stop permits a later legacy prewarm on the same DO", asyn
     executionId: expect.any(String),
     legacy: true,
     disposition: "active",
+    updatedAt: expect.any(Number),
   });
 });
 
@@ -1469,4 +1478,23 @@ test("unknown live legacy runtime cannot be adopted or destroyed by either admis
   expect(harness.startAndWaitForPortsMock).not.toHaveBeenCalled();
   expect(harness.destroyMock).not.toHaveBeenCalled();
   expect(harness.storagePutMock).not.toHaveBeenCalled();
+});
+
+test("abandoned dispatch self-heals instead of blocking every later delivery", async () => {
+  // Production state on 2026-11-28: an interrupted dispatch left a
+  // `dispatching` record written before `updatedAt` existed. Every later
+  // delivery was silently 425'd forever, the caller kept its container-slot
+  // lease, and 15 NAR races never reached the pipeline.
+  const harness = makeContainerHarness('{"type":"result","status":"accepted"}\n', "1", true);
+  await harness.storagePutMock("prediction-execution", {
+    executionId: "execution-a",
+    disposition: "dispatching",
+  });
+  expect((await reconstructContainer(harness).fetch(REPLACEMENT_REQUEST.clone())).status).toBe(200);
+  expect(harness.destroyMock).toHaveBeenCalledOnce();
+  expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+    executionId: "execution-b",
+    disposition: "active",
+    updatedAt: expect.any(Number),
+  });
 });

@@ -68,6 +68,10 @@ interface ContainerExecutionDisposition {
   legacy?: boolean;
   executionId: string;
   disposition: "preparing" | "dispatching" | "active" | "stopping" | "stopped";
+  // Written on every disposition change so an abandoned dispatch can be aged
+  // out. Absent on records written before this field existed, which is exactly
+  // the stale state the self-heal must recover.
+  updatedAt?: number;
 }
 
 const EXECUTION_KEY: string = "prediction-execution";
@@ -86,6 +90,13 @@ export const containerDeliveryTimeoutMs = (url: URL): number =>
     ? SYNC_DAY_BASE_TIMEOUT_MS
     : CONTAINER_DELIVERY_HARD_TIMEOUT_MS;
 const CONTAINER_DESTROY_HARD_TIMEOUT_MS = 15_000;
+// A dispatch cannot still be in flight beyond the port-ready + delivery hard
+// timeouts, so a `preparing`/`dispatching` record older than this is abandoned.
+// Without the bound, an interrupted dispatch keeps its disposition forever: the
+// container stays running, every later delivery 425s silently, the caller keeps
+// its container-slot lease, and the race never reaches the pipeline (2026-11-28
+// NAR: 15 races stuck for hours with no `delivery start` in the logs).
+const CONTAINER_STALE_DISPATCH_MS = 5 * 60 * 1000;
 const CONTAINER_STATUS_HARD_TIMEOUT_MS = 5_000;
 // 20m covers a detached first-day day-base build (10–15m) plus race-chain.
 const SLEEP_AFTER = "45m";
@@ -309,9 +320,32 @@ export class FinishPositionPredictContainer extends Container<Env> {
         return current.disposition === "active" ? "duplicate" : "blocked";
       // An unknown live process has no trustworthy owner. Let it drain.
       if (current === undefined && this.ctx.container?.running === true) return "blocked";
+      // An abandoned dispatch is recoverable: nothing owns a preparing/dispatching
+      // record past the delivery timeouts, and no operator path can clear it
+      // (a stop is queued but never delivered, and the DO-state purge refuses
+      // current ids), so without this the lane is wedged permanently.
+      const abandonedDispatch =
+        current !== undefined &&
+        (current.disposition === "preparing" || current.disposition === "dispatching") &&
+        Date.now() - (current.updatedAt ?? 0) > CONTAINER_STALE_DISPATCH_MS;
+      if (abandonedDispatch) {
+        console.warn(
+          `[predict-container-do] stale dispatch recovered previous=${current.executionId} disposition=${current.disposition}`,
+        );
+        await withHardTimeout(this.destroy(), CONTAINER_DESTROY_HARD_TIMEOUT_MS).catch(
+          (error: unknown) => {
+            console.warn(
+              `[predict-container-do] stale dispatch destroy failed previous=${current.executionId}: ${String(
+                error,
+              )}`,
+            );
+          },
+        );
+      }
       // Only a stopped physical legacy process can cross into a fenced owner.
       // Fenced owners must finish exact-E cleanup before replacement admission.
       if (
+        !abandonedDispatch &&
         current !== undefined &&
         !(current.legacy === true && this.ctx.container?.running === false) &&
         (current.disposition !== "stopped" || this.ctx.container?.running !== false)
@@ -320,6 +354,7 @@ export class FinishPositionPredictContainer extends Container<Env> {
       await this.ctx.storage.put<ContainerExecutionDisposition>(EXECUTION_KEY, {
         executionId,
         disposition: "preparing",
+        updatedAt: Date.now(),
       });
       this.dispatchingExecutionId = executionId;
       return "dispatch";
@@ -338,6 +373,7 @@ export class FinishPositionPredictContainer extends Container<Env> {
         ...current,
         executionId,
         disposition,
+        updatedAt: Date.now(),
       });
     });
   }
