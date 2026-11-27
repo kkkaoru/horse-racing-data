@@ -389,8 +389,15 @@ export class FinishPositionPredictContainer extends Container<Env> {
         legacy: true,
         disposition: "active",
       };
+      // An id-less operator stop may clear a dead owner: when the container is
+      // provably not running no live process can be destroyed, and the exact
+      // executionId of a killed delivery is unknowable. Without this a lane
+      // wedged on an abandoned record answers 409 here and 425 on every
+      // predict forever.
       const matches =
-        expectedId === null ? current.legacy === true : current.executionId === expectedId;
+        expectedId === null
+          ? current.legacy === true || this.ctx.container?.running === false
+          : current.executionId === expectedId;
       if (!matches) return { state: "blocked" };
       if (
         request.headers.get("x-prediction-require-stopped") === "1" &&

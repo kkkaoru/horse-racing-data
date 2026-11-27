@@ -1422,6 +1422,29 @@ test("a readiness hard timeout cannot certify stop while the underlying start st
   }
 });
 
+test("an id-less operator stop clears a dead owner when the container is not running", async () => {
+  const harness = makeContainerHarness("", "1", true);
+  harness.runtimeContainer.running = false;
+  await harness.storagePutMock("prediction-execution", {
+    executionId: "execution-dead",
+    disposition: "active",
+    updatedAt: Date.now(),
+  });
+  // A killed delivery's executionId is unknowable, so an id-less stop used to
+  // answer 409 forever and left every predict on 425.
+  const stopped = await reconstructContainer(harness).fetch(
+    new Request("http://do/__admin/stop-container", {
+      headers: { authorization: "Bearer secret-token" },
+    }),
+  );
+  expect(stopped.status).toBe(200);
+  expect(await harness.storageGetMock("prediction-execution")).toStrictEqual({
+    executionId: "execution-dead",
+    disposition: "stopped",
+    updatedAt: expect.any(Number),
+  });
+});
+
 test("a stopped E record cannot authorize destruction of an unexplained live process", async () => {
   const harness = makeContainerHarness("", "1", true);
   await harness.storagePutMock("prediction-execution", {
