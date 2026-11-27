@@ -16,6 +16,7 @@ import {
   isContainerSlotStopAllowed,
   pruneStaleContainerSlots,
   releaseContainerSlotLease,
+  staleAfterMsForLease,
   touchContainerSlotLease,
   type ContainerSlotKind,
   type ContainerSlotLease,
@@ -762,9 +763,17 @@ export class PredictRunCoordinator extends DurableObject<Env> {
           : undefined);
       if (lane !== undefined && lane.activeRaceKey !== raceKey) {
         const active = await this.ctx.storage.get<RunRecord>(lane.activeRaceKey);
+        const ownerLease =
+          active?.executionId === undefined
+            ? undefined
+            : slots?.leases.find((lease) => lease.executionId === active.executionId);
         if (
-          (active?.executionId !== undefined &&
-            slots?.leases.some((lease) => lease.executionId === active.executionId)) ||
+          // Only a live lease pins the lane. An owner killed mid-run keeps its
+          // executionId and can never release it, so a stale lease must not keep
+          // every later race queued (2026-11-11/2026-11-20 NAR lanes); a running
+          // owner refreshes the lease through touchContainerSlot.
+          (ownerLease !== undefined &&
+            Date.now() - ownerLease.timestamp < staleAfterMsForLease(ownerLease)) ||
           // A succeeded race's unresolved barrier guards only its own workKey (checked
           // per race above and in claimContainerSlot); it must not pin the lane (10/24).
           (!TERMINAL_STATUSES.has(active?.status ?? "") &&
@@ -1453,7 +1462,17 @@ export class PredictRunCoordinator extends DurableObject<Env> {
       }
       const staleAfterMs =
         params.staleAfterMs === undefined ? CONTAINER_SLOT_STALE_MS : params.staleAfterMs;
-      const decision = decideContainerSlotClaim(record?.leases ?? [], {
+      // A lease that carries an executionId is never pruned and its owner only
+      // releases it on a normal completion, so a killed Queue/Container delivery
+      // kept the DO busy forever (2026-11-11 and 2026-11-20 NAR shards). A live
+      // run refreshes `timestamp` through touchContainerSlot, and a stop fence
+      // already returned "stopping" above, so an untouched lease past its window
+      // is dead and may be replaced.
+      const claimableLeases = (record?.leases ?? []).filter(
+        (lease) =>
+          lease.doName !== params.doName || now - lease.timestamp < staleAfterMsForLease(lease),
+      );
+      const decision = decideContainerSlotClaim(claimableLeases, {
         generationId: params.generationId,
         executionId: params.generationId === undefined ? undefined : crypto.randomUUID(),
         allowSameOwner: params.allowSameOwner,

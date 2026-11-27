@@ -78,7 +78,7 @@ const EMPTY_HOLDER_COUNT = 0;
 export const isReservedContainerLane = (params: ReservedLaneParams): boolean =>
   params.category === BAN_EI_CATEGORY && params.kind !== RESCORE_KIND;
 
-const staleAfterMsForLease = (lease: ContainerSlotLease): number =>
+export const staleAfterMsForLease = (lease: ContainerSlotLease): number =>
   lease.staleAfterMs ??
   (lease.kind === "day-base" ? CONTAINER_DAY_BASE_SLOT_STALE_MS : CONTAINER_SLOT_STALE_MS);
 

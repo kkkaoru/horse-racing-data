@@ -1317,6 +1317,74 @@ test("claimContainerSlot stores the first unique DO lease", async () => {
   vi.useRealTimers();
 });
 
+test("claimContainerSlot replaces a lease whose owner never released it", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar-0",
+        executionId: "dead-execution",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 1_000,
+        workKey: "focused-full:20261122:nar:36:06",
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimContainerSlot({
+      category: "nar",
+      doName: "predict-nar-0",
+      kind: "focused-full",
+      workKey: "focused-full:20261128:nar:54:01",
+    }),
+  ).resolves.toMatchObject({ proceed: true });
+  const stored = storageMap.get("container-slots") as {
+    leases: { doName: string; workKey?: string }[];
+  };
+  expect(stored.leases).toHaveLength(1);
+  expect(stored.leases[0]).toMatchObject({
+    doName: "predict-nar-0",
+    workKey: "focused-full:20261128:nar:54:01",
+  });
+  vi.useRealTimers();
+});
+
+test("claimContainerSlot still waits on a freshly touched lease", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(20_000);
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar-0",
+        executionId: "live-execution",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 19_000,
+        workKey: "focused-full:20261122:nar:36:06",
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimContainerSlot({
+      category: "nar",
+      doName: "predict-nar-0",
+      kind: "focused-full",
+      workKey: "focused-full:20261128:nar:54:01",
+    }),
+  ).resolves.toStrictEqual({ proceed: false, state: "busy" });
+  vi.useRealTimers();
+});
+
 test("day-base generation fence keeps an older date superseded while the newer lease lapses", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(20_000);
@@ -3753,6 +3821,57 @@ test("claimFocusedFullRace force takes over a stale earlier lane reservation", a
   expect(storageMap.get("focused-full-lane:predict-jra-2")).toMatchObject({
     activeRaceKey: "focused-full:20260823:jra:04:10",
     waiters: [],
+  });
+  vi.useRealTimers();
+});
+
+test("claimFocusedFullRace force takes over a lane whose owner died holding a stale lease", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000_000);
+  storageMap.set("focused-full:20261122:nar:36:06", {
+    doName: "predict-nar-0",
+    executionId: "dead-execution",
+    priorityMs: 100,
+    status: "started",
+    timestamp: 9_500,
+  });
+  storageMap.set("focused-full-lane:predict-nar-0", {
+    activeRaceKey: "focused-full:20261122:nar:36:06",
+    startedAt: 9_500,
+    waiters: [],
+  });
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "predict-nar-0",
+        executionId: "dead-execution",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 9_500,
+        workKey: "focused-full:20261122:nar:36:06",
+      },
+    ],
+  });
+  const coordinator = makeCoordinator();
+
+  await expect(
+    coordinator.claimFocusedFullRace({
+      category: "nar",
+      doName: "predict-nar-0",
+      force: true,
+      keibajoCode: "54",
+      raceBango: "01",
+      runYmd: "20261128",
+      staleAfterMs: 1_000,
+    }),
+  ).resolves.toStrictEqual({ proceed: true, state: "forced" });
+  expect(storageMap.get("focused-full:20261122:nar:36:06")).toMatchObject({
+    status: "error",
+  });
+  expect(storageMap.get("focused-full-lane:predict-nar-0")).toMatchObject({
+    activeRaceKey: "focused-full:20261128:nar:54:01",
   });
   vi.useRealTimers();
 });
