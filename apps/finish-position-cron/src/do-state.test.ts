@@ -135,7 +135,7 @@ test("getRunState throws when DO returns non-200", async () => {
 
 test("claimRun uses singleton DO name predict-run-coordinator", async () => {
   await claimRun({ category: "jra", env: makeEnv(), runYmd: "20260603" });
-  expect(idFromNameMock).toHaveBeenCalledWith("predict-run-coordinator");
+  expect(idFromNameMock).toHaveBeenCalledWith("predict-run-coordinator-v2");
 });
 
 test("claimRescoreRace calls DO /claim-race and returns the result", async () => {

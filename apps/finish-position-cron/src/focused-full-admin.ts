@@ -6,7 +6,7 @@ const ADMIN_FOCUSED_FULL_DIAGNOSTICS_PATH = "/api/admin/focused-full-diagnostics
 const ADMIN_CLEAR_FOCUSED_FULL_COMMITS_PATH = "/api/admin/clear-focused-full-commits";
 const DO_DIAGNOSTICS_URL = "http://do/__admin/focused-full-diagnostics";
 const DO_CLEAR_COMMITS_URL = "http://do/__admin/clear-focused-full-commits";
-const COORDINATOR_DO_NAME = "predict-run-coordinator";
+const COORDINATOR_DO_NAME = "predict-run-coordinator-v2";
 const MAX_CLEAR_WORK_KEYS = 100;
 const FOCUSED_FULL_WORK_KEY_PATTERN: RegExp =
   /^focused-full:\d{8}:(?:jra|nar|ban-ei):\d{2}:\d{2}$/u;

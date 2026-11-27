@@ -60,7 +60,7 @@ const CONTAINER_STOP_FENCES_KEY = "container-stop-fences";
 const DAY_BASE_GENERATIONS_KEY = "day-base-generations";
 const DAY_BASE_WORK_KEY_PATTERN: RegExp =
   /^day-base(?:-stale)?:([0-9]{8}):([^:]+)(?::([A-Za-z0-9_-]{1,128}))?$/u;
-const PREDICT_RUN_COORDINATOR_DO_NAME: string = "predict-run-coordinator";
+const PREDICT_RUN_COORDINATOR_DO_NAME: string = "predict-run-coordinator-v2";
 const DO_HOST: string = "http://do";
 const FOCUSED_FULL_WATCH_OUTBOX_KEY = "focused-full-watch-outbox";
 const FOCUSED_FULL_ACTIVE_WATCHES_KEY = "focused-full-active-watches";

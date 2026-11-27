@@ -6,7 +6,16 @@ import type { ContainerSlotKind } from "./container-slot-cap";
 import { resolvePredictDoName } from "./predict-do-shard";
 import type { Env, FocusedFullCompletionMessage, FocusedFullWatchTickMessage } from "./types";
 
-const DO_NAME = "predict-run-coordinator";
+// Bumped from "predict-run-coordinator" on 2026-11-28. A long-lived coordinator
+// instance never idles, because the predict queue retries every ~10s, so it kept
+// executing pre-deploy code after each deploy: the logs showed its fetches still
+// on scriptVersion 5c4492ca while a Container DO alarm already ran a9a40426, and
+// the newly deployed force-release route answered 404. A new generation starts
+// on the deployed version, and its empty slot state also clears the fenced
+// leases that had wedged both NAR lanes (nothing can release those: pruning
+// exempts fenced leases by design and release requires the dead owner's exact
+// executionId).
+const DO_NAME = "predict-run-coordinator-v2";
 const CLAIM_PATH = "/claim";
 const COMPLETE_PATH = "/complete";
 const STATE_PATH = "/state";

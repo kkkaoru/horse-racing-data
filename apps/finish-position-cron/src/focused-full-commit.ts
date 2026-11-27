@@ -18,7 +18,7 @@ export const withFocusedFullCommit = async <T>(params: CommitParams<T>): Promise
   if (params.executionId === undefined && params.enforce !== true) return params.commit();
   const token: string = crypto.randomUUID();
   const namespace = params.env.PREDICT_RUN_COORDINATOR;
-  const stub = namespace.get(namespace.idFromName("predict-run-coordinator"));
+  const stub = namespace.get(namespace.idFromName("predict-run-coordinator-v2"));
   const request = async (complete: boolean): Promise<void> => {
     const response = await stub.fetch(
       new Request("http://do/external-commit", {
