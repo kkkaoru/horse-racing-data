@@ -1258,6 +1258,68 @@ test("completing focused-full tolerates a legacy record whose lane is missing", 
   });
 });
 
+test("completeFocusedFullRace without an executionId clears only an abandoned owner", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000_000);
+  storageMap.set("focused-full:20261128:nar:54:01", {
+    doName: "race-chain-predict-nar-1",
+    executionId: "dead-execution",
+    status: "started",
+    timestamp: 9_500,
+  });
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "race-chain-predict-nar-1",
+        executionId: "dead-execution",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 9_500,
+        workKey: "focused-full:20261128:nar:54:01",
+      },
+    ],
+  });
+  const race = { category: "nar", keibajoCode: "54", raceBango: "01", runYmd: "20261128" };
+
+  await expect(
+    makeCoordinator().completeFocusedFullRace({ ...race, status: "error" }),
+  ).resolves.toBe(true);
+  expect(storageMap.get("focused-full:20261128:nar:54:01")).toMatchObject({ status: "error" });
+});
+
+test("completeFocusedFullRace without an executionId keeps a live owner", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(10_000);
+  storageMap.set("focused-full:20261128:nar:54:01", {
+    doName: "race-chain-predict-nar-1",
+    executionId: "live-execution",
+    status: "started",
+    timestamp: 9_500,
+  });
+  storageMap.set("container-slots", {
+    leases: [
+      {
+        category: "nar",
+        doName: "race-chain-predict-nar-1",
+        executionId: "live-execution",
+        holders: 1,
+        kind: "focused-full",
+        rescoreHolders: 0,
+        timestamp: 9_500,
+        workKey: "focused-full:20261128:nar:54:01",
+      },
+    ],
+  });
+  const race = { category: "nar", keibajoCode: "54", raceBango: "01", runYmd: "20261128" };
+
+  await expect(
+    makeCoordinator().completeFocusedFullRace({ ...race, status: "error" }),
+  ).resolves.toBe(false);
+  expect(storageMap.get("focused-full:20261128:nar:54:01")).toMatchObject({ status: "started" });
+});
+
 test("completeFocusedFullRace writes terminal focused-full state", async () => {
   const coordinator = makeCoordinator();
   await coordinator.completeFocusedFullRace({

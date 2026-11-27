@@ -1144,7 +1144,19 @@ export class PredictRunCoordinator extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const raceKey = buildFocusedFullRaceKey(params);
       const existing = await this.ctx.storage.get<RunRecord>(raceKey);
-      if (existing?.executionId !== params.executionId) return false;
+      if (existing?.executionId !== params.executionId) {
+        // A Queue retry carries no executionId, so exact ownership is the only
+        // way it may clear a *live* run. An owner that was killed keeps its
+        // executionId forever (nothing else can release it), so allow the
+        // retry to terminalize it once its container lease is gone or stale.
+        const leases = await this.ctx.storage.get<ContainerSlotsRecord>(CONTAINER_SLOTS_KEY);
+        const lease = leases?.leases.find((entry) => entry.executionId === existing?.executionId);
+        const abandonedOwner =
+          params.executionId === undefined &&
+          existing?.executionId !== undefined &&
+          (lease === undefined || Date.now() - lease.timestamp >= staleAfterMsForLease(lease));
+        if (!abandonedOwner) return false;
+      }
       if (params.checkOnly === true) return true;
       if (await this.ctx.storage.get(`external-commit:${raceKey}`))
         throw new Error("FOCUSED_FULL_COMMIT_UNRESOLVED");
