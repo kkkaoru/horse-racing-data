@@ -247,6 +247,27 @@ it("keeps caching a results section that has runners but no past results", async
   expect(await (await getCachedDetailSectionResponse("results-key"))?.text()).toBe(body);
 });
 
+it("neither caches nor serves an overall-score section computed before its runners landed", async () => {
+  const body = JSON.stringify({ rows: [], type: "overall-score" });
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(body);
+  mockEnvWithKv(kv);
+  expect(await getCachedDetailSectionResponse("overall-score-key")).toBeNull();
+  await putDetailSectionCache({ body, cacheKey: "overall-score-key", race: FUTURE_RACE });
+  expect(kv.put).not.toHaveBeenCalled();
+});
+
+it("keeps caching an overall-score section that has rows", async () => {
+  const body = JSON.stringify({
+    rows: [{ horseNumber: "1", totalScore: 0.5 }],
+    type: "overall-score",
+  });
+  const kv = buildKvStub();
+  kv.get.mockResolvedValue(body);
+  mockEnvWithKv(kv);
+  expect(await (await getCachedDetailSectionResponse("overall-score-key"))?.text()).toBe(body);
+});
+
 it("does not cache an empty premium-data-top section body", async () => {
   const kv = buildKvStub();
   mockEnvWithKv(kv);

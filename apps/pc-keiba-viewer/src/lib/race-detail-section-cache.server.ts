@@ -318,10 +318,31 @@ const isEmptyResultsSectionBody = (body: string): boolean => {
   }
 };
 
+// Overall scores are built one row per runner, so an empty `rows` array means the
+// same missing-entry state as an empty results payload; caching it hid the score
+// card for the whole long TTL.
+const isEmptyOverallScoreSectionBody = (body: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "type" in parsed &&
+      parsed.type === "overall-score" &&
+      "rows" in parsed &&
+      Array.isArray(parsed.rows) &&
+      parsed.rows.length === 0
+    );
+  } catch {
+    return false;
+  }
+};
+
 const isEmptyDataSectionBody = (body: string, cacheKey: string): boolean =>
   isEmptyPremiumTrainingSectionBody(body) ||
   isEmptyPremiumDataTopSectionBody(body) ||
   isEmptyResultsSectionBody(body) ||
+  isEmptyOverallScoreSectionBody(body) ||
   (/:\d{4}:\d{1,2}:\d{1,2}:[A-Z][0-9A-Z]:\d{2}:time-score:/u.test(cacheKey) &&
     !hasOverseasTimeScoreEvidence(body));
 
